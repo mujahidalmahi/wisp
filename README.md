@@ -1,25 +1,17 @@
-# Wisp — Main Monorepo (`main` Branch)
+# Wisp
 
 > **"A little more, when you need it."**
 > AI-Powered Contextual Viewing for Amazon Fire TV — *Amazon Developer Hackathon 2026 (Fire TV Track)*
 
+> **Active Branch Guide:** See [**`BRANCH.md`**](./BRANCH.md) for the specific goal, ownership scope, task checklist, and workflow of the branch you are currently on (`main`, `server`, `client`, `ai-integration`, or `docs`).
+
 ---
 
-## Branch Goal (`main`)
+## Overview
 
-The **`main`** branch is the **complete integrated monorepo** uniting all Wisp subsystems: the 10-foot Fire TV React Native client (`frontend/`), the standalone modular AI integration engine (`ai-engine/`), the NestJS backend API (`backend/`), the Supabase PostgreSQL schema & anti-spoiler RPCs (`database/`), the Cloudflare Worker edge gateway (`cloudflare/`), and all documentation & agent playbooks (`docs/`, `agents/`).
+**Wisp** is a Fire TV application centered on **AI-powered contextual understanding during television viewing**. It helps viewers understand characters, scenes, terminology, and spoiler-safe recaps of what they are actively watching—without leaving the viewing experience or picking up a second screen.
 
-### Repository Branch Architecture
-
-To enable parallel, production-grade development across domains, this repository is organized into 5 dedicated branches:
-
-| Branch | Goal & Scope | Key Directories |
-| :--- | :--- | :--- |
-| **`main`** *(Current)* | Full end-to-end integration of all layers and documentation. | `frontend/`, `ai-engine/`, `backend/`, `database/`, `cloudflare/`, `docs/`, `agents/` |
-| **`ai-integration`** | Standalone development & testing of AI features, prompts, model adapters, and temporal anti-spoiler filtering with **zero backend/DB dependency**. | `ai-engine/`, `docs/`, `agents/` |
-| **`server`** | Backend API, Supabase PostgreSQL schema/migrations/seeds, Cloudflare Edge Worker, and `@wisp/ai-engine` integration. | `backend/`, `database/`, `cloudflare/`, `ai-engine/`, `docs/`, `agents/` |
-| **`client`** | 10-foot Amazon Fire TV React Native UI, D-pad remote focus navigation, video player HUD, and Wisp overlay drawer. | `frontend/`, `ai-engine/`, `docs/`, `agents/` |
-| **`docs`** | Project proposal, system architecture, API specs, Fire TV UX guide, Hackathon Friction Log (10% bonus), product feedback, and AI agent playbooks. | `docs/`, `agents/` |
+Rather than bolting a generic desktop chatbot onto a TV screen, Wisp treats **playback position, current program context, household viewing mode, and 5-way D-pad remote ergonomics** as one unified 10-foot experience.
 
 ---
 
@@ -36,10 +28,11 @@ To enable parallel, production-grade development across domains, this repository
 
 ---
 
-## Complete Monorepo Structure (`main`)
+## Monorepo Structure (Identical Across All Branches for Clean Merges)
 
 ```text
 wisp/
+├── BRANCH.md               # Branch-specific goal, tasks, ownership & workflow guide
 ├── ai-engine/              # Standalone modular AI integration & feature segment (@wisp/ai-engine)
 ├── frontend/               # React Native + TypeScript Fire TV client (10-foot UI, D-pad focus, player & overlay)
 ├── backend/                # NestJS + TypeScript API wrapping @wisp/ai-engine & Supabase
@@ -49,6 +42,20 @@ wisp/
 ├── agents/                 # AI agent playbooks, system prompts & coding invariants
 └── .github/workflows/      # Basic CI validation pipeline (ci.yml)
 ```
+
+---
+
+## Repository Branches
+
+All branches contain the full monorepo so every developer can test end-to-end and merge into `main` without file-deletion conflicts. Each branch includes a tailored [`BRANCH.md`](./BRANCH.md) defining its active focus:
+
+| Branch | Focus Area | Primary Directories Owned |
+| :--- | :--- | :--- |
+| **`main`** | Production integration, end-to-end validation gates & release readiness. | All workspaces (`frontend/`, `backend/`, `database/`, `cloudflare/`, `ai-engine/`, `docs/`) |
+| **`ai-integration`** | Modular AI features, prompts, LLM provider adapters & standalone temporal filtering. | `ai-engine/`, `agents/prompts/`, `docs/AI_ENGINE_GUIDE.md` |
+| **`server`** | NestJS REST API, Supabase PostgreSQL schema/RPCs/seeds & Cloudflare Worker edge gateway. | `backend/`, `database/`, `cloudflare/` |
+| **`client`** | 10-foot Amazon Fire TV React Native UI, D-pad spatial focus & video player overlay. | `frontend/`, `docs/FIRE_TV_UX_GUIDE.md` |
+| **`docs`** | Project proposal, architecture specs, Hackathon Friction Log (10% bonus) & product feedback. | `docs/`, `agents/` |
 
 ---
 
@@ -64,28 +71,25 @@ node --test ai-engine/src/engine.test.ts
 ```
 
 ### 2. Full-Stack Local Setup
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-2. Copy `.env.example` to `backend/.env` and `frontend/.env`, and populate your Supabase URL/key and at least one AI provider key (`GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `OLLAMA_BASE_URL`).
-3. Apply SQL migrations in `database/migrations/` and seed `database/seeds/seed_demo_catalog.sql`.
-4. Run the stack:
-   ```bash
-   # Terminal 1: Start NestJS API & AI Gateway
-   npm run dev:backend
+```bash
+# 1. Install all workspace dependencies
+npm install
 
-   # Terminal 2: Start React Native Metro Bundler for Fire TV
-   npm run dev:frontend
+# 2. Start NestJS API & AI Gateway (http://localhost:3000/api/v1)
+npm run dev:backend
 
-   # Terminal 3: Build & launch on Fire TV / Emulator
-   npm run android:firetv
-   ```
+# 3. Start React Native Metro Bundler for Fire TV
+npm run dev:frontend
+
+# 4. Launch on Fire TV Device or Emulator
+npm run android:firetv
+```
 
 ---
 
 ## Documentation Index
 
+- [**Branch Goal & Task Guide (`BRANCH.md`)**](./BRANCH.md) — Current branch mission, tasks, and merge checklist
 - [**Refined Project Proposal**](./docs/PROPOSAL.md) — Executive summary, hackathon fit, refined scope & implementation plan
 - [**Modular AI Engine Guide (`@wisp/ai-engine`)**](./docs/AI_ENGINE_GUIDE.md) — Building & testing AI features and providers without backend/DB
 - [**System Architecture**](./docs/ARCHITECTURE.md) — End-to-end request flow, branch mapping, temporal anti-spoiler SQL, and AI routing
