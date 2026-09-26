@@ -9,7 +9,6 @@
 [![Platform](https://img.shields.io/badge/Platform-Fire_OS_%7C_Vega_OS-1E293B?style=for-the-badge)](./docs/FIRE_TV_UX_GUIDE.md)
 [![Stack](https://img.shields.io/badge/Stack-React_Native_%E2%80%A2_NestJS_%E2%80%A2_Supabase-3ECF8E?style=for-the-badge)](./docs/ARCHITECTURE.md)
 [![AI Providers](https://img.shields.io/badge/AI-Groq_%E2%80%A2_Gemini_%E2%80%A2_OpenRouter-38BDF8?style=for-the-badge)](./docs/AI_ENGINE_GUIDE.md)
-[![Tests](https://img.shields.io/badge/Tests-28_Passing_(12_Suites)-10B981?style=for-the-badge)](./testing/README.md)
 
 [**Project Proposal**](./docs/PROPOSAL.md) • [**System Architecture**](./docs/ARCHITECTURE.md) • [**API Specification**](./docs/API_SPEC.md) • [**AI Engine Guide**](./docs/AI_ENGINE_GUIDE.md) • [**Contributing & Team Roles**](./CONTRIBUTING.md) • [**Friction Log**](./docs/FRICTION_LOG.md)
 
@@ -42,38 +41,7 @@ Wisp treats the **television program, current playback position, and 5-way D-pad
 
 ---
 
-## 3. System Architecture
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Remote as Fire TV Remote (D-Pad)
-    participant Client as Fire TV Client (frontend/)
-    participant Edge as Cloudflare Edge (cloudflare/)
-    participant API as NestJS Backend (backend/)
-    participant Engine as Modular AI Engine (ai-engine/)
-    participant DB as Supabase PostgreSQL (database/)
-    participant AI as AI Providers (Groq / Gemini / OpenRouter)
-
-    Remote->>Client: Press Menu / Select at playbackPositionMs (02:15)
-    Client->>Edge: GET /api/v1/context/:episodeId?playbackMs=135000
-    Edge->>API: Forward on KV Miss
-    API->>Engine: HybridContextSource.getSpoilerSafeContext()
-    Engine->>DB: RPC get_spoiler_safe_context(episodeId, 135000)
-    Note over Engine,DB: Strictly filters end_time_ms <= 135000<br/>& reveal_time_ms <= 135000
-    Engine-->>Client: Stage-1 Instant Scene Header + Quick Action Chips (<100ms)
-    Remote->>Client: D-Pad Select Chip ("Why are they recreating the bridge memory?")
-    Client->>Edge: POST /api/v1/wisp/query { episodeId, playbackPositionMs, actionType, profileMode }
-    Edge->>API: Forward on KV Miss
-    API->>Engine: WispAiEngine.execute(input)
-    Engine->>AI: AiProviderRouter (Groq Primary -> Gemini -> OpenRouter -> Ollama)
-    AI-->>Engine: Grounded JSON Response
-    Engine-->>Client: Render 10-Foot TV Card + Focus First Follow-Up Chip
-```
-
----
-
-## 4. Monorepo Directory Structure
+## 3. Monorepo Directory Structure
 
 ```text
 wisp/
@@ -92,7 +60,7 @@ wisp/
 
 ---
 
-## 5. Team Organization, Role Categories & Branch Mapping
+## 4. Team Organization, Role Categories & Branch Mapping
 
 Development is organized across **five functional role categories** and **eight (8) team members**, mapped directly to dedicated repository branches. See [**`CONTRIBUTING.md`**](./CONTRIBUTING.md) for the complete governance, handover, and change-control specification.
 
@@ -107,7 +75,7 @@ Development is organized across **five functional role categories** and **eight 
 
 ---
 
-## 6. Quick Start & Developer Commands
+## 5. Quick Start & Developer Commands
 
 ### Prerequisites
 * **Node.js** `>= 20.x` (Node `24.x` recommended for native TypeScript test execution) & **npm** `>= 10.x`
@@ -116,7 +84,7 @@ Development is organized across **five functional role categories** and **eight 
 
 ### A. Run Standalone AI Engine & Multi-Layer Test Suite (Zero Backend / Zero DB Needed)
 ```bash
-# 1. Run all 12 automated test suites (28 tests across AI, Backend, Frontend, DB, Edge & E2E)
+# 1. Run all automated test suites across AI, Backend, Frontend, DB, Edge & E2E
 npm test
 
 # 2. Run the interactive @wisp/ai-engine CLI playground
@@ -150,7 +118,7 @@ npm run android:firetv
 
 ---
 
-## 7. Documentation & Submission Artifacts
+## 6. Documentation & Submission Artifacts
 
 | Document | Description |
 | :--- | :--- |

@@ -10,6 +10,7 @@ This repository builds **Wisp** (*AI-Powered Contextual Viewing for Amazon Fire 
 4. **Zero-Typing 10-Foot First UX:** Never make on-screen keyboard text entry the primary flow. Every scene and AI response card must provide 2–4 D-pad selectable `QuickActionChip` items.
 5. **Server-Side Credentials Only:** Never place `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `SUPABASE_SERVICE_ROLE_KEY` inside `frontend/`.
 6. **Log Developer Friction Immediately:** Whenever a build, SDK, focus, or API quirk occurs, append an entry to [`docs/FRICTION_LOG.md`](./docs/FRICTION_LOG.md).
+7. **No Git Operations Without Explicit User Permission:** NEVER execute `git add`, `git commit`, `git push`, `git pull`, `git checkout`, `git branch`, `git merge`, `git reset`, or any other state-changing Git command unless the user explicitly instructs you to run that Git operation in their current prompt.
 
 ## 2. Specialized Agent Playbooks & Branch Mapping
 - **Modular AI Integration Agent (`ai-integration` branch):** [`agents/playbooks/ai-engine-agent.md`](./agents/playbooks/ai-engine-agent.md)

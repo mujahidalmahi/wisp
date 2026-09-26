@@ -2,6 +2,7 @@
   "name": "@wisp/frontend",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Wisp Fire TV Client (React Native + TypeScript 10-Foot UI)",
   "scripts": {
     "start": "react-native start",
