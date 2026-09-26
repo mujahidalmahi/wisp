@@ -4,6 +4,12 @@
 > **Project:** Wisp — *AI-Powered Contextual Viewing for Amazon Fire TV*
 > **Program / Track:** Amazon Developer Hackathon 2026 — Fire TV Track
 
+> [!IMPORTANT]
+> **Mandatory Branching & Pull Request Policy ([`INSTRUCTIONS.md`](./INSTRUCTIONS.md)):**
+> * **Only the 5 official Category Branches (`server`, `ai-integration`, `client`, `testing`, `docs`) may open Pull Requests into `main`.**
+> * Any Pull Request targeting `main` directly from an **individual developer branch** or an **external fork** will be **closed and rejected immediately**. Individual branches must merge into their parent Category Branch first, and the Category Branch then opens the PR to `main`.
+> * See [**`INSTRUCTIONS.md`**](./INSTRUCTIONS.md) for full branching & GitHub Issue rules, [**`CODE_OF_CONDUCT.md`**](./CODE_OF_CONDUCT.md) for team conduct, and [**`SECURITY.md`**](./SECURITY.md) for credential and anti-spoiler policies.
+
 This document establishes the formal distribution of functional ownership, responsibilities, branch workflows, change-control protocols, handover requirements, and completion gates for the **eight (8) member Wisp engineering team**.
 
 ---

@@ -55,8 +55,10 @@ wisp/
 ├── agents/                 # Specialized AI Agent Playbooks & Versioned Runtime Prompt Specifications
 ├── .github/workflows/      # Automated Continuous Integration Pipeline (ci.yml)
 ├── AGENTS.md               # Non-negotiable architectural & spoiler-safety invariants
+├── CODE_OF_CONDUCT.md      # Team Code of Conduct & 5-Branch Repository Discipline
 ├── CONTRIBUTING.md         # Formal Role Distribution, Governance, Handover & Quality Gate Specification
-└── INSTRUCTIONS.md         # Strict Branching, 5-Branch PR Rules, GitHub Issues & Operational Protocol
+├── INSTRUCTIONS.md         # Strict Branching, 5-Branch PR Rules, GitHub Issues & Operational Protocol
+└── SECURITY.md             # Server-Side Credential Isolation, Branch Protection & Anti-Spoiler Policy
 ```
 
 ---
