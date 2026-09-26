@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate:
-    name: Basic Repository & Workspace Check
+    name: Run Wisp Test Suites & Verify Repository
     runs-on: ubuntu-latest
 
     steps:
@@ -20,15 +20,5 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Run Standalone AI Engine Tests (if present)
-        run: |
-          if [ -f "ai-engine/src/engine.test.ts" ]; then
-            node --test ai-engine/src/engine.test.ts
-          fi
-
-      - name: Verify Core Documentation Exists
-        run: |
-          test -f README.md
-          test -f docs/PROPOSAL.md
-          test -f docs/ARCHITECTURE.md
-          test -f docs/FRICTION_LOG.md
+      - name: Run Multi-Layer Test Suite (testing/)
+        run: node --test "testing/**/*.test.ts"

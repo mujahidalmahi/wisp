@@ -35,6 +35,7 @@ wisp/
 ├── backend/                # NestJS + TypeScript API wrapping @wisp/ai-engine & Supabase
 ├── database/               # Supabase PostgreSQL migrations, anti-spoiler RPC functions & 3-genre demo seeds
 ├── cloudflare/             # Cloudflare Worker edge gateway (KV cache, rate limiting & R2 video streaming)
+├── testing/                # Comprehensive test suites (ai-integration, backend, frontend, database, cloudflare, full-application)
 ├── docs/                   # Proposals, architecture, branch guides (docs/branches/), friction log & feedback
 ├── agents/                 # AI agent playbooks, system prompts & coding invariants
 └── .github/workflows/      # Basic CI validation pipeline (ci.yml)

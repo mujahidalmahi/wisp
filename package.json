@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "description": "Wisp — AI-Powered Contextual Viewing for Fire TV (Amazon Developer Hackathon 2026)",
-  " motto": "A little more, when you need it.",
+  "motto": "A little more, when you need it.",
   "workspaces": [
     "ai-engine",
     "frontend",
     "backend",
-    "cloudflare"
+    "cloudflare",
+    "testing"
   ],
   "scripts": {
     "ai:playground": "npm --workspace=ai-engine run playground",
@@ -20,7 +21,13 @@
     "android:firetv": "npm --workspace=frontend run android",
     "lint": "npm --workspaces --if-present run lint",
     "typecheck": "npm --workspaces --if-present run typecheck",
-    "test": "npm --workspaces --if-present run test",
+    "test": "node --test \"testing/**/*.test.ts\"",
+    "test:ai": "node --test \"testing/ai-integration/*.test.ts\"",
+    "test:backend": "node --test \"testing/backend/*.test.ts\"",
+    "test:frontend": "node --test \"testing/frontend/*.test.ts\"",
+    "test:database": "node --test \"testing/database/*.test.ts\"",
+    "test:cloudflare": "node --test \"testing/cloudflare/*.test.ts\"",
+    "test:e2e": "node --test \"testing/full-application/*.test.ts\"",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,sql,yml}\""
   },
   "devDependencies": {
