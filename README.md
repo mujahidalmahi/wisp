@@ -10,7 +10,7 @@
 [![Stack](https://img.shields.io/badge/Stack-React_Native_%E2%80%A2_NestJS_%E2%80%A2_Supabase-3ECF8E?style=for-the-badge)](./docs/ARCHITECTURE.md)
 [![AI Providers](https://img.shields.io/badge/AI-Groq_%E2%80%A2_Gemini_%E2%80%A2_OpenRouter-38BDF8?style=for-the-badge)](./docs/AI_ENGINE_GUIDE.md)
 
-[**Project Proposal**](./docs/PROPOSAL.md) • [**System Architecture**](./docs/ARCHITECTURE.md) • [**API Specification**](./docs/API_SPEC.md) • [**AI Engine Guide**](./docs/AI_ENGINE_GUIDE.md) • [**Contributing & Team Roles**](./CONTRIBUTING.md) • [**Friction Log**](./docs/FRICTION_LOG.md)
+[**Project Proposal**](./docs/PROPOSAL.md) • [**System Architecture**](./docs/ARCHITECTURE.md) • [**API Specification**](./docs/API_SPEC.md) • [**AI Engine Guide**](./docs/AI_ENGINE_GUIDE.md) • [**Repo Instructions**](./INSTRUCTIONS.md) • [**Contributing & Team Roles**](./CONTRIBUTING.md) • [**Friction Log**](./docs/FRICTION_LOG.md)
 
 </div>
 
@@ -55,7 +55,8 @@ wisp/
 ├── agents/                 # Specialized AI Agent Playbooks & Versioned Runtime Prompt Specifications
 ├── .github/workflows/      # Automated Continuous Integration Pipeline (ci.yml)
 ├── AGENTS.md               # Non-negotiable architectural & spoiler-safety invariants
-└── CONTRIBUTING.md         # Formal Role Distribution, Governance, Handover & Quality Gate Specification
+├── CONTRIBUTING.md         # Formal Role Distribution, Governance, Handover & Quality Gate Specification
+└── INSTRUCTIONS.md         # Strict Branching, 5-Branch PR Rules, GitHub Issues & Operational Protocol
 ```
 
 ---
@@ -122,8 +123,9 @@ npm run android:firetv
 
 | Document | Description |
 | :--- | :--- |
-| [**`docs/PROPOSAL.md`**](./docs/PROPOSAL.md) | Refined project proposal, hackathon alignment, functional scope, and cost-control strategy. |
+| [**`INSTRUCTIONS.md`**](./INSTRUCTIONS.md) | Strict 5-Branch Pull Request Policy, Two-Stage Merge Flow, GitHub Issues Use Cases & Operational Rules. |
 | [**`CONTRIBUTING.md`**](./CONTRIBUTING.md) | Formal Role Distribution, Work Coordination Framework, Change-Control Matrix, and Quality Gates. |
+| [**`docs/PROPOSAL.md`**](./docs/PROPOSAL.md) | Refined project proposal, hackathon alignment, functional scope, and cost-control strategy. |
 | [**`docs/ARCHITECTURE.md`**](./docs/ARCHITECTURE.md) | End-to-end data flow, temporal anti-spoiler architecture, and AI provider routing matrix. |
 | [**`docs/AI_ENGINE_GUIDE.md`**](./docs/AI_ENGINE_GUIDE.md) | Developer guide for building standalone AI features and model adapters in `@wisp/ai-engine`. |
 | [**`docs/API_SPEC.md`**](./docs/API_SPEC.md) | REST API contracts (`/health`, `/context/:episodeId`, `/wisp/features`, `/wisp/query`) & programmatic SDK. |
