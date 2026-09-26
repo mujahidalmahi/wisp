@@ -11,30 +11,32 @@
   - `hasTVPreferredFocus` enables predictable focus entry points on 10-foot overlays.
 - **Limitations:**
   - Modal/drawer focus trapping requires manual visibility coordination so background views do not steal D-pad focus.
-- **Would We Use It Again?** **Yes** — it provides the fastest path to a responsive, custom-styled 10-foot UI with shared TypeScript types across frontend and backend.
+- **Would We Use It Again?** **Yes** — it provides the fastest path to a responsive, custom-styled 10-foot UI with shared TypeScript types across frontend, `ai-engine`, and backend.
 
 ---
 
-## 2. NestJS + TypeScript (Backend & AI Gateway)
-- **Onboarding Experience:** Seamless modular architecture (`ContextModule`, `AiGatewayModule`, `SupabaseModule`).
+## 2. Modular AI Integration (`@wisp/ai-engine` + Node.js 24 Native TypeScript)
+- **Onboarding Experience:** Zero-build TypeScript execution in Node 24 (`node ai-engine/src/cli/playground.ts`) enabled instant prompt and feature testing without spinning up backend containers.
 - **Strengths:**
-  - DTO validation (`class-validator`) and clean dependency injection made swapping between `Groq`, `Gemini`, `OpenRouter`, and `Ollama` effortless.
+  - Decoupling `IContextSource`, `IAiModelAdapter`, and `IAiFeatureModule` allowed AI features and anti-spoiler temporal filters to be unit-tested in `<3ms` completely independent of the database.
+- **Limitations:**
+  - Node 24's strip-only TypeScript loader requires explicit `.ts` extensions, `import type`, and explicit class field declarations instead of constructor parameter properties (logged in `docs/FRICTION_LOG.md` `[FL-003]`).
+- **Would We Use It Again?** **Yes.**
+
+---
+
+## 3. NestJS + TypeScript (Backend & AI Gateway)
+- **Onboarding Experience:** Seamless modular architecture (`ContextModule`, `AiGatewayModule`, `SupabaseModule`) wrapping `@wisp/ai-engine`.
+- **Strengths:**
+  - DTO validation (`class-validator`) and clean dependency injection made exposing `@wisp/ai-engine` over REST effortless.
 - **Limitations:**
   - Cold starts on free-tier container hosts require lightweight keep-alive or Cloudflare Worker edge caching in front.
 - **Would We Use It Again?** **Yes.**
 
 ---
 
-## 3. Supabase PostgreSQL
-- **Onboarding Experience:** Instant schema provisioning and SQL RPC function authoring.
+## 4. Supabase PostgreSQL & Cloudflare Workers
+- **Onboarding Experience:** Instant schema provisioning, PL/pgSQL RPC authoring, and `<60s` edge worker setup via `wrangler`.
 - **Strengths:**
-  - Implementing `get_spoiler_safe_context()` directly as a PostgreSQL PL/pgSQL function allowed us to enforce `end_time_ms <= p_playback_ms` deterministically in a single database round-trip.
-- **Would We Use It Again?** **Yes.**
-
----
-
-## 4. Cloudflare Workers + KV + R2
-- **Onboarding Experience:** `wrangler` CLI makes local testing and edge deployment under 60 seconds.
-- **Strengths:**
-  - Caching AI responses by 15-second timestamp buckets in Workers KV eliminates redundant LLM calls and delivers `<20ms` repeat card loads on Fire TV.
+  - Implementing `get_spoiler_safe_context()` in PostgreSQL paired with Cloudflare Workers KV 15-second bucket caching guarantees both spoiler safety and `<20ms` repeat card loads on Fire TV.
 - **Would We Use It Again?** **Yes.**

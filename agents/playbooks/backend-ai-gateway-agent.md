@@ -1,10 +1,11 @@
-# Playbook: Backend & AI Gateway Agent
+# Playbook: Backend & Edge Gateway Agent (`server` Branch)
 
 ## Scope
-`backend/src/**`, `cloudflare/src/**`
+`backend/src/**`, `database/**`, `cloudflare/src/**`  
+**Dedicated Branch:** `server` (merged into `main`)
 
 ## Responsibilities
-1. Maintain the NestJS AI Gateway provider chain (`GroqProvider` -> `GeminiProvider` -> `OpenRouterProvider` -> `OllamaProvider`).
-2. Guarantee that every LLM request first resolves `TemporalProgramContext` via `ContextService.getSpoilerSafeContext()`.
-3. Enforce cost-control rules: 15-second timestamp bucket caching, max token limits (`<= 450`), and rate limiting.
-4. Keep Cloudflare Worker KV caching and R2 media streaming synchronized with NestJS DTOs.
+1. Maintain the NestJS HTTP boundary (`ContextController`, `AiGatewayController`, `HealthController`) and DTO validation (`wisp-query.dto.ts`).
+2. Wire Supabase PostgreSQL (`get_spoiler_safe_context` RPC) into `@wisp/ai-engine`'s `HybridContextSource` inside `ContextService`.
+3. Delegate AI feature execution (`POST /api/v1/wisp/query` and `GET /api/v1/wisp/features`) to `WispAiEngine` from `@wisp/ai-engine`.
+4. Keep Cloudflare Worker KV 15-second bucket caching and R2 media streaming synchronized with NestJS endpoints.

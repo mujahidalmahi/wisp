@@ -1,4 +1,4 @@
-# Wisp REST API Specification
+# Wisp REST & Programmatic API Specification
 
 Base URL (Local Dev / Fire OS Emulator): `http://10.0.2.2:3000/api/v1`  
 Base URL (Cloudflare Edge): `https://wisp-edge.your-subdomain.workers.dev/api/v1`
@@ -19,41 +19,49 @@ Base URL (Cloudflare Edge): `https://wisp-edge.your-subdomain.workers.dev/api/v1
 
 ---
 
-## 2. Stage-1 Instant Scene Context Lookup
-`GET /api/v1/context/:episodeId?playbackMs=135000`
+## 2. List Registered AI Features (`@wisp/ai-engine`)
+`GET /api/v1/wisp/features`
 
-Returns pre-computed scene metadata, unlocked entities, and zero-typing D-pad Quick Action Chips strictly bounded up to `playbackMs`.
+Returns all modular AI feature pipelines currently registered in `AiFeatureRegistry`.
 
 ### Response `200 OK`
 ```json
 {
-  "metadata": {
-    "program_title": "Tears of Steel",
-    "genre": "Sci-Fi / Cyberpunk",
-    "episode_title": "The Oude Kerk Protocol",
-    "season_number": 1,
-    "episode_number": 1,
-    "playback_position_ms": 135000
-  },
-  "active_scene": {
-    "scene_index": 2,
-    "scene_title": "Inside the Oude Kerk Dome",
-    "location_name": "Fortified Oude Kerk, Future Amsterdam",
-    "spoiler_safe_summary": "An older Thom enters the holographic simulation chamber while Captain Barley and his tech crew monitor the approaching robot swarm outside.",
-    "quick_action_chips": [
-      {
-        "id": "chip-4",
-        "label": "Catch me up to this moment",
-        "actionType": "episode_recap"
-      }
-    ]
-  }
+  "features": [
+    {
+      "actionType": "contextual_qa",
+      "description": "Answers viewer questions grounded strictly in watched scene context."
+    },
+    {
+      "actionType": "entity_explain",
+      "description": "Explains characters, locations, objects, or scientific terms without spoiling future twists."
+    },
+    {
+      "actionType": "scene_explain",
+      "description": "Explains what just happened in the current scene and character motives."
+    },
+    {
+      "actionType": "episode_recap",
+      "description": "Generates a spoiler-safe \"Catch Me Up\" summary up to the exact playback timestamp."
+    },
+    {
+      "actionType": "post_watch_quiz",
+      "description": "Generates a 4-option interactive trivia question grounded in scenes watched so far."
+    }
+  ]
 }
 ```
 
 ---
 
-## 3. Stage-2 Grounded AI Query
+## 3. Stage-1 Instant Scene Context Lookup
+`GET /api/v1/context/:episodeId?playbackMs=135000`
+
+Returns pre-computed scene metadata, unlocked entities, and zero-typing D-pad Quick Action Chips strictly bounded up to `playbackMs`.
+
+---
+
+## 4. Stage-2 Grounded AI Query
 `POST /api/v1/wisp/query`
 
 ### Request Body
@@ -94,4 +102,27 @@ Returns pre-computed scene metadata, unlocked entities, and zero-typing D-pad Qu
     }
   ]
 }
+```
+
+---
+
+## 5. Standalone Programmatic API (`@wisp/ai-engine`)
+
+When working on the `ai-integration` branch without NestJS or Supabase running:
+
+```ts
+import { WispAiEngine } from '@wisp/ai-engine';
+
+const engine = WispAiEngine.createStandalone({
+  groqApiKey: process.env.GROQ_API_KEY,
+});
+
+const sceneContext = await engine.getInstantSceneContext('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1', 135000);
+const responseCard = await engine.execute({
+  episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+  playbackPositionMs: 135000,
+  actionType: 'scene_explain',
+  prompt: 'Why are they recreating the bridge memory?',
+  profileMode: 'quick_glance',
+});
 ```

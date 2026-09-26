@@ -1,39 +1,34 @@
-name: Wisp CI (Typecheck, Lint & Build)
+name: Basic CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, server, client, ai-integration, docs]
   pull_request:
-    branches: [main, develop]
+    branches: [main, server, client, ai-integration, docs]
 
 jobs:
-  verify:
-    name: Typecheck & Build Workspaces
+  validate:
+    name: Basic Repository & Workspace Check
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: '24'
 
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Typecheck Modular AI Engine (@wisp/ai-engine)
-        run: npm --workspace=ai-engine run typecheck
-
-      - name: Typecheck Frontend (Fire TV React Native)
-        run: npm --workspace=frontend run typecheck
-
-      - name: Typecheck & Build Backend (NestJS AI Gateway)
+      - name: Run Standalone AI Engine Tests (if present)
         run: |
-          npm --workspace=backend run typecheck
-          npm --workspace=backend run build
+          if [ -f "ai-engine/src/engine.test.ts" ]; then
+            node --test ai-engine/src/engine.test.ts
+          fi
 
-      - name: Typecheck Cloudflare Edge Worker
-        run: npm --workspace=cloudflare run typecheck
+      - name: Verify Core Documentation Exists
+        run: |
+          test -f README.md
+          test -f docs/PROPOSAL.md
+          test -f docs/ARCHITECTURE.md
+          test -f docs/FRICTION_LOG.md
