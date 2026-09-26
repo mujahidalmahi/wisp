@@ -1,0 +1,18 @@
+name = "wisp-edge-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+workers_dev = true
+
+[vars]
+NESTJS_ORIGIN_URL = "http://localhost:3000"
+CACHE_TTL_SECONDS = "3600"
+
+# Uncomment after creating KV namespace: `npx wrangler kv namespace create WISP_CACHE`
+# [[kv_namespaces]]
+# binding = "WISP_CACHE"
+# id = "your-kv-namespace-id"
+
+# Uncomment after creating R2 bucket for open-movie demo streams: `npx wrangler r2 bucket create wisp-media`
+# [[r2_buckets]]
+# binding = "WISP_MEDIA_BUCKET"
+# bucket_name = "wisp-media"

@@ -1,0 +1,35 @@
+{
+  "name": "wisp-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wisp — AI-Powered Contextual Viewing for Fire TV (Amazon Developer Hackathon 2026)",
+  " motto": "A little more, when you need it.",
+  "workspaces": [
+    "ai-engine",
+    "frontend",
+    "backend",
+    "cloudflare"
+  ],
+  "scripts": {
+    "ai:playground": "npm --workspace=ai-engine run playground",
+    "dev:backend": "npm --workspace=backend run start:dev",
+    "dev:frontend": "npm --workspace=frontend run start",
+    "dev:edge": "npm --workspace=cloudflare run dev",
+    "build:backend": "npm --workspace=backend run build",
+    "build:edge": "npm --workspace=cloudflare run build",
+    "android:firetv": "npm --workspace=frontend run android",
+    "lint": "npm --workspaces --if-present run lint",
+    "typecheck": "npm --workspaces --if-present run typecheck",
+    "test": "npm --workspaces --if-present run test",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md,sql,yml}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.2"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "license": "MIT"
+}

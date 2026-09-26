@@ -1,0 +1,34 @@
+{
+  "name": "@wisp/backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wisp NestJS Application API, Temporal Context Engine & Multi-Provider AI Gateway",
+  "scripts": {
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "start:prod": "node dist/main",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@wisp/ai-engine": "*",
+    "@nestjs/common": "^10.4.4",
+    "@nestjs/config": "^3.2.3",
+    "@nestjs/core": "^10.4.4",
+    "@nestjs/platform-express": "^10.4.4",
+    "@nestjs/throttler": "^6.0.0",
+    "@supabase/supabase-js": "^2.45.4",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.4.5",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.16.5",
+    "typescript": "^5.6.2"
+  }
+}

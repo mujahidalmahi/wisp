@@ -1,0 +1,23 @@
+{
+  "name": "@wisp/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wisp Fire TV Client (React Native + TypeScript 10-Foot UI)",
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@wisp/ai-engine": "*",
+    "react": "18.3.1",
+    "react-native": "npm:react-native-tvos@0.75.3-0",
+    "react-native-video": "^6.6.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "typescript": "^5.6.2"
+  }
+}

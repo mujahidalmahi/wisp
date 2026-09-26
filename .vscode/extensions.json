@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "msjsdiag.vscode-react-native",
+    "Prisma.prisma"
+  ]
+}

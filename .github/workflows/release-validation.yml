@@ -1,0 +1,26 @@
+name: Build Fire TV APK & Backend Image
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build-backend-docker:
+    name: Verify Backend Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build NestJS Docker Image
+        run: docker build -t wisp-backend:latest ./backend
+
+  validate-database-sql:
+    name: Verify Supabase SQL Migrations & Seeds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check SQL Files Exist and Non-Empty
+        run: |
+          test -s database/migrations/0001_initial_wisp_schema.sql
+          test -s database/migrations/0002_temporal_context_functions.sql
+          test -s database/seeds/seed_demo_catalog.sql

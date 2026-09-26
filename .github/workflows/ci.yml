@@ -1,0 +1,39 @@
+name: Wisp CI (Typecheck, Lint & Build)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  verify:
+    name: Typecheck & Build Workspaces
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Typecheck Modular AI Engine (@wisp/ai-engine)
+        run: npm --workspace=ai-engine run typecheck
+
+      - name: Typecheck Frontend (Fire TV React Native)
+        run: npm --workspace=frontend run typecheck
+
+      - name: Typecheck & Build Backend (NestJS AI Gateway)
+        run: |
+          npm --workspace=backend run typecheck
+          npm --workspace=backend run build
+
+      - name: Typecheck Cloudflare Edge Worker
+        run: npm --workspace=cloudflare run typecheck
