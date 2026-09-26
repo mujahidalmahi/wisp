@@ -1,25 +1,39 @@
-# Branch Guide: `client` (Amazon Fire TV 10-Foot UI Workstream)
+# Branch Guide: `client` — Role Category III (Frontend, UI/UX)
 
-## 1. Branch Goal
-The **`client`** branch is dedicated to building, polishing, and validating Wisp's **10-Foot Amazon Fire TV React Native Application** (`frontend/`), including D-pad spatial focus navigation, video player surface, the **Two-Stage Instant Contextual Overlay Drawer**, **Zero-Typing Quick Action Chips**, and **Household Viewing Mode** selectors.
+- **Role Category:** `03 — Frontend, UI/UX`
+- **Assigned Team Members:** **Kazi Rahad Ali**, **Shahariar Hossain Jibon**
+- **Primary Workspaces:** [`frontend/`](../../frontend/README.md), [`docs/FIRE_TV_UX_GUIDE.md`](../FIRE_TV_UX_GUIDE.md)
 
-## 2. Primary Ownership Scope
-- **`frontend/`** — React Native (`react-native-tvos`) + TypeScript 10-foot UI components, D-pad remote hooks, API client, and TV theme tokens.
-- **`docs/FIRE_TV_UX_GUIDE.md`** — 10-foot typography, overscan rules, and remote key mappings.
-- **`agents/playbooks/fire-tv-ui-agent.md`** — Agent playbook for Fire TV UI engineering.
+---
 
-## 3. Active Tasks & Roadmap for `client`
-- [x] Scaffold 10-foot `VideoPlayerSurface`, `WispOverlayDrawer`, `QuickActionChips`, and `ProfileModeSelector`.
-- [x] Implement `useTVRemoteHandler` for Fire TV remote keys (`menu`, `longSelect`, `playPause`, `back`).
-- [x] Connect `WispApiClient` with automatic fallback to `@wisp/ai-engine`'s standalone context catalog when offline.
-- [ ] Build the **3-Genre Program Catalog Home Screen** (*Tears of Steel*, *Cosmic Origins: Deep Field*, *The Midnight Cipher*) with D-pad poster carousel.
-- [ ] Build the interactive **Post-Watch Trivia Quiz Card** (`quizPayload` 4-option D-pad selector with instant answer reveal).
-- [ ] Build the **Session Context Trail / Pinned Insights Drawer** so viewers can step back through previous cards opened during the episode.
-- [ ] Validate APK packaging and focus behavior on Fire OS Emulator / Fire TV hardware.
+## 1. Category Mandate
+Own the Fire TV user interface and 10-foot interaction experience, including remote/D-pad spatial focus navigation, screen structure, visual presentation, contextual overlays, and user-facing application states.
 
-## 4. Development & Verification Commands (`client`)
+---
+
+## 2. Principal Deliverables
+- Functional Fire TV client built with React Native (`react-native-tvos`) + TypeScript (`frontend/`).
+- Remote-friendly navigation and predictable D-pad focus behavior (`useTVRemoteHandler`, `hasTVPreferredFocus`).
+- Core viewing and contextual-assistance flows (`VideoPlayerSurface`, `WispOverlayDrawer`, `QuickActionChips`, `ProfileModeSelector`).
+- Integrated AI result presentation with complete loading, success, empty, error, timeout, and recovery states.
+- Submission-ready demonstration flow respecting 10-foot readability (`>= 22sp`) and 5% overscan margins.
+
+---
+
+## 3. Dependencies & Coordination Matrix
+
+| Working Relationship | Required Coordination |
+| :--- | :--- |
+| **Backend, Database & Security (`server`)** | Consume documented REST APIs, data structures, session behavior, and error contracts (`WispApiClient`). |
+| **AI Integration (`ai-integration`)** | Consume AI response structures (`WispResponseCard`), interaction triggers, loading behavior, and fallback states. |
+| **QA & Testing (`testing`)** | Provide testable builds and communicate changes to D-pad navigation, components, and interaction behavior. |
+| **Research & Documentation (`docs`)** | Provide screen flows, UI behavior descriptions, and implementation details required for documentation. |
+
+---
+
+## 4. Development & Verification Commands
 ```bash
 npm run dev:frontend
 npm run android:firetv
-npm --workspace=frontend run typecheck
+npm run test:frontend
 ```

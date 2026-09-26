@@ -1,36 +1,39 @@
-# Branch Guide: `testing` (QA, Multi-Layer Verification & Pre-Release Staging Branch)
+# Branch Guide: `testing` — Role Category IV (QA & Testing)
 
-## 1. Branch Goal
-The **`testing`** branch serves two core roles in Wisp's development workflow:
-1. **Dedicated QA & Test Authoring Workstream:** Developing and expanding automated tests inside [`testing/`](../../testing/README.md) across `ai-integration`, `backend`, `frontend`, `database`, `cloudflare`, and `full-application` E2E suites.
-2. **Pre-`main` Staging & Integration Gate:** Merging feature updates from `ai-integration`, `server`, and `client` to verify full end-to-end compatibility and the **7-Step Working-Feature Validation Gate** before promoting to `main`.
-
----
-
-## 2. Primary Ownership Scope
-- **`testing/`** — All 6 test categories (`ai-integration/`, `backend/`, `frontend/`, `database/`, `cloudflare/`, `full-application/`) and `testing/helpers/`.
-- **`.github/workflows/ci.yml`** — Continuous integration test runner configuration.
-- **`agents/playbooks/testing-qa-agent.md`** — QA & Verification Agent playbook.
+- **Role Category:** `04 — QA & Testing`
+- **Assigned Team Member:** **Taufiq E Elahi**
+- **Primary Workspaces:** [`testing/`](../../testing/README.md), [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
 
 ---
 
-## 3. Active Tasks & Roadmap for `testing`
-- [x] Create root `testing/` workspace with 12 test suites (28 automated tests across all 6 layers).
-- [x] Verify deterministic temporal anti-spoiler boundaries (`00:35` vs `02:02` vs `02:05`).
-- [x] Verify multi-provider AI failover and 15-second timestamp bucket caching.
-- [x] Automate the 7-Step Hackathon Validation Gate and credential-leak checks.
-- [ ] Add live HTTP contract tests hitting a running NestJS + Cloudflare Worker instance.
-- [ ] Add latency regression benchmarks for Stage-1 Instant Context (`<100ms`) and Stage-2 AI Cards (`<1500ms`).
-- [ ] Add Fire OS / Android TV emulator ADB smoke-test script for remote keycode injection (`KEYCODE_MENU`, `KEYCODE_DPAD_CENTER`, `KEYCODE_BACK`).
+## 1. Category Mandate
+Independently verify that implemented functionality behaves as intended across all layers and that the integrated product is suitable for demonstration and hackathon submission. Hold authority to identify and return incomplete functionality where acceptance criteria or the **7-Step Quality Gate** are not satisfied.
 
 ---
 
-## 4. Verification Commands (`testing`)
+## 2. Principal Deliverables
+- Structured multi-layer test plan and automated test suites (`testing/ai-integration/`, `testing/backend/`, `testing/frontend/`, `testing/database/`, `testing/cloudflare/`, `testing/full-application/`).
+- Integration and end-to-end test results (`Frontend → Backend → Context/Data → AI → Frontend`).
+- Defect/issue register with reproduction steps, expected vs. actual behavior, severity, and verification status.
+- Regression verification records and pre-submission release-readiness assessment.
+
+---
+
+## 3. Quality Gate Authority (Section 7.3)
+A major feature shall not be considered complete solely because an individual component functions. The complete path must be verified:
+1. Invocation on the Fire TV interface
+2. Request reaching the real backend
+3. Retrieval of real spoiler-safe application context/data
+4. Use of a real AI provider or validated local model
+5. Actual consumption of the returned result
+6. Visible 10-foot presentation on the target environment
+7. Appropriate failure handling
+
+---
+
+## 4. Verification Commands
 ```bash
-# Run all 12 test suites across all 6 categories
 npm test
-
-# Run individual domain test suites
 npm run test:ai
 npm run test:backend
 npm run test:frontend
