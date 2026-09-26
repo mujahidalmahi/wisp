@@ -3,8 +3,6 @@
 > **"A little more, when you need it."**
 > AI-Powered Contextual Viewing for Amazon Fire TV — *Amazon Developer Hackathon 2026 (Fire TV Track)*
 
-> **Active Branch Guide:** See [**`BRANCH.md`**](./BRANCH.md) for the specific goal, ownership scope, task checklist, and workflow of the branch you are currently on (`main`, `server`, `client`, `ai-integration`, or `docs`).
-
 ---
 
 ## Overview
@@ -28,34 +26,33 @@ Rather than bolting a generic desktop chatbot onto a TV screen, Wisp treats **pl
 
 ---
 
-## Monorepo Structure (Identical Across All Branches for Clean Merges)
+## Monorepo Structure
 
 ```text
 wisp/
-├── BRANCH.md               # Branch-specific goal, tasks, ownership & workflow guide
 ├── ai-engine/              # Standalone modular AI integration & feature segment (@wisp/ai-engine)
 ├── frontend/               # React Native + TypeScript Fire TV client (10-foot UI, D-pad focus, player & overlay)
 ├── backend/                # NestJS + TypeScript API wrapping @wisp/ai-engine & Supabase
 ├── database/               # Supabase PostgreSQL migrations, anti-spoiler RPC functions & 3-genre demo seeds
 ├── cloudflare/             # Cloudflare Worker edge gateway (KV cache, rate limiting & R2 video streaming)
-├── docs/                   # Refined proposal, architecture, AI engine guide, Fire TV UX, friction log & feedback
+├── docs/                   # Proposals, architecture, branch guides (docs/branches/), friction log & feedback
 ├── agents/                 # AI agent playbooks, system prompts & coding invariants
 └── .github/workflows/      # Basic CI validation pipeline (ci.yml)
 ```
 
 ---
 
-## Repository Branches
+## Repository Branches & Workstream Guides
 
-All branches contain the full monorepo so every developer can test end-to-end and merge into `main` without file-deletion conflicts. Each branch includes a tailored [`BRANCH.md`](./BRANCH.md) defining its active focus:
+All branches start from the exact same baseline commit and directory tree so every developer can test end-to-end and merge into `main` cleanly:
 
-| Branch | Focus Area | Primary Directories Owned |
-| :--- | :--- | :--- |
-| **`main`** | Production integration, end-to-end validation gates & release readiness. | All workspaces (`frontend/`, `backend/`, `database/`, `cloudflare/`, `ai-engine/`, `docs/`) |
-| **`ai-integration`** | Modular AI features, prompts, LLM provider adapters & standalone temporal filtering. | `ai-engine/`, `agents/prompts/`, `docs/AI_ENGINE_GUIDE.md` |
-| **`server`** | NestJS REST API, Supabase PostgreSQL schema/RPCs/seeds & Cloudflare Worker edge gateway. | `backend/`, `database/`, `cloudflare/` |
-| **`client`** | 10-foot Amazon Fire TV React Native UI, D-pad spatial focus & video player overlay. | `frontend/`, `docs/FIRE_TV_UX_GUIDE.md` |
-| **`docs`** | Project proposal, architecture specs, Hackathon Friction Log (10% bonus) & product feedback. | `docs/`, `agents/` |
+| Branch | Branch Guide (Goals & Tasks) | Focus Area | Primary Directories Owned |
+| :--- | :--- | :--- | :--- |
+| **`main`** | [**`docs/branches/MAIN.md`**](./docs/branches/MAIN.md) | Production integration, end-to-end validation gates & release readiness. | All workspaces (`frontend/`, `backend/`, `database/`, `cloudflare/`, `ai-engine/`, `docs/`) |
+| **`ai-integration`** | [**`docs/branches/AI_INTEGRATION.md`**](./docs/branches/AI_INTEGRATION.md) | Modular AI features, prompts, LLM provider adapters & standalone temporal filtering. | `ai-engine/`, `agents/prompts/`, `docs/AI_ENGINE_GUIDE.md` |
+| **`server`** | [**`docs/branches/SERVER.md`**](./docs/branches/SERVER.md) | NestJS REST API, Supabase PostgreSQL schema/RPCs/seeds & Cloudflare Worker edge gateway. | `backend/`, `database/`, `cloudflare/` |
+| **`client`** | [**`docs/branches/CLIENT.md`**](./docs/branches/CLIENT.md) | 10-foot Amazon Fire TV React Native UI, D-pad spatial focus & video player overlay. | `frontend/`, `docs/FIRE_TV_UX_GUIDE.md` |
+| **`docs`** | [**`docs/branches/DOCS.md`**](./docs/branches/DOCS.md) | Project proposal, architecture specs, Hackathon Friction Log (10% bonus) & product feedback. | `docs/`, `agents/` |
 
 ---
 
@@ -89,7 +86,6 @@ npm run android:firetv
 
 ## Documentation Index
 
-- [**Branch Goal & Task Guide (`BRANCH.md`)**](./BRANCH.md) — Current branch mission, tasks, and merge checklist
 - [**Refined Project Proposal**](./docs/PROPOSAL.md) — Executive summary, hackathon fit, refined scope & implementation plan
 - [**Modular AI Engine Guide (`@wisp/ai-engine`)**](./docs/AI_ENGINE_GUIDE.md) — Building & testing AI features and providers without backend/DB
 - [**System Architecture**](./docs/ARCHITECTURE.md) — End-to-end request flow, branch mapping, temporal anti-spoiler SQL, and AI routing
