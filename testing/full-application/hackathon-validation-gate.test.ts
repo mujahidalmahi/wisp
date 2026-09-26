@@ -21,6 +21,7 @@ describe('Full Application: Hackathon Submission Readiness & 7-Step Validation G
       'docs/branches/SERVER.md',
       'docs/branches/CLIENT.md',
       'docs/branches/AI_INTEGRATION.md',
+      'docs/branches/TESTING.md',
       'docs/branches/DOCS.md',
     ];
 

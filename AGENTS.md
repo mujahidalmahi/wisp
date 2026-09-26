@@ -15,5 +15,6 @@ This repository builds **Wisp** (*AI-Powered Contextual Viewing for Amazon Fire 
 - **Modular AI Integration Agent (`ai-integration` branch):** [`agents/playbooks/ai-engine-agent.md`](./agents/playbooks/ai-engine-agent.md)
 - **Fire TV 10-Foot UI Agent (`client` branch):** [`agents/playbooks/fire-tv-ui-agent.md`](./agents/playbooks/fire-tv-ui-agent.md)
 - **Backend & AI Gateway Agent (`server` branch):** [`agents/playbooks/backend-ai-gateway-agent.md`](./agents/playbooks/backend-ai-gateway-agent.md)
+- **Testing, QA & Verification Agent (`testing` branch):** [`agents/playbooks/testing-qa-agent.md`](./agents/playbooks/testing-qa-agent.md)
 - **Content & Temporal Graph Curation Agent (`server` / `ai-integration`):** [`agents/playbooks/content-curation-agent.md`](./agents/playbooks/content-curation-agent.md)
 - **Runtime Prompt Specifications (`docs` / `ai-integration`):** [`agents/prompts/`](./agents/prompts/)

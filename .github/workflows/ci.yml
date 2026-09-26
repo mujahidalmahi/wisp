@@ -2,9 +2,9 @@ name: Basic CI
 
 on:
   push:
-    branches: [main, server, client, ai-integration, docs]
+    branches: [main, server, client, ai-integration, testing, docs]
   pull_request:
-    branches: [main, server, client, ai-integration, docs]
+    branches: [main, server, client, ai-integration, testing, docs]
 
 jobs:
   validate:

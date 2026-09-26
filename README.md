@@ -53,6 +53,7 @@ All branches start from the exact same baseline commit and directory tree so eve
 | **`ai-integration`** | [**`docs/branches/AI_INTEGRATION.md`**](./docs/branches/AI_INTEGRATION.md) | Modular AI features, prompts, LLM provider adapters & standalone temporal filtering. | `ai-engine/`, `agents/prompts/`, `docs/AI_ENGINE_GUIDE.md` |
 | **`server`** | [**`docs/branches/SERVER.md`**](./docs/branches/SERVER.md) | NestJS REST API, Supabase PostgreSQL schema/RPCs/seeds & Cloudflare Worker edge gateway. | `backend/`, `database/`, `cloudflare/` |
 | **`client`** | [**`docs/branches/CLIENT.md`**](./docs/branches/CLIENT.md) | 10-foot Amazon Fire TV React Native UI, D-pad spatial focus & video player overlay. | `frontend/`, `docs/FIRE_TV_UX_GUIDE.md` |
+| **`testing`** | [**`docs/branches/TESTING.md`**](./docs/branches/TESTING.md) | Multi-layer QA test suites (`ai-integration`, `backend`, `frontend`, `database`, `cloudflare`, `full-application`) & pre-release staging. | `testing/`, `.github/workflows/ci.yml` |
 | **`docs`** | [**`docs/branches/DOCS.md`**](./docs/branches/DOCS.md) | Project proposal, architecture specs, Hackathon Friction Log (10% bonus) & product feedback. | `docs/`, `agents/` |
 
 ---
