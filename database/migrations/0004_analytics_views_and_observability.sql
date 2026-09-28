@@ -1,8 +1,11 @@
 -- ============================================================================
 -- Migration: 0004_analytics_views_and_observability.sql
--- Purpose:   Production Observability Views, Exact P50/P95/P99 Latency
+-- Purpose:   Production Observability Views, Exact P50/P99 Latency
 --            Percentiles, Scene Engagement Hotspots, Database Health RPC
---            & Automated Cache Maintenance
+--            & Automated Cache Maintenance.
+-- Security:  All analytical views and observability/maintenance RPCs are
+--            explicitly revoked from `PUBLIC, anon, authenticated` and
+--            restricted to `service_role` (`assert_service_role_caller`).
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -152,8 +155,25 @@ from public.ai_response_cache;
 comment on view public.v_cache_efficiency_summary is
   'Summarizes active vs. expired 15-second cache buckets, cumulative cache hits, and total latency saved.';
 
+-- Restrict direct view reads to service_role so untrusted callers cannot bypass table RLS via views:
+revoke all on table
+  public.v_episode_temporal_coverage,
+  public.v_ai_provider_performance,
+  public.v_latency_percentiles_by_provider,
+  public.v_scene_engagement_hotspots,
+  public.v_cache_efficiency_summary
+from public, anon, authenticated;
+
+grant select on table
+  public.v_episode_temporal_coverage,
+  public.v_ai_provider_performance,
+  public.v_latency_percentiles_by_provider,
+  public.v_scene_engagement_hotspots,
+  public.v_cache_efficiency_summary
+to service_role;
+
 -- ----------------------------------------------------------------------------
--- 6. Observability RPC: public.get_database_health_and_metrics
+-- 6. Observability RPC: public.get_database_health_and_metrics (service_role)
 --    Returns a single JSONB snapshot for /api/v1/health and monitoring tools.
 -- ----------------------------------------------------------------------------
 create or replace function public.get_database_health_and_metrics()
@@ -170,6 +190,8 @@ declare
   v_percentile_stats jsonb;
   v_spoiler_audit_stats jsonb;
 begin
+  perform public.assert_service_role_caller('get_database_health_and_metrics');
+
   select jsonb_build_object(
     'programs_count', (select count(*) from public.programs where is_active = true),
     'episodes_count', (select count(*) from public.episodes where is_published = true),
@@ -227,10 +249,10 @@ end;
 $$;
 
 comment on function public.get_database_health_and_metrics() is
-  'Returns a unified JSONB telemetry snapshot of catalog counts, cache efficiency, provider latency percentiles, and spoiler audits.';
+  'Backend-only (service_role) RPC returning a unified JSONB telemetry snapshot of catalog counts, cache efficiency, provider latency percentiles, and spoiler audits.';
 
 -- ----------------------------------------------------------------------------
--- 7. Maintenance RPC: public.purge_expired_cache_and_rate_limits
+-- 7. Maintenance RPC: public.purge_expired_cache_and_rate_limits (service_role)
 --    Cleans up expired AI cache buckets, expired sessions & stale rate windows.
 -- ----------------------------------------------------------------------------
 create or replace function public.purge_expired_cache_and_rate_limits()
@@ -245,6 +267,8 @@ declare
   v_deleted_session_rows integer;
   v_deleted_rate_rows integer;
 begin
+  perform public.assert_service_role_caller('purge_expired_cache_and_rate_limits');
+
   delete from public.ai_response_cache
   where expires_at <= now();
   get diagnostics v_deleted_cache_rows = row_count;
@@ -267,7 +291,10 @@ end;
 $$;
 
 comment on function public.purge_expired_cache_and_rate_limits() is
-  'Maintenance procedure pruning expired AI cache buckets, expired viewing sessions, and stale rate-limit windows.';
+  'Backend-only (service_role) maintenance procedure pruning expired AI cache buckets, expired viewing sessions, and stale rate-limit windows.';
 
-grant execute on function public.get_database_health_and_metrics() to anon, authenticated, service_role;
+revoke all on function public.get_database_health_and_metrics() from public, anon, authenticated;
+grant execute on function public.get_database_health_and_metrics() to service_role;
+
+revoke all on function public.purge_expired_cache_and_rate_limits() from public, anon, authenticated;
 grant execute on function public.purge_expired_cache_and_rate_limits() to service_role;

@@ -1,25 +1,65 @@
 -- ============================================================================
 -- Migration: 0003_security_rls_and_triggers.sql
--- Purpose:   1. Idempotent Forward Upgrade Backfill (ensuring any deployment
---               where legacy 0001/0002 were already marked applied still
---               receives all new columns, generated fields, and tables).
---            2. Strict Anti-Spoiler Row-Level Security (RLS) Policies on all
---               16 tables (no open USING (true) public reads on spoiler tables;
---               revoked direct untrusted writes; server-trusted playback gate).
---            3. Automated updated_at Timestamp Maintenance Triggers.
---            4.双向 (Bidirectional) Episode Duration Boundary Enforcement:
---               - Child INSERT/UPDATE trigger (trg_fn_validate_episode_temporal_bounds)
---               - Parent Episode duration_ms shrink guard (trg_fn_prevent_unsafe_episode_duration_shrink)
---            5. Fault-Tolerant Real-Time Interaction Spoiler Audit Trigger
---               (validates JSON type/numeric format before bigint cast).
+-- Purpose:
+--   1. Explicit Preflight Dependency Verification & Idempotent Schema Upgrade:
+--      Verifies that prerequisite types and base tables from
+--      `0001_initial_wisp_schema.sql` are present before applying changes,
+--      failing fast with a clear diagnostic if `0001` was never applied.
+--   2. Strict Zero-Trust Row-Level Security (RLS) Policies on all 16 tables:
+--      - No open `USING (true)` policies on spoiler-sensitive tables.
+--      - No open `USING (true)` policies on tenant/device tables (`profiles`,
+--        `conversation_sessions`, `interaction_history`); policies are strictly
+--        bound to verified JWT/server claims (`current_trusted_device_id()` and
+--        `current_trusted_profile_id()`), and direct anonymous table access is
+--        revoked.
+--   3. Automated `updated_at` Timestamp Maintenance Triggers.
+--   4. Bidirectional Episode Duration Boundary Enforcement:
+--      - Child INSERT/UPDATE trigger (`trg_fn_validate_episode_temporal_bounds`)
+--      - Parent Episode `duration_ms` shrink guard (`trg_fn_prevent_unsafe_episode_duration_shrink`)
+--   5. Fault-Tolerant Real-Time Interaction Spoiler Audit Trigger
+--      (validates JSON type/numeric format before `bigint` cast on both
+--      INSERT and UPDATE).
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 0. Idempotent Forward-Migration Guard for Pre-Existing Deployments
---    Ensures that if a migration runner skipped 0001 because a legacy 0001
---    was already recorded, all new columns, generated columns, constraints,
---    and tables exist before RLS policies, triggers, and views are applied.
+-- 0. Preflight Dependency Verification & Forward-Upgrade Assurance
+--    Explicitly verifies that prerequisite base objects from
+--    `0001_initial_wisp_schema.sql` exist before executing any DDL changes,
+--    preventing partial migration failure on misconfigured environments.
 -- ----------------------------------------------------------------------------
+do $$
+declare
+  v_missing text[] := array[]::text[];
+  v_tbl text;
+begin
+  if to_regtype('public.household_profile_mode') is null then
+    v_missing := array_append(v_missing, 'type public.household_profile_mode');
+  end if;
+
+  foreach v_tbl in array array[
+    'public.profiles',
+    'public.programs',
+    'public.episodes',
+    'public.scene_contexts',
+    'public.transcript_segments',
+    'public.entities',
+    'public.entity_appearances',
+    'public.ai_response_cache',
+    'public.interaction_history'
+  ]
+  loop
+    if to_regclass(v_tbl) is null then
+      v_missing := array_append(v_missing, 'table ' || v_tbl);
+    end if;
+  end loop;
+
+  if array_length(v_missing, 1) is not null then
+    raise exception 'Preflight migration check failed in 0003_security_rls_and_triggers.sql: missing prerequisite base objects from 0001_initial_wisp_schema.sql (%). Please apply 0001_initial_wisp_schema.sql first.',
+      array_to_string(v_missing, ', ')
+      using errcode = '42P01';
+  end if;
+end $$;
+
 create extension if not exists "pgcrypto";
 create extension if not exists "pg_trgm";
 create extension if not exists "btree_gist";
@@ -36,7 +76,8 @@ do $$ begin
   end if;
 end $$;
 
-alter table if exists public.profiles
+-- Ensure all extended columns and tables exist if upgrading from the legacy 9-table 0001 schema:
+alter table public.profiles
   add column if not exists preferred_language text not null default 'en',
   add column if not exists voice_tts_enabled boolean not null default true,
   add column if not exists auto_pause_on_overlay boolean not null default false,
@@ -45,14 +86,14 @@ alter table if exists public.profiles
   add column if not exists last_active_at timestamptz not null default now(),
   add column if not exists updated_at timestamptz not null default now();
 
-alter table if exists public.programs
+alter table public.programs
   add column if not exists content_advisories text[] not null default '{}'::text[],
   add column if not exists original_language text not null default 'en',
   add column if not exists total_seasons integer not null default 1,
   add column if not exists is_active boolean not null default true,
   add column if not exists updated_at timestamptz not null default now();
 
-alter table if exists public.episodes
+alter table public.episodes
   add column if not exists intro_end_ms bigint not null default 0,
   add column if not exists credits_start_ms bigint,
   add column if not exists default_bucket_sec integer not null default 15,
@@ -61,14 +102,38 @@ alter table if exists public.episodes
   add column if not exists is_published boolean not null default true,
   add column if not exists updated_at timestamptz not null default now();
 
-alter table if exists public.scene_contexts
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.episodes'::regclass
+      and conname = 'episodes_intro_end_ms_bounds_check'
+  ) then
+    alter table public.episodes
+      add constraint episodes_intro_end_ms_bounds_check
+      check (intro_end_ms >= 0 and intro_end_ms <= duration_ms);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.episodes'::regclass
+      and conname = 'episodes_credits_start_ms_bounds_check'
+  ) then
+    alter table public.episodes
+      add constraint episodes_credits_start_ms_bounds_check
+      check (credits_start_ms is null or (credits_start_ms >= 0 and credits_start_ms <= duration_ms));
+  end if;
+exception
+  when duplicate_object then null;
+end $$;
+
+alter table public.scene_contexts
   add column if not exists time_range int8range
     generated always as (int8range(start_time_ms, end_time_ms, '[]')) stored,
   add column if not exists mood_tag text not null default 'narrative',
   add column if not exists narrative_tension_score smallint not null default 5,
   add column if not exists updated_at timestamptz not null default now();
 
-alter table if exists public.transcript_segments
+alter table public.transcript_segments
   add column if not exists time_range int8range
     generated always as (int8range(start_time_ms, end_time_ms, '[]')) stored,
   add column if not exists confidence_score numeric(4,3) not null default 1.000,
@@ -79,23 +144,23 @@ alter table if exists public.transcript_segments
     setweight(to_tsvector('english', coalesce(visual_cue, '')), 'C')
   ) stored;
 
-alter table if exists public.entities
+alter table public.entities
   add column if not exists aliases text[] not null default '{}'::text[],
   add column if not exists spoiler_floor_ms bigint not null default 0,
   add column if not exists updated_at timestamptz not null default now();
 
-alter table if exists public.entity_appearances
+alter table public.entity_appearances
   add column if not exists is_plot_twist boolean not null default false,
   add column if not exists importance_rank smallint not null default 1;
 
-alter table if exists public.ai_response_cache
+alter table public.ai_response_cache
   add column if not exists hit_count bigint not null default 0,
   add column if not exists origin_latency_ms integer,
   add column if not exists token_count integer,
   add column if not exists expires_at timestamptz not null default (now() + interval '24 hours'),
   add column if not exists last_accessed_at timestamptz not null default now();
 
-alter table if exists public.interaction_history
+alter table public.interaction_history
   add column if not exists cache_hit boolean not null default false,
   add column if not exists prompt_tokens integer,
   add column if not exists completion_tokens integer,
@@ -105,7 +170,6 @@ alter table if exists public.interaction_history
   add column if not exists response_card jsonb not null default '{}'::jsonb,
   add column if not exists is_pinned boolean not null default false;
 
--- Ensure the 7 newly introduced tables exist if 0001 was already marked applied on an older deployment:
 create table if not exists public.entity_relationships (
   id uuid primary key default gen_random_uuid(),
   episode_id uuid not null references public.episodes(id) on delete cascade,
@@ -229,6 +293,106 @@ exception
 end $$;
 
 -- ----------------------------------------------------------------------------
+-- 0B. Trusted Subject / Device Claim Resolver Functions
+--     Used by RLS policies on `profiles`, `conversation_sessions`, and
+--     `interaction_history` so client-supplied `device_id` values are never
+--     trusted without a matching signed JWT claim (`request.jwt.claims`).
+--     * Anonymous (`anon`) callers always resolve to NULL.
+--     * Server-side GUC overrides (`wisp.trusted_device_id`) are honored ONLY
+--       when `public.is_service_role_caller()` is true, preventing untrusted
+--       SQL sessions from spoofing identity via `set_config(...)`.
+-- ----------------------------------------------------------------------------
+create or replace function public.current_trusted_device_id()
+returns text
+language plpgsql
+stable
+set search_path = public
+as $$
+declare
+  v_active_role text := coalesce(nullif(current_setting('role', true), ''), 'none');
+  v_server_device text := nullif(btrim(current_setting('wisp.trusted_device_id', true)), '');
+  v_claims_raw text := nullif(current_setting('request.jwt.claims', true), '');
+  v_jwt_device text := nullif(btrim(current_setting('request.jwt.claim.device_id', true)), '');
+begin
+  if v_active_role = 'anon' then
+    return null;
+  end if;
+
+  if public.is_service_role_caller() and v_server_device is not null then
+    return v_server_device;
+  end if;
+
+  if v_claims_raw is not null then
+    begin
+      return nullif(btrim((v_claims_raw::jsonb)->>'device_id'), '');
+    exception
+      when others then
+        return null;
+    end;
+  end if;
+
+  if v_jwt_device is not null then
+    return v_jwt_device;
+  end if;
+
+  return null;
+end;
+$$;
+
+comment on function public.current_trusted_device_id() is
+  'Returns the authenticated Fire TV device_id from signed JWT claims (or server-verified wisp.trusted_device_id when called by service_role).';
+
+create or replace function public.current_trusted_profile_id()
+returns uuid
+language plpgsql
+stable
+set search_path = public
+as $$
+declare
+  v_active_role text := coalesce(nullif(current_setting('role', true), ''), 'none');
+  v_server_profile text := nullif(btrim(current_setting('wisp.trusted_profile_id', true)), '');
+  v_claims_raw text := nullif(current_setting('request.jwt.claims', true), '');
+  v_jwt_sub text := nullif(btrim(current_setting('request.jwt.claim.sub', true)), '');
+  v_raw text := null;
+begin
+  if v_active_role = 'anon' then
+    return null;
+  end if;
+
+  if public.is_service_role_caller() and v_server_profile is not null then
+    v_raw := v_server_profile;
+  elsif v_claims_raw is not null then
+    begin
+      v_raw := coalesce(
+        nullif(btrim((v_claims_raw::jsonb)->>'profile_id'), ''),
+        nullif(btrim((v_claims_raw::jsonb)->>'sub'), '')
+      );
+    exception
+      when others then
+        v_raw := null;
+    end;
+  elsif v_jwt_sub is not null then
+    v_raw := v_jwt_sub;
+  end if;
+
+  if v_raw is not null and v_raw ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+    return v_raw::uuid;
+  end if;
+
+  return null;
+end;
+$$;
+
+comment on function public.current_trusted_profile_id() is
+  'Returns the authenticated household profile UUID from signed JWT claims (or server-verified wisp.trusted_profile_id when called by service_role).';
+
+revoke all on function public.current_trusted_device_id() from public;
+grant execute on function public.current_trusted_device_id() to anon, authenticated, service_role;
+
+revoke all on function public.current_trusted_profile_id() from public;
+grant execute on function public.current_trusted_profile_id() to anon, authenticated, service_role;
+
+-- ----------------------------------------------------------------------------
 -- 1. Enable Row-Level Security (RLS) on All 16 Production Tables
 -- ----------------------------------------------------------------------------
 alter table public.profiles enable row level security;
@@ -249,10 +413,10 @@ alter table public.device_rate_limits enable row level security;
 alter table public.spoiler_audit_log enable row level security;
 
 -- ----------------------------------------------------------------------------
--- 2. Privilege Hardening & Anti-Spoiler Row-Level Security Policies
+-- 2. Privilege Hardening & Zero-Trust Row-Level Security Policies
 -- ----------------------------------------------------------------------------
 
--- 2.1 Remove any legacy permissive public SELECT policies on spoiler-sensitive tables
+-- 2.1 Remove any legacy permissive public/unscoped policies
 drop policy if exists "Allow public read access on scene_contexts" on public.scene_contexts;
 drop policy if exists "Allow public read access on transcript_segments" on public.transcript_segments;
 drop policy if exists "Allow public read access on entities" on public.entities;
@@ -260,10 +424,20 @@ drop policy if exists "Allow public read access on entity_appearances" on public
 drop policy if exists "Allow public read access on entity_relationships" on public.entity_relationships;
 drop policy if exists "Allow public read access on episode_quizzes" on public.episode_quizzes;
 drop policy if exists "Allow public read access on temporal_embeddings" on public.temporal_embeddings;
+drop policy if exists "Allow read access on profiles" on public.profiles;
+drop policy if exists "Allow profile creation and mode updates" on public.profiles;
+drop policy if exists "Allow profile updates by device" on public.profiles;
+drop policy if exists "Allow read access on conversation_sessions" on public.conversation_sessions;
+drop policy if exists "Allow upsert on conversation_sessions" on public.conversation_sessions;
+drop policy if exists "Allow update on conversation_sessions" on public.conversation_sessions;
+drop policy if exists "Allow read access on interaction_history" on public.interaction_history;
+drop policy if exists "Allow inserting interaction_history" on public.interaction_history;
 
--- 2.2 Revoke direct untrusted writes on catalog, spoiler-sensitive, cache, rate-limit & audit tables,
---     and revoke direct untrusted SELECT on raw spoiler-sensitive tables so clients must use the
---     SECURITY DEFINER anti-spoiler RPCs.
+-- 2.2 Revoke direct untrusted access on spoiler-sensitive, tenant-scoped, and internal tables.
+--     * Anonymous (`anon`) callers can only read active `programs` and published `episodes`
+--       or invoke the read-only spoiler-safe RPCs.
+--     * `authenticated` callers can only access `profiles`, `conversation_sessions`, and
+--       read `interaction_history` rows bound to their verified JWT device/profile claim.
 revoke all on table
   public.scene_contexts,
   public.transcript_segments,
@@ -276,12 +450,22 @@ revoke all on table
   public.ai_provider_metrics,
   public.device_rate_limits,
   public.spoiler_audit_log
-from anon, authenticated;
+from public, anon, authenticated;
+
+revoke all on table
+  public.profiles,
+  public.conversation_sessions,
+  public.interaction_history
+from public, anon;
 
 revoke insert, update, delete, truncate on table
   public.programs,
   public.episodes
-from anon, authenticated;
+from public, anon, authenticated;
+
+revoke insert, update, delete, truncate on table
+  public.interaction_history
+from authenticated;
 
 grant select on table
   public.programs,
@@ -291,11 +475,11 @@ to anon, authenticated, service_role;
 grant select, insert, update on table
   public.profiles,
   public.conversation_sessions
-to anon, authenticated, service_role;
+to authenticated, service_role;
 
-grant select, insert on table
+grant select on table
   public.interaction_history
-to anon, authenticated, service_role;
+to authenticated, service_role;
 
 grant all on all tables in schema public to service_role;
 
@@ -306,159 +490,273 @@ create policy "Allow public read access on active programs"
   to anon, authenticated, service_role
   using (is_active = true);
 
+drop policy if exists "Service role full access on programs" on public.programs;
+create policy "Service role full access on programs"
+  on public.programs for all
+  to service_role
+  using (true)
+  with check (true);
+
 drop policy if exists "Allow public read access on published episodes" on public.episodes;
 create policy "Allow public read access on published episodes"
   on public.episodes for select
   to anon, authenticated, service_role
   using (is_published = true);
 
--- 2.4 Spoiler-Sensitive Tables: Trusted Server Role + Server-Verified Playback Gate Only
---     Direct client queries without a server-injected wisp.trusted_playback_ms GUC are denied.
---     All normal client reads go through the SECURITY DEFINER RPCs (get_spoiler_safe_context, etc.).
+drop policy if exists "Service role full access on episodes" on public.episodes;
+create policy "Service role full access on episodes"
+  on public.episodes for all
+  to service_role
+  using (true)
+  with check (true);
+
+-- 2.4 Spoiler-Sensitive Tables: Locked to Trusted Backend (`service_role`) at Both Grant & RLS Layers.
+--     All client reads MUST traverse the SECURITY DEFINER temporal RPCs
+--     (`get_spoiler_safe_context`, `search_spoiler_safe_transcript`,
+--      `get_episode_post_watch_quiz`, `hybrid_spoiler_safe_rag_search`,
+--      `get_cross_episode_spoiler_safe_context`, `get_firetv_stage1_bootstrap`),
+--     which enforce `end_time_ms <= p_playback_ms` and `reveal_time_ms <= p_playback_ms`.
 
 drop policy if exists "Enforce temporal spoiler gate on scene_contexts" on public.scene_contexts;
 create policy "Enforce temporal spoiler gate on scene_contexts"
-  on public.scene_contexts for select
-  using (
-    current_user in ('postgres', 'service_role')
-    or (
-      nullif(current_setting('wisp.trusted_episode_id', true), '') is not null
-      and nullif(current_setting('wisp.trusted_playback_ms', true), '') ~ '^[0-9]+$'
-      and episode_id = nullif(current_setting('wisp.trusted_episode_id', true), '')::uuid
-      and start_time_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
-    )
-  );
+  on public.scene_contexts for all
+  to service_role
+  using (public.is_service_role_caller())
+  with check (public.is_service_role_caller());
 
 drop policy if exists "Enforce temporal spoiler gate on transcript_segments" on public.transcript_segments;
 create policy "Enforce temporal spoiler gate on transcript_segments"
-  on public.transcript_segments for select
-  using (
-    current_user in ('postgres', 'service_role')
-    or (
-      nullif(current_setting('wisp.trusted_episode_id', true), '') is not null
-      and nullif(current_setting('wisp.trusted_playback_ms', true), '') ~ '^[0-9]+$'
-      and episode_id = nullif(current_setting('wisp.trusted_episode_id', true), '')::uuid
-      and end_time_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
-    )
-  );
+  on public.transcript_segments for all
+  to service_role
+  using (public.is_service_role_caller())
+  with check (public.is_service_role_caller());
 
 drop policy if exists "Enforce temporal spoiler gate on entities" on public.entities;
 create policy "Enforce temporal spoiler gate on entities"
-  on public.entities for select
-  using (
-    current_user in ('postgres', 'service_role')
-    or (
-      nullif(current_setting('wisp.trusted_playback_ms', true), '') ~ '^[0-9]+$'
-      and spoiler_floor_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
-    )
-  );
+  on public.entities for all
+  to service_role
+  using (public.is_service_role_caller())
+  with check (public.is_service_role_caller());
 
 drop policy if exists "Enforce temporal spoiler gate on entity_appearances" on public.entity_appearances;
 create policy "Enforce temporal spoiler gate on entity_appearances"
-  on public.entity_appearances for select
-  using (
-    current_user in ('postgres', 'service_role')
-    or (
-      nullif(current_setting('wisp.trusted_episode_id', true), '') is not null
-      and nullif(current_setting('wisp.trusted_playback_ms', true), '') ~ '^[0-9]+$'
-      and episode_id = nullif(current_setting('wisp.trusted_episode_id', true), '')::uuid
-      and reveal_time_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
-    )
-  );
+  on public.entity_appearances for all
+  to service_role
+  using (public.is_service_role_caller())
+  with check (public.is_service_role_caller());
 
 drop policy if exists "Enforce temporal spoiler gate on entity_relationships" on public.entity_relationships;
 create policy "Enforce temporal spoiler gate on entity_relationships"
-  on public.entity_relationships for select
-  using (
-    current_user in ('postgres', 'service_role')
-    or (
-      nullif(current_setting('wisp.trusted_episode_id', true), '') is not null
-      and nullif(current_setting('wisp.trusted_playback_ms', true), '') ~ '^[0-9]+$'
-      and episode_id = nullif(current_setting('wisp.trusted_episode_id', true), '')::uuid
-      and reveal_time_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
-    )
-  );
+  on public.entity_relationships for all
+  to service_role
+  using (public.is_service_role_caller())
+  with check (public.is_service_role_caller());
 
 drop policy if exists "Enforce temporal spoiler gate on episode_quizzes" on public.episode_quizzes;
 create policy "Enforce temporal spoiler gate on episode_quizzes"
-  on public.episode_quizzes for select
-  using (
-    current_user in ('postgres', 'service_role')
-    or (
-      nullif(current_setting('wisp.trusted_episode_id', true), '') is not null
-      and nullif(current_setting('wisp.trusted_playback_ms', true), '') ~ '^[0-9]+$'
-      and episode_id = nullif(current_setting('wisp.trusted_episode_id', true), '')::uuid
-      and unlock_time_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
-    )
-  );
+  on public.episode_quizzes for all
+  to service_role
+  using (public.is_service_role_caller())
+  with check (public.is_service_role_caller());
 
 drop policy if exists "Enforce temporal spoiler gate on temporal_embeddings" on public.temporal_embeddings;
 create policy "Enforce temporal spoiler gate on temporal_embeddings"
-  on public.temporal_embeddings for select
+  on public.temporal_embeddings for all
+  to service_role
+  using (public.is_service_role_caller())
+  with check (public.is_service_role_caller());
+
+-- 2.5 Household Profiles, Conversation Sessions & Interaction History Policies
+--     Strictly bound to verified JWT device & profile claims (no USING (true) enumeration,
+--     and no cross-device profile linking).
+
+drop policy if exists "Service role full access on profiles" on public.profiles;
+create policy "Service role full access on profiles"
+  on public.profiles for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "Authenticated device/profile read on profiles" on public.profiles;
+create policy "Authenticated device/profile read on profiles"
+  on public.profiles for select
+  to authenticated
   using (
-    current_user in ('postgres', 'service_role')
+    (
+      public.current_trusted_device_id() is not null
+      and device_id = public.current_trusted_device_id()
+      and (public.current_trusted_profile_id() is null or id = public.current_trusted_profile_id())
+    )
     or (
-      nullif(current_setting('wisp.trusted_episode_id', true), '') is not null
-      and nullif(current_setting('wisp.trusted_playback_ms', true), '') ~ '^[0-9]+$'
-      and episode_id = nullif(current_setting('wisp.trusted_episode_id', true), '')::uuid
-      and end_time_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
-      and reveal_time_ms <= nullif(current_setting('wisp.trusted_playback_ms', true), '')::bigint
+      public.current_trusted_device_id() is null
+      and public.current_trusted_profile_id() is not null
+      and id = public.current_trusted_profile_id()
     )
   );
 
--- 2.5 Household Profiles, Conversation Sessions & Interaction History Policies
-drop policy if exists "Allow read access on profiles" on public.profiles;
-create policy "Allow read access on profiles"
-  on public.profiles for select
-  to anon, authenticated, service_role
-  using (true);
-
-drop policy if exists "Allow profile creation and mode updates" on public.profiles;
-create policy "Allow profile creation and mode updates"
+drop policy if exists "Authenticated device/profile insert on profiles" on public.profiles;
+create policy "Authenticated device/profile insert on profiles"
   on public.profiles for insert
-  to anon, authenticated, service_role
-  with check (char_length(btrim(device_id)) >= 3);
+  to authenticated
+  with check (
+    public.current_trusted_device_id() is not null
+    and device_id = public.current_trusted_device_id()
+    and char_length(btrim(device_id)) >= 3
+    and (public.current_trusted_profile_id() is null or id = public.current_trusted_profile_id())
+  );
 
-drop policy if exists "Allow profile updates by device" on public.profiles;
-create policy "Allow profile updates by device"
+drop policy if exists "Authenticated device/profile update on profiles" on public.profiles;
+create policy "Authenticated device/profile update on profiles"
   on public.profiles for update
-  to anon, authenticated, service_role
-  using (true)
-  with check (char_length(btrim(device_id)) >= 3);
+  to authenticated
+  using (
+    (
+      public.current_trusted_device_id() is not null
+      and device_id = public.current_trusted_device_id()
+      and (public.current_trusted_profile_id() is null or id = public.current_trusted_profile_id())
+    )
+    or (
+      public.current_trusted_device_id() is null
+      and public.current_trusted_profile_id() is not null
+      and id = public.current_trusted_profile_id()
+    )
+  )
+  with check (
+    char_length(btrim(device_id)) >= 3
+    and (
+      (
+        public.current_trusted_device_id() is not null
+        and device_id = public.current_trusted_device_id()
+        and (public.current_trusted_profile_id() is null or id = public.current_trusted_profile_id())
+      )
+      or (
+        public.current_trusted_device_id() is null
+        and public.current_trusted_profile_id() is not null
+        and id = public.current_trusted_profile_id()
+      )
+    )
+  );
 
-drop policy if exists "Allow read access on conversation_sessions" on public.conversation_sessions;
-create policy "Allow read access on conversation_sessions"
+drop policy if exists "Service role full access on conversation_sessions" on public.conversation_sessions;
+create policy "Service role full access on conversation_sessions"
+  on public.conversation_sessions for all
+  to service_role
+  using (true)
+  with check (true);
+
+drop policy if exists "Authenticated device read on conversation_sessions" on public.conversation_sessions;
+create policy "Authenticated device read on conversation_sessions"
   on public.conversation_sessions for select
-  to anon, authenticated, service_role
-  using (expires_at > now());
+  to authenticated
+  using (
+    expires_at > now()
+    and public.current_trusted_device_id() is not null
+    and device_id = public.current_trusted_device_id()
+    and (
+      profile_id is null
+      or (
+        (public.current_trusted_profile_id() is null or profile_id = public.current_trusted_profile_id())
+        and exists (
+          select 1
+          from public.profiles pr
+          where pr.id = public.conversation_sessions.profile_id
+            and pr.device_id = public.current_trusted_device_id()
+        )
+      )
+    )
+  );
 
-drop policy if exists "Allow upsert on conversation_sessions" on public.conversation_sessions;
-create policy "Allow upsert on conversation_sessions"
+drop policy if exists "Authenticated device insert on conversation_sessions" on public.conversation_sessions;
+create policy "Authenticated device insert on conversation_sessions"
   on public.conversation_sessions for insert
-  to anon, authenticated, service_role
-  with check (char_length(btrim(device_id)) >= 3);
+  to authenticated
+  with check (
+    public.current_trusted_device_id() is not null
+    and device_id = public.current_trusted_device_id()
+    and char_length(btrim(device_id)) >= 3
+    and (
+      profile_id is null
+      or (
+        (public.current_trusted_profile_id() is null or profile_id = public.current_trusted_profile_id())
+        and exists (
+          select 1
+          from public.profiles pr
+          where pr.id = public.conversation_sessions.profile_id
+            and pr.device_id = public.current_trusted_device_id()
+        )
+      )
+    )
+  );
 
-drop policy if exists "Allow update on conversation_sessions" on public.conversation_sessions;
-create policy "Allow update on conversation_sessions"
+drop policy if exists "Authenticated device update on conversation_sessions" on public.conversation_sessions;
+create policy "Authenticated device update on conversation_sessions"
   on public.conversation_sessions for update
-  to anon, authenticated, service_role
+  to authenticated
+  using (
+    expires_at > now()
+    and public.current_trusted_device_id() is not null
+    and device_id = public.current_trusted_device_id()
+  )
+  with check (
+    public.current_trusted_device_id() is not null
+    and device_id = public.current_trusted_device_id()
+    and char_length(btrim(device_id)) >= 3
+    and (
+      profile_id is null
+      or (
+        (public.current_trusted_profile_id() is null or profile_id = public.current_trusted_profile_id())
+        and exists (
+          select 1
+          from public.profiles pr
+          where pr.id = public.conversation_sessions.profile_id
+            and pr.device_id = public.current_trusted_device_id()
+        )
+      )
+    )
+  );
+
+drop policy if exists "Service role full access on interaction_history" on public.interaction_history;
+create policy "Service role full access on interaction_history"
+  on public.interaction_history for all
+  to service_role
   using (true)
-  with check (char_length(btrim(device_id)) >= 3);
+  with check (true);
 
-drop policy if exists "Allow read access on interaction_history" on public.interaction_history;
-create policy "Allow read access on interaction_history"
+drop policy if exists "Authenticated owner read on interaction_history" on public.interaction_history;
+create policy "Authenticated owner read on interaction_history"
   on public.interaction_history for select
-  to anon, authenticated, service_role
-  using (true);
-
-drop policy if exists "Allow inserting interaction_history" on public.interaction_history;
-create policy "Allow inserting interaction_history"
-  on public.interaction_history for insert
-  to anon, authenticated, service_role
-  with check (playback_position_ms >= 0);
+  to authenticated
+  using (
+    profile_id is not null
+    and (
+      (
+        public.current_trusted_profile_id() is not null
+        and profile_id = public.current_trusted_profile_id()
+        and (
+          public.current_trusted_device_id() is null
+          or exists (
+            select 1
+            from public.profiles pr
+            where pr.id = public.interaction_history.profile_id
+              and pr.device_id = public.current_trusted_device_id()
+          )
+        )
+      )
+      or (
+        public.current_trusted_profile_id() is null
+        and public.current_trusted_device_id() is not null
+        and exists (
+          select 1
+          from public.profiles pr
+          where pr.id = public.interaction_history.profile_id
+            and pr.device_id = public.current_trusted_device_id()
+        )
+      )
+    )
+  );
 
 -- 2.6 Server-Side Cache, Telemetry, Rate Limits & Spoiler Audit Policies
---     Direct table writes are restricted to service_role and SECURITY DEFINER RPCs/triggers.
+--     Direct table access is restricted exclusively to service_role.
 drop policy if exists "Allow read access on ai_response_cache" on public.ai_response_cache;
 drop policy if exists "Service role full access on ai_response_cache" on public.ai_response_cache;
 create policy "Service role full access on ai_response_cache"
@@ -535,10 +833,11 @@ create trigger trg_conversation_sessions_updated_at
   for each row execute function public.trg_fn_set_updated_at();
 
 -- ----------------------------------------------------------------------------
--- 4A. Trigger Function: Child Row Temporal Boundary Validation
+-- 4A. Trigger Function: Child Row Temporal Boundary & Cross-Program Integrity Validation
 --     Prevents inserting or updating any scene, transcript line, entity
 --     appearance, relationship, quiz, or embedding whose timestamp exceeds
---     its parent episode.duration_ms.
+--     its parent episode.duration_ms, or whose entity belongs to a different
+--     program_id than the parent episode.
 -- ----------------------------------------------------------------------------
 create or replace function public.trg_fn_validate_episode_temporal_bounds()
 returns trigger
@@ -548,9 +847,14 @@ set search_path = public
 as $$
 declare
   v_episode_duration_ms bigint;
+  v_episode_program_id uuid;
+  v_entity_program_id uuid;
+  v_entity_floor_ms bigint;
+  v_target_program_id uuid;
+  v_target_floor_ms bigint;
 begin
-  select duration_ms
-  into v_episode_duration_ms
+  select duration_ms, program_id
+  into v_episode_duration_ms, v_episode_program_id
   from public.episodes
   where id = new.episode_id;
 
@@ -569,12 +873,51 @@ begin
       end if;
     end if;
 
+    if tg_table_name = 'entity_appearances' then
+      select program_id, spoiler_floor_ms
+      into v_entity_program_id, v_entity_floor_ms
+      from public.entities
+      where id = new.entity_id;
+
+      if v_entity_program_id is not null and v_entity_program_id <> v_episode_program_id then
+        raise exception 'Cross-program entity violation on entity_appearances: entity % belongs to program %, not episode program %',
+          new.entity_id, v_entity_program_id, v_episode_program_id;
+      end if;
+
+      if v_entity_floor_ms is not null and new.reveal_time_ms < v_entity_floor_ms then
+        raise exception 'Spoiler floor violation on entity_appearances: reveal_time_ms (%) is earlier than entity spoiler_floor_ms (%)',
+          new.reveal_time_ms, v_entity_floor_ms;
+      end if;
+    end if;
+
     if tg_table_name = 'entity_relationships' then
       if new.valid_from_ms > v_episode_duration_ms
          or (new.valid_until_ms is not null and new.valid_until_ms > v_episode_duration_ms)
       then
         raise exception 'Temporal boundary violation on entity_relationships: validity window (% .. %) exceeds episode duration_ms (%)',
           new.valid_from_ms, new.valid_until_ms, v_episode_duration_ms;
+      end if;
+
+      select program_id, spoiler_floor_ms
+      into v_entity_program_id, v_entity_floor_ms
+      from public.entities
+      where id = new.source_entity_id;
+
+      select program_id, spoiler_floor_ms
+      into v_target_program_id, v_target_floor_ms
+      from public.entities
+      where id = new.target_entity_id;
+
+      if (v_entity_program_id is not null and v_entity_program_id <> v_episode_program_id)
+         or (v_target_program_id is not null and v_target_program_id <> v_episode_program_id)
+      then
+        raise exception 'Cross-program entity violation on entity_relationships: source/target entities must belong to episode program %',
+          v_episode_program_id;
+      end if;
+
+      if new.reveal_time_ms < greatest(coalesce(v_entity_floor_ms, 0), coalesce(v_target_floor_ms, 0)) then
+        raise exception 'Spoiler floor violation on entity_relationships: reveal_time_ms (%) is earlier than entity spoiler_floor_ms',
+          new.reveal_time_ms;
       end if;
     end if;
 
@@ -696,11 +1039,12 @@ create trigger trg_episodes_prevent_unsafe_duration_shrink
 
 -- ----------------------------------------------------------------------------
 -- 5. Trigger Function: Fault-Tolerant Real-Time Interaction Spoiler Audit Guard
---    Inspects response_card->>'spoilerSafeUpToMs' before inserting into
+--    Inspects response_card->>'spoilerSafeUpToMs' before inserting or updating
 --    interaction_history:
 --      * Safely validates that spoilerSafeUpToMs is a valid integer before
 --        casting to bigint so malformed payloads ("unknown", null, floats,
---        objects) never abort the interaction_history insert.
+--        objects) never abort the interaction_history write.
+--      * If missing, injects spoilerSafeUpToMs = playback_position_ms.
 --      * If malformed or > playback_position_ms, clamps spoilerSafeUpToMs to
 --        playback_position_ms, marks spoiler_floor_verified = false, and logs
 --        an immutable row in public.spoiler_audit_log.
@@ -716,113 +1060,123 @@ declare
   v_json_type text;
   v_card_spoiler_ms bigint;
 begin
-  if new.response_card is not null
-     and jsonb_typeof(new.response_card) = 'object'
-     and (new.response_card ? 'spoilerSafeUpToMs')
+  if new.response_card is null or jsonb_typeof(new.response_card) <> 'object' then
+    new.response_card := jsonb_build_object('spoilerSafeUpToMs', new.playback_position_ms);
+    return new;
+  end if;
+
+  if not (new.response_card ? 'spoilerSafeUpToMs') then
+    new.response_card := jsonb_set(
+      new.response_card,
+      '{spoilerSafeUpToMs}',
+      to_jsonb(new.playback_position_ms),
+      true
+    );
+    return new;
+  end if;
+
+  v_json_type := jsonb_typeof(new.response_card->'spoilerSafeUpToMs');
+  v_raw_spoiler_text := btrim(new.response_card->>'spoilerSafeUpToMs');
+
+  -- Validate that the JSON value is a valid 64-bit integer before casting
+  if v_raw_spoiler_text is null
+     or v_json_type not in ('number', 'string')
+     or v_raw_spoiler_text !~ '^-?[0-9]{1,18}$'
   then
-    v_json_type := jsonb_typeof(new.response_card->'spoilerSafeUpToMs');
-    v_raw_spoiler_text := btrim(new.response_card->>'spoilerSafeUpToMs');
+    new.spoiler_floor_verified := false;
+    new.response_card := jsonb_set(
+      new.response_card,
+      '{spoilerSafeUpToMs}',
+      to_jsonb(new.playback_position_ms),
+      true
+    );
 
-    -- Validate that the JSON value is a valid 64-bit integer before casting
-    if v_raw_spoiler_text is null
-       or v_json_type not in ('number', 'string')
-       or v_raw_spoiler_text !~ '^-?[0-9]{1,18}$'
-    then
-      new.spoiler_floor_verified := false;
-      new.response_card := jsonb_set(
-        new.response_card,
-        '{spoilerSafeUpToMs}',
-        to_jsonb(new.playback_position_ms),
-        true
-      );
-
-      insert into public.spoiler_audit_log (
-        episode_id,
-        requested_playback_ms,
-        blocked_item_timestamp_ms,
-        audit_event_type,
-        source_rpc,
-        details
+    insert into public.spoiler_audit_log (
+      episode_id,
+      requested_playback_ms,
+      blocked_item_timestamp_ms,
+      audit_event_type,
+      source_rpc,
+      details
+    )
+    values (
+      new.episode_id,
+      new.playback_position_ms,
+      null,
+      'malformed_spoiler_metadata',
+      'trg_fn_enforce_interaction_spoiler_gate',
+      jsonb_build_object(
+        'action_type', new.action_type,
+        'ai_provider', new.ai_provider,
+        'raw_value', coalesce(v_raw_spoiler_text, 'null'),
+        'json_type', coalesce(v_json_type, 'null'),
+        'clamped_to_ms', new.playback_position_ms
       )
-      values (
-        new.episode_id,
-        new.playback_position_ms,
-        null,
-        'malformed_spoiler_metadata',
-        'trg_fn_enforce_interaction_spoiler_gate',
-        jsonb_build_object(
-          'action_type', new.action_type,
-          'ai_provider', new.ai_provider,
-          'raw_value', coalesce(v_raw_spoiler_text, 'null'),
-          'json_type', coalesce(v_json_type, 'null'),
-          'clamped_to_ms', new.playback_position_ms
-        )
-      );
+    );
 
-      return new;
-    end if;
+    return new;
+  end if;
 
-    v_card_spoiler_ms := v_raw_spoiler_text::bigint;
+  v_card_spoiler_ms := v_raw_spoiler_text::bigint;
 
-    if v_card_spoiler_ms > new.playback_position_ms then
-      new.spoiler_floor_verified := false;
-      new.response_card := jsonb_set(
-        new.response_card,
-        '{spoilerSafeUpToMs}',
-        to_jsonb(new.playback_position_ms),
-        true
-      );
+  if v_card_spoiler_ms > new.playback_position_ms then
+    new.spoiler_floor_verified := false;
+    new.response_card := jsonb_set(
+      new.response_card,
+      '{spoilerSafeUpToMs}',
+      to_jsonb(new.playback_position_ms),
+      true
+    );
 
-      insert into public.spoiler_audit_log (
-        episode_id,
-        requested_playback_ms,
-        blocked_item_timestamp_ms,
-        audit_event_type,
-        source_rpc,
-        details
+    insert into public.spoiler_audit_log (
+      episode_id,
+      requested_playback_ms,
+      blocked_item_timestamp_ms,
+      audit_event_type,
+      source_rpc,
+      details
+    )
+    values (
+      new.episode_id,
+      new.playback_position_ms,
+      v_card_spoiler_ms,
+      'blocked_future_spoiler',
+      'trg_fn_enforce_interaction_spoiler_gate',
+      jsonb_build_object(
+        'action_type', new.action_type,
+        'ai_provider', new.ai_provider,
+        'clamped_to_ms', new.playback_position_ms
       )
-      values (
-        new.episode_id,
-        new.playback_position_ms,
-        v_card_spoiler_ms,
-        'blocked_future_spoiler',
-        'trg_fn_enforce_interaction_spoiler_gate',
-        jsonb_build_object(
-          'action_type', new.action_type,
-          'ai_provider', new.ai_provider,
-          'clamped_to_ms', new.playback_position_ms
-        )
-      );
-    elsif v_card_spoiler_ms < 0 then
-      new.spoiler_floor_verified := false;
-      new.response_card := jsonb_set(
-        new.response_card,
-        '{spoilerSafeUpToMs}',
-        to_jsonb(0::bigint),
-        true
-      );
+    );
+  elsif v_card_spoiler_ms < 0 then
+    new.spoiler_floor_verified := false;
+    new.response_card := jsonb_set(
+      new.response_card,
+      '{spoilerSafeUpToMs}',
+      to_jsonb(0::bigint),
+      true
+    );
 
-      insert into public.spoiler_audit_log (
-        episode_id,
-        requested_playback_ms,
-        blocked_item_timestamp_ms,
-        audit_event_type,
-        source_rpc,
-        details
+    insert into public.spoiler_audit_log (
+      episode_id,
+      requested_playback_ms,
+      blocked_item_timestamp_ms,
+      audit_event_type,
+      source_rpc,
+      details
+    )
+    values (
+      new.episode_id,
+      new.playback_position_ms,
+      v_card_spoiler_ms,
+      'clamped_negative_playback',
+      'trg_fn_enforce_interaction_spoiler_gate',
+      jsonb_build_object(
+        'action_type', new.action_type,
+        'ai_provider', new.ai_provider,
+        'clamped_to_ms', 0
       )
-      values (
-        new.episode_id,
-        new.playback_position_ms,
-        v_card_spoiler_ms,
-        'clamped_negative_playback',
-        'trg_fn_enforce_interaction_spoiler_gate',
-        jsonb_build_object(
-          'action_type', new.action_type,
-          'ai_provider', new.ai_provider,
-          'clamped_to_ms', 0
-        )
-      );
-    end if;
+    );
   end if;
 
   return new;
@@ -831,5 +1185,5 @@ $$;
 
 drop trigger if exists trg_interaction_spoiler_gate on public.interaction_history;
 create trigger trg_interaction_spoiler_gate
-  before insert on public.interaction_history
+  before insert or update of response_card, playback_position_ms, spoiler_floor_verified on public.interaction_history
   for each row execute function public.trg_fn_enforce_interaction_spoiler_gate();

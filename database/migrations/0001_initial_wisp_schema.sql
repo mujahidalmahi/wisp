@@ -223,6 +223,30 @@ alter table public.episodes
   add column if not exists is_published boolean not null default true,
   add column if not exists updated_at timestamptz not null default now();
 
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.episodes'::regclass
+      and conname = 'episodes_intro_end_ms_bounds_check'
+  ) then
+    alter table public.episodes
+      add constraint episodes_intro_end_ms_bounds_check
+      check (intro_end_ms >= 0 and intro_end_ms <= duration_ms);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.episodes'::regclass
+      and conname = 'episodes_credits_start_ms_bounds_check'
+  ) then
+    alter table public.episodes
+      add constraint episodes_credits_start_ms_bounds_check
+      check (credits_start_ms is null or (credits_start_ms >= 0 and credits_start_ms <= duration_ms));
+  end if;
+exception
+  when duplicate_object then null;
+end $$;
+
 comment on table public.episodes is 'Playable video episodes with millisecond duration boundaries and stream URLs.';
 comment on column public.episodes.duration_ms is 'Total playback duration in milliseconds; used as upper bound for temporal clamping.';
 comment on column public.episodes.credits_start_ms is 'Timestamp in milliseconds when end credits begin (triggers Post-Watch Quiz chip).';
@@ -269,6 +293,16 @@ alter table public.scene_contexts
   add column if not exists updated_at timestamptz not null default now();
 
 do $$ begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.scene_contexts'::regclass
+      and conname = 'scene_contexts_episode_id_scene_index_key'
+  ) then
+    alter table public.scene_contexts
+      add constraint scene_contexts_episode_id_scene_index_key
+      unique (episode_id, scene_index);
+  end if;
+
   if not exists (
     select 1 from pg_constraint
     where conrelid = 'public.scene_contexts'::regclass

@@ -5,8 +5,13 @@
 --              2. Hybrid Reciprocal Rank Fusion (RRF) Spoiler-Safe RAG Search
 --              3. Cross-Episode / Multi-Season Spoiler Boundary Resolution
 --              4. Single-Roundtrip Fire TV Stage-1 Drawer Bootstrap RPC
--- Security:  All RPCs reading spoiler-sensitive tables are marked
---            SECURITY DEFINER with a fixed SET search_path = public.
+-- Security:
+--   * All RPCs use a locked `SET search_path = public`.
+--   * All temporal RPCs enforce `e.is_published = true AND p.is_active = true`
+--     and clamp `p_playback_ms` to `[0, e.duration_ms]`.
+--   * `get_firetv_stage1_bootstrap` only returns private device profile and
+--     session state when invoked by `service_role` or when `p_device_id`
+--     matches the caller's verified `public.current_trusted_device_id()` claim.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -78,11 +83,25 @@ security definer
 set search_path = public
 as $$
 declare
+  v_duration_ms bigint;
   v_safe_playback_ms bigint := greatest(0, coalesce(p_playback_ms, 0));
   v_safe_limit integer := greatest(1, least(coalesce(p_limit, 6), 20));
   v_clean_query text := btrim(coalesce(p_query_text, ''));
   v_results jsonb;
 begin
+  select e.duration_ms into v_duration_ms
+  from public.episodes e
+  join public.programs p on p.id = e.program_id
+  where e.id = p_episode_id
+    and e.is_published = true
+    and p.is_active = true;
+
+  if v_duration_ms is null then
+    return '[]'::jsonb;
+  end if;
+
+  v_safe_playback_ms := least(v_safe_playback_ms, v_duration_ms);
+
   select coalesce(jsonb_agg(
     jsonb_build_object(
       'id', fused.id,
@@ -149,8 +168,8 @@ comment on function public.hybrid_spoiler_safe_rag_search(uuid, bigint, text, fl
 -- ----------------------------------------------------------------------------
 -- 3. RPC: public.get_cross_episode_spoiler_safe_context
 --    Enables multi-episode / full-season recall without leaking future episodes:
---      * Unlocks 100% of completed prior episodes (< S, or = S and < E)
---      * Unlocks 0..p_playback_ms of the active episode (S, E)
+--      * Unlocks 100% of completed published prior episodes (< S, or = S and < E)
+--      * Unlocks 0..p_playback_ms of the active published episode (S, E)
 --      * Blocks 100% of future episodes (> S, or = S and > E)
 -- ----------------------------------------------------------------------------
 create or replace function public.get_cross_episode_spoiler_safe_context(
@@ -171,11 +190,14 @@ declare
   v_prior_episodes_recap jsonb;
   v_current_episode_context jsonb;
 begin
-  -- Resolve the parent program, season number, and episode number
+  -- Resolve the active parent program, season number, and published episode number
   select e.program_id, e.season_number, e.episode_number
   into v_program_id, v_season_num, v_episode_num
   from public.episodes e
-  where e.id = p_episode_id;
+  join public.programs p on p.id = e.program_id
+  where e.id = p_episode_id
+    and e.is_published = true
+    and p.is_active = true;
 
   if v_program_id is null then
     return jsonb_build_object(
@@ -185,7 +207,7 @@ begin
     );
   end if;
 
-  -- 1. Gather summaries from strictly completed prior episodes in the same program
+  -- 1. Gather summaries from strictly completed, published prior episodes in the same program
   select coalesce(jsonb_agg(
     jsonb_build_object(
       'episode_id', ep.id,
@@ -198,6 +220,7 @@ begin
   into v_prior_episodes_recap
   from public.episodes ep
   where ep.program_id = v_program_id
+    and ep.is_published = true
     and (
       ep.season_number < v_season_num
       or (ep.season_number = v_season_num and ep.episode_number < v_episode_num)
@@ -227,9 +250,11 @@ comment on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) 
 -- ----------------------------------------------------------------------------
 -- 4. RPC: public.get_firetv_stage1_bootstrap
 --    Single-roundtrip Fire TV Stage-1 Instant Drawer Bootstrap RPC.
---    Fetches the active household profile, active scene (via O(log N) GiST
---    time_range containment), D-pad quick_action_chips, pre-warmed bucket
---    cache cards, and conversation session memory in one database call.
+--    Fetches the active scene (via O(log N) GiST time_range containment),
+--    D-pad quick_action_chips, and pre-warmed bucket cache cards.
+--    Tenant-scoped data (`profiles` and `conversation_sessions`) is returned
+--    only when invoked by `service_role` or when `p_device_id` matches the
+--    caller's verified `public.current_trusted_device_id()` claim.
 -- ----------------------------------------------------------------------------
 create or replace function public.get_firetv_stage1_bootstrap(
   p_episode_id uuid,
@@ -243,26 +268,66 @@ security definer
 set search_path = public
 as $$
 declare
+  v_duration_ms bigint;
+  v_default_bucket_sec integer := 15;
   v_safe_playback_ms bigint := greatest(0, coalesce(p_playback_ms, 0));
-  v_bucket_sec integer := floor(greatest(0, coalesce(p_playback_ms, 0)) / 15000.0) * 15;
-  v_profile jsonb;
-  v_active_scene jsonb;
-  v_prewarmed_cards jsonb;
-  v_session jsonb;
+  v_bucket_sec integer;
+  v_clean_device_id text := nullif(btrim(p_device_id), '');
+  v_trusted_device_id text := public.current_trusted_device_id();
+  v_is_service_caller boolean := public.is_service_role_caller();
+  v_can_read_device_state boolean := false;
+  v_profile jsonb := null;
+  v_active_scene jsonb := null;
+  v_prewarmed_cards jsonb := '[]'::jsonb;
+  v_session jsonb := null;
 begin
-  -- 1. Resolve most recently active household profile for the Fire TV device
-  select jsonb_build_object(
-    'id', pr.id,
-    'display_name', pr.display_name,
-    'mode', pr.mode,
-    'spoiler_strictness', pr.spoiler_strictness,
-    'voice_tts_enabled', pr.voice_tts_enabled
-  )
-  into v_profile
-  from public.profiles pr
-  where pr.device_id = p_device_id
-  order by pr.last_active_at desc
-  limit 1;
+  -- Verify episode is published and active, and clamp playback position to duration_ms
+  select e.duration_ms, coalesce(e.default_bucket_sec, 15)
+  into v_duration_ms, v_default_bucket_sec
+  from public.episodes e
+  join public.programs p on p.id = e.program_id
+  where e.id = p_episode_id
+    and e.is_published = true
+    and p.is_active = true;
+
+  if v_duration_ms is null then
+    return jsonb_build_object(
+      'found', false,
+      'episode_id', p_episode_id,
+      'playback_position_ms', v_safe_playback_ms,
+      'profile', '{"mode": "quick_glance"}'::jsonb,
+      'active_scene', '{}'::jsonb,
+      'prewarmed_cards', '[]'::jsonb,
+      'session', '{}'::jsonb
+    );
+  end if;
+
+  v_safe_playback_ms := least(v_safe_playback_ms, v_duration_ms);
+  v_bucket_sec := floor(greatest(0, v_safe_playback_ms - 1)::numeric / (v_default_bucket_sec * 1000.0))::integer * v_default_bucket_sec;
+
+  v_can_read_device_state := (
+    v_clean_device_id is not null
+    and (
+      v_is_service_caller
+      or (v_trusted_device_id is not null and v_clean_device_id = v_trusted_device_id)
+    )
+  );
+
+  -- 1. Resolve household profile ONLY if caller is authorized for p_device_id
+  if v_can_read_device_state then
+    select jsonb_build_object(
+      'id', pr.id,
+      'display_name', pr.display_name,
+      'mode', pr.mode,
+      'spoiler_strictness', pr.spoiler_strictness,
+      'voice_tts_enabled', pr.voice_tts_enabled
+    )
+    into v_profile
+    from public.profiles pr
+    where pr.device_id = v_clean_device_id
+    order by pr.last_active_at desc
+    limit 1;
+  end if;
 
   -- 2. O(log N) GiST time_range containment lookup (<@) for the Active Scene
   select jsonb_build_object(
@@ -301,6 +366,7 @@ begin
   end if;
 
   -- 3. Fetch any pre-warmed cached AI cards for this episode & 15-second bucket
+  --    while strictly enforcing response_payload.spoilerSafeUpToMs <= v_safe_playback_ms
   select coalesce(jsonb_agg(
     jsonb_build_object(
       'action_type', c.action_type,
@@ -312,23 +378,34 @@ begin
   from public.ai_response_cache c
   where c.episode_id = p_episode_id
     and c.time_bucket_sec = v_bucket_sec
-    and c.expires_at > now();
+    and c.expires_at > now()
+    and (
+      not (c.response_payload ? 'spoilerSafeUpToMs')
+      or (
+        btrim(c.response_payload->>'spoilerSafeUpToMs') ~ '^[0-9]{1,18}$'
+        and (btrim(c.response_payload->>'spoilerSafeUpToMs'))::bigint <= v_safe_playback_ms
+      )
+    );
 
-  -- 4. Fetch active multi-turn conversation session & bookmarked moments
-  select jsonb_build_object(
-    'session_id', cs.id,
-    'turn_count', cs.turn_count,
-    'recent_turns', cs.recent_turns,
-    'bookmarked_moments', cs.bookmarked_moments
-  )
-  into v_session
-  from public.conversation_sessions cs
-  where cs.device_id = p_device_id
-    and cs.episode_id = p_episode_id
-    and cs.expires_at > now()
-  limit 1;
+  -- 4. Fetch active multi-turn conversation session & bookmarks ONLY if caller is authorized for p_device_id
+  if v_can_read_device_state then
+    select jsonb_build_object(
+      'session_id', cs.id,
+      'turn_count', cs.turn_count,
+      'recent_turns', cs.recent_turns,
+      'bookmarked_moments', cs.bookmarked_moments
+    )
+    into v_session
+    from public.conversation_sessions cs
+    where cs.device_id = v_clean_device_id
+      and cs.episode_id = p_episode_id
+      and cs.expires_at > now()
+    order by cs.updated_at desc
+    limit 1;
+  end if;
 
   return jsonb_build_object(
+    'found', true,
     'episode_id', p_episode_id,
     'playback_position_ms', v_safe_playback_ms,
     'time_bucket_sec', v_bucket_sec,
@@ -341,9 +418,16 @@ end;
 $$;
 
 comment on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) is
-  'Single-roundtrip SECURITY DEFINER Fire TV Stage-1 overlay bootstrap returning profile, active scene, D-pad chips, pre-warmed cache cards, and session state.';
+  'Single-roundtrip SECURITY DEFINER Fire TV Stage-1 overlay bootstrap returning active scene, D-pad chips, pre-warmed cache cards, and claim-authorized profile/session state.';
 
+revoke all on function public.cosine_similarity_float4(float4[], float4[]) from public;
 grant execute on function public.cosine_similarity_float4(float4[], float4[]) to anon, authenticated, service_role;
+
+revoke all on function public.hybrid_spoiler_safe_rag_search(uuid, bigint, text, float4[], integer) from public;
 grant execute on function public.hybrid_spoiler_safe_rag_search(uuid, bigint, text, float4[], integer) to anon, authenticated, service_role;
+
+revoke all on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) from public;
 grant execute on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) to anon, authenticated, service_role;
+
+revoke all on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) from public;
 grant execute on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) to anon, authenticated, service_role;
