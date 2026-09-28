@@ -6,16 +6,19 @@
 --
 -- Architectural Highlights:
 --   1. 16 Normalized & Temporal-Gated Production Tables.
---   2. GiST int8range Exclusion Constraint (excl_scene_contexts_no_overlap)
+--   2. In-Place Forward Migration Support (ALTER TABLE ... ADD COLUMN IF NOT
+--      EXISTS & constraint upgrades) so existing deployments that ran the
+--      early prototype 0001 migration upgrade cleanly without missing columns.
+--   3. GiST int8range Exclusion Constraint (excl_scene_contexts_no_overlap)
 --      mathematically preventing overlapping scenes within the same episode.
---   3. Covering Indexes (INCLUDE) & Partial Indexes for Index-Only Scans
+--   4. Covering Indexes (INCLUDE) & Partial Indexes for Index-Only Scans
 --      (Heap Fetches: 0) on real-time playback queries.
---   4. Weighted Generated tsvector Full-Text Search + pg_trgm Trigram Indexes.
---   5. Native float4[] Semantic Vector Storage for Hybrid RRF RAG Search.
+--   5. Weighted Generated tsvector Full-Text Search + pg_trgm Trigram Indexes.
+--   6. Native float4[] Semantic Vector Storage for Hybrid RRF RAG Search.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- 0. Required PostgreSQL Extensions
+-- 0. Required PostgreSQL Extensions & Standard Supabase Roles (Idempotent)
 -- ----------------------------------------------------------------------------
 -- pgcrypto: Provides gen_random_uuid() and cryptographic hashing functions.
 create extension if not exists "pgcrypto";
@@ -32,6 +35,19 @@ do $$ begin
 exception
   when others then
     raise notice 'pgvector extension not available on this host; using native float4[] vector engine.';
+end $$;
+
+-- Ensure standard Supabase API roles exist on standalone/CI PostgreSQL instances
+do $$ begin
+  if not exists (select 1 from pg_roles where rolname = 'anon') then
+    create role anon nologin;
+  end if;
+  if not exists (select 1 from pg_roles where rolname = 'authenticated') then
+    create role authenticated nologin;
+  end if;
+  if not exists (select 1 from pg_roles where rolname = 'service_role') then
+    create role service_role nologin bypassrls;
+  end if;
 end $$;
 
 -- ----------------------------------------------------------------------------
@@ -96,11 +112,37 @@ create table if not exists public.profiles (
   unique (device_id, display_name)
 );
 
+-- Forward upgrade path for existing deployments where public.profiles already existed:
+alter table public.profiles
+  add column if not exists preferred_language text not null default 'en'
+    check (char_length(btrim(preferred_language)) between 2 and 10),
+  add column if not exists voice_tts_enabled boolean not null default true,
+  add column if not exists auto_pause_on_overlay boolean not null default false,
+  add column if not exists parental_pin_hash text,
+  add column if not exists total_queries_count bigint not null default 0
+    check (total_queries_count >= 0),
+  add column if not exists last_active_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.profiles'::regclass
+      and contype = 'u'
+  ) then
+    alter table public.profiles
+      add constraint profiles_device_id_display_name_key unique (device_id, display_name);
+  end if;
+exception
+  when duplicate_table or duplicate_object then null;
+end $$;
+
 comment on table public.profiles is 'Fire TV household viewing profiles controlling AI explanation depth, TTS narration, and spoiler strictness.';
 comment on column public.profiles.device_id is 'Hardware or installation identifier for the Amazon Fire TV device.';
 comment on column public.profiles.mode is 'Active viewing mode: quick_glance, deep_lore, or family_friendly.';
 
 -- Covering index for single-lookup profile resolution by Fire TV device_id
+drop index if exists public.idx_profiles_device_id;
 create index if not exists idx_profiles_device_id
   on public.profiles (device_id)
   include (display_name, mode, spoiler_strictness, voice_tts_enabled);
@@ -128,6 +170,14 @@ create table if not exists public.programs (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Forward upgrade path for existing deployments where public.programs already existed:
+alter table public.programs
+  add column if not exists content_advisories text[] not null default '{}'::text[],
+  add column if not exists original_language text not null default 'en',
+  add column if not exists total_seasons integer not null default 1 check (total_seasons >= 1),
+  add column if not exists is_active boolean not null default true,
+  add column if not exists updated_at timestamptz not null default now();
 
 comment on table public.programs is 'Top-level television series, films, and documentaries available in the Wisp catalog.';
 
@@ -162,10 +212,22 @@ create table if not exists public.episodes (
   unique (program_id, season_number, episode_number)
 );
 
+-- Forward upgrade path for existing deployments where public.episodes already existed:
+alter table public.episodes
+  add column if not exists intro_end_ms bigint not null default 0,
+  add column if not exists credits_start_ms bigint,
+  add column if not exists default_bucket_sec integer not null default 15
+    check (default_bucket_sec between 5 and 60),
+  add column if not exists subtitle_vtt_url text,
+  add column if not exists thumbnail_sprite_url text,
+  add column if not exists is_published boolean not null default true,
+  add column if not exists updated_at timestamptz not null default now();
+
 comment on table public.episodes is 'Playable video episodes with millisecond duration boundaries and stream URLs.';
 comment on column public.episodes.duration_ms is 'Total playback duration in milliseconds; used as upper bound for temporal clamping.';
 comment on column public.episodes.credits_start_ms is 'Timestamp in milliseconds when end credits begin (triggers Post-Watch Quiz chip).';
 
+drop index if exists public.idx_episodes_program_lookup;
 create index if not exists idx_episodes_program_lookup
   on public.episodes (program_id, season_number, episode_number)
   include (title, duration_ms, is_published);
@@ -197,10 +259,34 @@ create table if not exists public.scene_contexts (
     exclude using gist (episode_id with =, time_range with &&)
 );
 
+-- Forward upgrade path for existing deployments where public.scene_contexts already existed:
+alter table public.scene_contexts
+  add column if not exists time_range int8range
+    generated always as (int8range(start_time_ms, end_time_ms, '[]')) stored,
+  add column if not exists mood_tag text not null default 'narrative',
+  add column if not exists narrative_tension_score smallint not null default 5
+    check (narrative_tension_score between 1 and 10),
+  add column if not exists updated_at timestamptz not null default now();
+
+do $$ begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.scene_contexts'::regclass
+      and conname = 'excl_scene_contexts_no_overlap'
+  ) then
+    alter table public.scene_contexts
+      add constraint excl_scene_contexts_no_overlap
+      exclude using gist (episode_id with =, time_range with &&);
+  end if;
+exception
+  when duplicate_table or duplicate_object then null;
+end $$;
+
 comment on table public.scene_contexts is 'Non-overlapping episode scene timeline with Stage-1 instant summaries and zero-typing D-pad QuickActionChips.';
 comment on column public.scene_contexts.time_range is 'Generated inclusive int8range [start_time_ms, end_time_ms] used for O(log N) GiST containment queries.';
 
 -- Covering Index for Index-Only Scans (Heap Fetches: 0)
+drop index if exists public.idx_scene_contexts_temporal;
 create index if not exists idx_scene_contexts_temporal
   on public.scene_contexts (episode_id, start_time_ms, end_time_ms)
   include (scene_index, scene_title, location_name, mood_tag, narrative_tension_score, spoiler_safe_summary, quick_action_chips);
@@ -239,10 +325,24 @@ create table if not exists public.transcript_segments (
   created_at timestamptz not null default now()
 );
 
+-- Forward upgrade path for existing deployments where public.transcript_segments already existed:
+alter table public.transcript_segments
+  add column if not exists time_range int8range
+    generated always as (int8range(start_time_ms, end_time_ms, '[]')) stored,
+  add column if not exists confidence_score numeric(4,3) not null default 1.000
+    check (confidence_score between 0.000 and 1.000),
+  add column if not exists is_key_plot_point boolean not null default false,
+  add column if not exists search_vector tsvector generated always as (
+    setweight(to_tsvector('english', coalesce(speaker_name, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(dialogue_text, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(visual_cue, '')), 'C')
+  ) stored;
+
 comment on table public.transcript_segments is 'Timestamped dialogue lines and visual descriptions gated by end_time_ms <= playback_position_ms.';
 comment on column public.transcript_segments.end_time_ms is 'Hard anti-spoiler gate: a line is unlocked only after the viewer reaches end_time_ms.';
 
 -- Covering Index for Index-Only Scans on the hot temporal window path
+drop index if exists public.idx_transcript_segments_temporal;
 create index if not exists idx_transcript_segments_temporal
   on public.transcript_segments (episode_id, end_time_ms, start_time_ms)
   include (speaker_name, dialogue_text, visual_cue, is_key_plot_point);
@@ -279,9 +379,26 @@ create table if not exists public.entities (
   unique (program_id, slug)
 );
 
+-- Forward upgrade path for existing deployments where public.entities already existed:
+alter table public.entities
+  add column if not exists aliases text[] not null default '{}'::text[],
+  add column if not exists spoiler_floor_ms bigint not null default 0
+    check (spoiler_floor_ms >= 0),
+  add column if not exists updated_at timestamptz not null default now();
+
+do $$ begin
+  alter table public.entities drop constraint if exists entities_entity_type_check;
+  alter table public.entities
+    add constraint entities_entity_type_check
+    check (entity_type in ('character', 'location', 'concept', 'object', 'faction'));
+exception
+  when duplicate_object then null;
+end $$;
+
 comment on table public.entities is 'Canonical entities (characters, locations, scientific concepts, objects, factions) per program.';
 comment on column public.entities.spoiler_floor_ms is 'Minimum episode timestamp before this entity''s existence may be revealed.';
 
+drop index if exists public.idx_entities_program_type;
 create index if not exists idx_entities_program_type
   on public.entities (program_id, entity_type)
   include (slug, name, base_description, spoiler_floor_ms);
@@ -308,10 +425,17 @@ create table if not exists public.entity_appearances (
   created_at timestamptz not null default now()
 );
 
+-- Forward upgrade path for existing deployments where public.entity_appearances already existed:
+alter table public.entity_appearances
+  add column if not exists is_plot_twist boolean not null default false,
+  add column if not exists importance_rank smallint not null default 1
+    check (importance_rank between 1 and 10);
+
 comment on table public.entity_appearances is 'Time-gated progressive lore facts per entity; prevents plot twist leaks prior to reveal_time_ms.';
 comment on column public.entity_appearances.reveal_time_ms is 'Exact millisecond timestamp at which this progressive fact becomes spoiler-safe to reveal.';
 
 -- Covering Index for Index-Only Scans on entity lore lookup
+drop index if exists public.idx_entity_appearances_temporal;
 create index if not exists idx_entity_appearances_temporal
   on public.entity_appearances (episode_id, reveal_time_ms, start_time_ms, end_time_ms)
   include (entity_id, progressive_fact, is_plot_twist, importance_rank);
@@ -449,8 +573,19 @@ create table if not exists public.ai_response_cache (
   created_at timestamptz not null default now()
 );
 
+-- Forward upgrade path for existing deployments where public.ai_response_cache already existed:
+alter table public.ai_response_cache
+  add column if not exists hit_count bigint not null default 0 check (hit_count >= 0),
+  add column if not exists origin_latency_ms integer
+    check (origin_latency_ms is null or origin_latency_ms >= 0),
+  add column if not exists token_count integer
+    check (token_count is null or token_count >= 0),
+  add column if not exists expires_at timestamptz not null default (now() + interval '24 hours'),
+  add column if not exists last_accessed_at timestamptz not null default now();
+
 comment on table public.ai_response_cache is 'Server-side 15-second bucket cache reducing AI token spend and delivering sub-10ms cached cards.';
 
+drop index if exists public.idx_ai_response_cache_lookup;
 create index if not exists idx_ai_response_cache_lookup
   on public.ai_response_cache (episode_id, action_type, profile_mode, time_bucket_sec)
   include (response_payload, provider_used, expires_at);
@@ -477,10 +612,25 @@ create table if not exists public.interaction_history (
   spoiler_floor_verified boolean not null default true,
   user_helpful_vote smallint not null default 0 check (user_helpful_vote in (-1, 0, 1)),
   error_code text,
-  response_card jsonb not null check (jsonb_typeof(response_card) = 'object'),
+  response_card jsonb not null default '{}'::jsonb check (jsonb_typeof(response_card) = 'object'),
   is_pinned boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+-- Forward upgrade path for existing deployments where public.interaction_history already existed:
+alter table public.interaction_history
+  add column if not exists cache_hit boolean not null default false,
+  add column if not exists prompt_tokens integer
+    check (prompt_tokens is null or prompt_tokens >= 0),
+  add column if not exists completion_tokens integer
+    check (completion_tokens is null or completion_tokens >= 0),
+  add column if not exists spoiler_floor_verified boolean not null default true,
+  add column if not exists user_helpful_vote smallint not null default 0
+    check (user_helpful_vote in (-1, 0, 1)),
+  add column if not exists error_code text,
+  add column if not exists response_card jsonb not null default '{}'::jsonb
+    check (jsonb_typeof(response_card) = 'object'),
+  add column if not exists is_pinned boolean not null default false;
 
 comment on table public.interaction_history is 'Immutable log of viewer AI interactions, token consumption, latency, and spoiler-gate verification.';
 
@@ -541,13 +691,34 @@ create table if not exists public.spoiler_audit_log (
   requested_playback_ms bigint not null,
   blocked_item_timestamp_ms bigint,
   audit_event_type text not null
-    check (audit_event_type in ('clamped_negative_playback', 'clamped_overflow_playback', 'blocked_future_spoiler', 'verified_clean_window')),
+    check (audit_event_type in (
+      'clamped_negative_playback',
+      'clamped_overflow_playback',
+      'blocked_future_spoiler',
+      'malformed_spoiler_metadata',
+      'verified_clean_window'
+    )),
   source_rpc text not null default 'get_spoiler_safe_context',
   details jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
 
-comment on table public.spoiler_audit_log is 'Security audit trail recording clamped timestamps or intercepted spoiler boundary anomalies.';
+do $$ begin
+  alter table public.spoiler_audit_log drop constraint if exists spoiler_audit_log_audit_event_type_check;
+  alter table public.spoiler_audit_log
+    add constraint spoiler_audit_log_audit_event_type_check
+    check (audit_event_type in (
+      'clamped_negative_playback',
+      'clamped_overflow_playback',
+      'blocked_future_spoiler',
+      'malformed_spoiler_metadata',
+      'verified_clean_window'
+    ));
+exception
+  when duplicate_object then null;
+end $$;
+
+comment on table public.spoiler_audit_log is 'Security audit trail recording clamped timestamps, malformed metadata, or intercepted spoiler boundary anomalies.';
 
 create index if not exists idx_spoiler_audit_log_created
   on public.spoiler_audit_log (created_at desc, audit_event_type);

@@ -1,7 +1,12 @@
 -- ============================================================================
 -- Migration: 0002_temporal_context_functions.sql
 -- Purpose:   Production-Grade Deterministic Anti-Spoiler Temporal Context RPCs,
---            Full-Text Search, TTL Cache Management, Rate Limiting & Telemetry
+--            Full-Text Search, TTL Cache Management, Rate Limiting & Telemetry.
+-- Security:  All callable RPCs are marked SECURITY DEFINER with a locked
+--            SET search_path = public so that untrusted roles (anon /
+--            authenticated) can never read raw spoiler-sensitive tables
+--            directly, while validated RPCs can safely read gated windows
+--            and record telemetry / rate-limit state under RLS.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -20,6 +25,8 @@ create or replace function public.get_spoiler_safe_context(
 returns jsonb
 language plpgsql
 stable
+security definer
+set search_path = public
 as $$
 declare
   v_duration_ms bigint;
@@ -180,7 +187,7 @@ end;
 $$;
 
 comment on function public.get_spoiler_safe_context(uuid, bigint, bigint) is
-  'Primary anti-spoiler context windowing RPC enforcing end_time_ms <= p_playback_ms and reveal_time_ms <= p_playback_ms.';
+  'Primary SECURITY DEFINER anti-spoiler context windowing RPC enforcing end_time_ms <= p_playback_ms and reveal_time_ms <= p_playback_ms.';
 
 -- ----------------------------------------------------------------------------
 -- 2. RPC: public.search_spoiler_safe_transcript
@@ -197,6 +204,8 @@ create or replace function public.search_spoiler_safe_transcript(
 returns jsonb
 language plpgsql
 stable
+security definer
+set search_path = public
 as $$
 declare
   v_safe_playback_ms bigint := greatest(0, coalesce(p_playback_ms, 0));
@@ -248,7 +257,7 @@ end;
 $$;
 
 comment on function public.search_spoiler_safe_transcript(uuid, bigint, text, integer) is
-  'Hybrid Full-Text + Trigram search over episode transcript lines strictly gated by end_time_ms <= p_playback_ms.';
+  'Hybrid Full-Text + Trigram SECURITY DEFINER search over episode transcript lines strictly gated by end_time_ms <= p_playback_ms.';
 
 -- ----------------------------------------------------------------------------
 -- 3. RPC: public.get_episode_post_watch_quiz
@@ -263,6 +272,8 @@ create or replace function public.get_episode_post_watch_quiz(
 returns jsonb
 language plpgsql
 stable
+security definer
+set search_path = public
 as $$
 declare
   v_safe_playback_ms bigint := greatest(0, coalesce(p_playback_ms, 0));
@@ -310,6 +321,8 @@ create or replace function public.get_or_touch_ai_cache(
 returns jsonb
 language plpgsql
 volatile
+security definer
+set search_path = public
 as $$
 declare
   v_payload jsonb;
@@ -348,6 +361,8 @@ create or replace function public.upsert_ai_response_cache(
 returns void
 language plpgsql
 volatile
+security definer
+set search_path = public
 as $$
 begin
   insert into public.ai_response_cache (
@@ -401,6 +416,8 @@ create or replace function public.check_device_rate_limit(
 returns jsonb
 language plpgsql
 volatile
+security definer
+set search_path = public
 as $$
 declare
   v_safe_window integer := greatest(10, coalesce(p_window_sec, 60));
@@ -464,6 +481,8 @@ create or replace function public.record_wisp_interaction(
 returns uuid
 language plpgsql
 volatile
+security definer
+set search_path = public
 as $$
 declare
   v_interaction_id uuid;
@@ -560,4 +579,15 @@ end;
 $$;
 
 comment on function public.record_wisp_interaction(uuid, uuid, bigint, text, text, text, integer, boolean, jsonb, integer, integer, boolean, text) is
-  'Transactional logger recording viewer interactions, updating hourly AI provider telemetry, and incrementing profile activity counters.';
+  'SECURITY DEFINER transactional logger recording viewer interactions, updating hourly AI provider telemetry, and incrementing profile activity counters.';
+
+-- ----------------------------------------------------------------------------
+-- 8. Explicit RPC Execution Grants
+-- ----------------------------------------------------------------------------
+grant execute on function public.get_spoiler_safe_context(uuid, bigint, bigint) to anon, authenticated, service_role;
+grant execute on function public.search_spoiler_safe_transcript(uuid, bigint, text, integer) to anon, authenticated, service_role;
+grant execute on function public.get_episode_post_watch_quiz(uuid, bigint, household_profile_mode, integer) to anon, authenticated, service_role;
+grant execute on function public.get_or_touch_ai_cache(text) to anon, authenticated, service_role;
+grant execute on function public.upsert_ai_response_cache(text, uuid, text, household_profile_mode, integer, text, jsonb, integer, integer, integer) to anon, authenticated, service_role;
+grant execute on function public.check_device_rate_limit(text, integer, integer) to anon, authenticated, service_role;
+grant execute on function public.record_wisp_interaction(uuid, uuid, bigint, text, text, text, integer, boolean, jsonb, integer, integer, boolean, text) to anon, authenticated, service_role;

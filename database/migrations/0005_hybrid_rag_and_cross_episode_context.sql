@@ -5,6 +5,8 @@
 --              2. Hybrid Reciprocal Rank Fusion (RRF) Spoiler-Safe RAG Search
 --              3. Cross-Episode / Multi-Season Spoiler Boundary Resolution
 --              4. Single-Roundtrip Fire TV Stage-1 Drawer Bootstrap RPC
+-- Security:  All RPCs reading spoiler-sensitive tables are marked
+--            SECURITY DEFINER with a fixed SET search_path = public.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -22,6 +24,7 @@ language plpgsql
 immutable
 parallel safe
 strict
+set search_path = public
 as $$
 declare
   v_len integer := least(cardinality(p_vec_a), cardinality(p_vec_b));
@@ -71,6 +74,8 @@ create or replace function public.hybrid_spoiler_safe_rag_search(
 returns jsonb
 language plpgsql
 stable
+security definer
+set search_path = public
 as $$
 declare
   v_safe_playback_ms bigint := greatest(0, coalesce(p_playback_ms, 0));
@@ -139,7 +144,7 @@ end;
 $$;
 
 comment on function public.hybrid_spoiler_safe_rag_search(uuid, bigint, text, float4[], integer) is
-  'Hybrid Reciprocal Rank Fusion (RRF) search combining Full-Text, Trigram, and Semantic Vector similarity strictly bounded by playback_position_ms.';
+  'Hybrid Reciprocal Rank Fusion (RRF) SECURITY DEFINER search combining Full-Text, Trigram, and Semantic Vector similarity strictly bounded by playback_position_ms.';
 
 -- ----------------------------------------------------------------------------
 -- 3. RPC: public.get_cross_episode_spoiler_safe_context
@@ -155,6 +160,8 @@ create or replace function public.get_cross_episode_spoiler_safe_context(
 returns jsonb
 language plpgsql
 stable
+security definer
+set search_path = public
 as $$
 declare
   v_program_id uuid;
@@ -215,7 +222,7 @@ end;
 $$;
 
 comment on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) is
-  'Multi-episode context resolver unlocking completed prior episodes and current episode up to playback_ms while blocking future episodes.';
+  'Multi-episode SECURITY DEFINER context resolver unlocking completed prior episodes and current episode up to playback_ms while blocking future episodes.';
 
 -- ----------------------------------------------------------------------------
 -- 4. RPC: public.get_firetv_stage1_bootstrap
@@ -232,6 +239,8 @@ create or replace function public.get_firetv_stage1_bootstrap(
 returns jsonb
 language plpgsql
 stable
+security definer
+set search_path = public
 as $$
 declare
   v_safe_playback_ms bigint := greatest(0, coalesce(p_playback_ms, 0));
@@ -332,4 +341,9 @@ end;
 $$;
 
 comment on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) is
-  'Single-roundtrip Fire TV Stage-1 overlay bootstrap returning profile, active scene, D-pad chips, pre-warmed cache cards, and session state.';
+  'Single-roundtrip SECURITY DEFINER Fire TV Stage-1 overlay bootstrap returning profile, active scene, D-pad chips, pre-warmed cache cards, and session state.';
+
+grant execute on function public.cosine_similarity_float4(float4[], float4[]) to anon, authenticated, service_role;
+grant execute on function public.hybrid_spoiler_safe_rag_search(uuid, bigint, text, float4[], integer) to anon, authenticated, service_role;
+grant execute on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) to anon, authenticated, service_role;
+grant execute on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) to anon, authenticated, service_role;

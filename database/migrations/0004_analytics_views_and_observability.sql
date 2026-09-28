@@ -160,6 +160,8 @@ create or replace function public.get_database_health_and_metrics()
 returns jsonb
 language plpgsql
 stable
+security definer
+set search_path = public
 as $$
 declare
   v_catalog_stats jsonb;
@@ -200,6 +202,11 @@ begin
       from public.spoiler_audit_log
       where audit_event_type = 'blocked_future_spoiler'
     ),
+    'malformed_spoiler_metadata_events', (
+      select count(*)
+      from public.spoiler_audit_log
+      where audit_event_type = 'malformed_spoiler_metadata'
+    ),
     'unverified_interactions', (
       select count(*)
       from public.interaction_history
@@ -230,6 +237,8 @@ create or replace function public.purge_expired_cache_and_rate_limits()
 returns jsonb
 language plpgsql
 volatile
+security definer
+set search_path = public
 as $$
 declare
   v_deleted_cache_rows integer;
@@ -259,3 +268,6 @@ $$;
 
 comment on function public.purge_expired_cache_and_rate_limits() is
   'Maintenance procedure pruning expired AI cache buckets, expired viewing sessions, and stale rate-limit windows.';
+
+grant execute on function public.get_database_health_and_metrics() to anon, authenticated, service_role;
+grant execute on function public.purge_expired_cache_and_rate_limits() to service_role;
