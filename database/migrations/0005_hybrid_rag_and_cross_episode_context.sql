@@ -140,21 +140,52 @@ begin
         and te.end_time_ms <= v_safe_playback_ms
         and te.reveal_time_ms <= v_safe_playback_ms
     ),
-    -- Step 2: Compute independent rank positions for Lexical and Vector arms
-    ranked_candidates as (
+    -- Step 2A: Rank only documents with a positive lexical match
+    lex_ranked as (
       select
-        c.*,
-        row_number() over (order by c.lex_score desc, c.start_time_ms desc) as rank_lex,
-        row_number() over (order by c.vec_score desc, c.start_time_ms desc) as rank_vec
+        id,
+        row_number() over (order by lex_score desc, start_time_ms desc) as rank_lex
+      from spoiler_gated_candidates
+      where lex_score > 0.0
+    ),
+    -- Step 2B: Rank only documents with a positive semantic match
+    vec_ranked as (
+      select
+        id,
+        row_number() over (order by vec_score desc, start_time_ms desc) as rank_vec
+      from spoiler_gated_candidates
+      where vec_score > 0.0
+    ),
+    -- Step 3: Reciprocal Rank Fusion combining only active arm terms
+    fused_candidates as (
+      select
+        c.id,
+        c.source_type,
+        c.start_time_ms,
+        c.end_time_ms,
+        c.reveal_time_ms,
+        c.content_text,
+        c.lex_score,
+        c.vec_score,
+        coalesce(1.0 / (60.0 + l.rank_lex), 0.0) +
+        coalesce(1.0 / (60.0 + v.rank_vec), 0.0) as rrf_score
       from spoiler_gated_candidates c
-      where c.lex_score > 0.0 or c.vec_score > 0.0
+      left join lex_ranked l on l.id = c.id
+      left join vec_ranked v on v.id = c.id
+      where l.rank_lex is not null or v.rank_vec is not null
     )
-    -- Step 3: Fuse rankings via Reciprocal Rank Fusion (k = 60)
     select
-      rc.*,
-      (1.0 / (60.0 + rc.rank_lex)) + (1.0 / (60.0 + rc.rank_vec)) as rrf_score
-    from ranked_candidates rc
-    order by rrf_score desc, rc.end_time_ms desc
+      fc.id,
+      fc.source_type,
+      fc.start_time_ms,
+      fc.end_time_ms,
+      fc.reveal_time_ms,
+      fc.content_text,
+      fc.lex_score,
+      fc.vec_score,
+      fc.rrf_score
+    from fused_candidates fc
+    order by fc.rrf_score desc, fc.end_time_ms desc
     limit v_safe_limit
   ) fused;
 
@@ -255,11 +286,15 @@ comment on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) 
 --    Tenant-scoped data (`profiles` and `conversation_sessions`) is returned
 --    only when invoked by `service_role` or when `p_device_id` matches the
 --    caller's verified `public.current_trusted_device_id()` claim.
+--    Profile selection is deterministic and claim-bound (`p_profile_id` or JWT claim).
 -- ----------------------------------------------------------------------------
+drop function if exists public.get_firetv_stage1_bootstrap(uuid, text, bigint);
+
 create or replace function public.get_firetv_stage1_bootstrap(
   p_episode_id uuid,
   p_device_id text,
-  p_playback_ms bigint
+  p_playback_ms bigint,
+  p_profile_id uuid default null
 )
 returns jsonb
 language plpgsql
@@ -274,8 +309,10 @@ declare
   v_bucket_sec integer;
   v_clean_device_id text := nullif(btrim(p_device_id), '');
   v_trusted_device_id text := public.current_trusted_device_id();
+  v_trusted_profile_id uuid := public.current_trusted_profile_id();
   v_is_service_caller boolean := public.is_service_role_caller();
   v_can_read_device_state boolean := false;
+  v_target_profile_id uuid := null;
   v_profile jsonb := null;
   v_active_scene jsonb := null;
   v_prewarmed_cards jsonb := '[]'::jsonb;
@@ -313,20 +350,44 @@ begin
     )
   );
 
-  -- 1. Resolve household profile ONLY if caller is authorized for p_device_id
+  -- 1. Deterministic & Claim-Bound Household Profile Resolution
   if v_can_read_device_state then
-    select jsonb_build_object(
-      'id', pr.id,
-      'display_name', pr.display_name,
-      'mode', pr.mode,
-      'spoiler_strictness', pr.spoiler_strictness,
-      'voice_tts_enabled', pr.voice_tts_enabled
-    )
-    into v_profile
-    from public.profiles pr
-    where pr.device_id = v_clean_device_id
-    order by pr.last_active_at desc
-    limit 1;
+    if v_trusted_profile_id is not null then
+      v_target_profile_id := v_trusted_profile_id;
+    elsif p_profile_id is not null then
+      v_target_profile_id := p_profile_id;
+    end if;
+
+    if v_target_profile_id is not null then
+      select jsonb_build_object(
+        'id', pr.id,
+        'display_name', pr.display_name,
+        'mode', pr.mode,
+        'spoiler_strictness', pr.spoiler_strictness,
+        'voice_tts_enabled', pr.voice_tts_enabled
+      )
+      into v_profile
+      from public.profiles pr
+      where pr.id = v_target_profile_id
+        and (v_is_service_caller or pr.device_id = v_clean_device_id);
+    else
+      select jsonb_build_object(
+        'id', pr.id,
+        'display_name', pr.display_name,
+        'mode', pr.mode,
+        'spoiler_strictness', pr.spoiler_strictness,
+        'voice_tts_enabled', pr.voice_tts_enabled
+      )
+      into v_profile
+      from public.profiles pr
+      where pr.device_id = v_clean_device_id
+      order by pr.last_active_at desc, pr.id asc
+      limit 1;
+    end if;
+
+    if v_profile is not null and (v_profile ? 'id') then
+      v_target_profile_id := (v_profile->>'id')::uuid;
+    end if;
   end if;
 
   -- 2. O(log N) GiST time_range containment lookup (<@) for the Active Scene
@@ -365,8 +426,10 @@ begin
     limit 1;
   end if;
 
-  -- 3. Fetch any pre-warmed cached AI cards for this episode & 15-second bucket
-  --    while strictly enforcing response_payload.spoilerSafeUpToMs <= v_safe_playback_ms
+  -- 3. Fetch pre-warmed cached AI cards for this episode & bucket.
+  --    Strictly enforces that every card has a valid non-negative numeric spoilerSafeUpToMs
+  --    that is <= v_safe_playback_ms; cards with missing, non-numeric, negative, or
+  --    future boundaries are strictly excluded.
   select coalesce(jsonb_agg(
     jsonb_build_object(
       'action_type', c.action_type,
@@ -379,15 +442,14 @@ begin
   where c.episode_id = p_episode_id
     and c.time_bucket_sec = v_bucket_sec
     and c.expires_at > now()
-    and (
-      not (c.response_payload ? 'spoilerSafeUpToMs')
-      or (
-        btrim(c.response_payload->>'spoilerSafeUpToMs') ~ '^[0-9]{1,18}$'
-        and (btrim(c.response_payload->>'spoilerSafeUpToMs'))::bigint <= v_safe_playback_ms
-      )
-    );
+    and jsonb_typeof(c.response_payload) = 'object'
+    and (c.response_payload ? 'spoilerSafeUpToMs')
+    and jsonb_typeof(c.response_payload->'spoilerSafeUpToMs') in ('number', 'string')
+    and btrim(c.response_payload->>'spoilerSafeUpToMs') ~ '^[0-9]{1,18}$'
+    and (btrim(c.response_payload->>'spoilerSafeUpToMs'))::bigint between 0 and v_safe_playback_ms;
 
   -- 4. Fetch active multi-turn conversation session & bookmarks ONLY if caller is authorized for p_device_id
+  --    Deterministically matched to v_target_profile_id if resolved
   if v_can_read_device_state then
     select jsonb_build_object(
       'session_id', cs.id,
@@ -399,8 +461,10 @@ begin
     from public.conversation_sessions cs
     where cs.device_id = v_clean_device_id
       and cs.episode_id = p_episode_id
+      and (v_target_profile_id is null or cs.profile_id is null or cs.profile_id = v_target_profile_id)
       and cs.expires_at > now()
-    order by cs.updated_at desc
+    order by (case when cs.profile_id = v_target_profile_id then 0 else 1 end) asc,
+             cs.updated_at desc
     limit 1;
   end if;
 
@@ -417,8 +481,8 @@ begin
 end;
 $$;
 
-comment on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) is
-  'Single-roundtrip SECURITY DEFINER Fire TV Stage-1 overlay bootstrap returning active scene, D-pad chips, pre-warmed cache cards, and claim-authorized profile/session state.';
+comment on function public.get_firetv_stage1_bootstrap(uuid, text, bigint, uuid) is
+  'Single-roundtrip SECURITY DEFINER Fire TV Stage-1 overlay bootstrap returning active scene, D-pad chips, strictly verified pre-warmed cache cards, and claim-bound profile/session state.';
 
 revoke all on function public.cosine_similarity_float4(float4[], float4[]) from public;
 grant execute on function public.cosine_similarity_float4(float4[], float4[]) to anon, authenticated, service_role;
@@ -429,5 +493,5 @@ grant execute on function public.hybrid_spoiler_safe_rag_search(uuid, bigint, te
 revoke all on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) from public;
 grant execute on function public.get_cross_episode_spoiler_safe_context(uuid, bigint) to anon, authenticated, service_role;
 
-revoke all on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) from public;
-grant execute on function public.get_firetv_stage1_bootstrap(uuid, text, bigint) to anon, authenticated, service_role;
+revoke all on function public.get_firetv_stage1_bootstrap(uuid, text, bigint, uuid) from public;
+grant execute on function public.get_firetv_stage1_bootstrap(uuid, text, bigint, uuid) to anon, authenticated, service_role;

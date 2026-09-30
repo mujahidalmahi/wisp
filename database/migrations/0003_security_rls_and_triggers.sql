@@ -1060,25 +1060,75 @@ declare
   v_json_type text;
   v_card_spoiler_ms bigint;
 begin
+  -- 1. Response card is null or not a JSON object: clamp, unverify, and audit
   if new.response_card is null or jsonb_typeof(new.response_card) <> 'object' then
+    new.spoiler_floor_verified := false;
     new.response_card := jsonb_build_object('spoilerSafeUpToMs', new.playback_position_ms);
+
+    insert into public.spoiler_audit_log (
+      episode_id,
+      requested_playback_ms,
+      blocked_item_timestamp_ms,
+      audit_event_type,
+      source_rpc,
+      details
+    )
+    values (
+      new.episode_id,
+      new.playback_position_ms,
+      null,
+      'malformed_spoiler_metadata',
+      'trg_fn_enforce_interaction_spoiler_gate',
+      jsonb_build_object(
+        'action_type', new.action_type,
+        'ai_provider', new.ai_provider,
+        'reason', 'non_object_response_card',
+        'clamped_to_ms', new.playback_position_ms
+      )
+    );
+
     return new;
   end if;
 
+  -- 2. spoilerSafeUpToMs key is completely missing: clamp, unverify, and audit
   if not (new.response_card ? 'spoilerSafeUpToMs') then
+    new.spoiler_floor_verified := false;
     new.response_card := jsonb_set(
       new.response_card,
       '{spoilerSafeUpToMs}',
       to_jsonb(new.playback_position_ms),
       true
     );
+
+    insert into public.spoiler_audit_log (
+      episode_id,
+      requested_playback_ms,
+      blocked_item_timestamp_ms,
+      audit_event_type,
+      source_rpc,
+      details
+    )
+    values (
+      new.episode_id,
+      new.playback_position_ms,
+      null,
+      'malformed_spoiler_metadata',
+      'trg_fn_enforce_interaction_spoiler_gate',
+      jsonb_build_object(
+        'action_type', new.action_type,
+        'ai_provider', new.ai_provider,
+        'reason', 'missing_spoiler_safe_up_to_ms',
+        'clamped_to_ms', new.playback_position_ms
+      )
+    );
+
     return new;
   end if;
 
   v_json_type := jsonb_typeof(new.response_card->'spoilerSafeUpToMs');
   v_raw_spoiler_text := btrim(new.response_card->>'spoilerSafeUpToMs');
 
-  -- Validate that the JSON value is a valid 64-bit integer before casting
+  -- 3. Validate that the JSON value is a valid 64-bit integer before casting
   if v_raw_spoiler_text is null
      or v_json_type not in ('number', 'string')
      or v_raw_spoiler_text !~ '^-?[0-9]{1,18}$'
@@ -1110,6 +1160,7 @@ begin
         'ai_provider', new.ai_provider,
         'raw_value', coalesce(v_raw_spoiler_text, 'null'),
         'json_type', coalesce(v_json_type, 'null'),
+        'reason', 'invalid_numeric_format',
         'clamped_to_ms', new.playback_position_ms
       )
     );
