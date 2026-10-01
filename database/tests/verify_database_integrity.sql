@@ -160,12 +160,12 @@ create table public.interaction_history (
 );
 
 -- Execute forward migrations and demo catalog seeding
-\i database/migrations/0001_initial_wisp_schema.sql
-\i database/migrations/0002_temporal_context_functions.sql
-\i database/migrations/0003_security_rls_and_triggers.sql
-\i database/migrations/0004_analytics_views_and_observability.sql
-\i database/migrations/0005_hybrid_rag_and_cross_episode_context.sql
-\i database/seeds/seed_demo_catalog.sql
+\i supabase/migrations/0001_initial_wisp_schema.sql
+\i supabase/migrations/0002_temporal_context_functions.sql
+\i supabase/migrations/0003_security_rls_and_triggers.sql
+\i supabase/migrations/0004_analytics_views_and_observability.sql
+\i supabase/migrations/0005_hybrid_rag_and_cross_episode_context.sql
+\i supabase/seed.sql
 
 do $$
 declare

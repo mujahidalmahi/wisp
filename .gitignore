@@ -40,5 +40,5 @@ Thumbs.db
 !.vscode/extensions.json
 
 # Supabase local
-database/supabase/.branches
-database/supabase/.temp
+supabase/.branches
+supabase/.temp

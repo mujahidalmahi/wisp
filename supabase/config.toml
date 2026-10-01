@@ -15,7 +15,7 @@ major_version = 15
 
 [db.seed]
 enabled = true
-sql_paths = ["../seeds/seed_demo_catalog.sql"]
+sql_paths = ["./seed.sql"]
 
 [studio]
 enabled = true
