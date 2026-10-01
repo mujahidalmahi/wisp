@@ -42,7 +42,13 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
     input: AiQueryInput,
     context: TemporalProgramContext,
     profileMode: HouseholdProfileMode,
+    availableActionTypes: WispActionType[] = [],
   ): AiCompletionRequest {
+    // An empty or omitted set falls back to the built-ins so a feature prompted
+    // in isolation is never told it may emit no action type at all.
+    const permittedActionTypes = availableActionTypes.length
+      ? availableActionTypes
+      : BUILT_IN_ACTION_TYPES;
     const systemPrompt = [
       'You are Wisp, an AI contextual viewing assistant built natively into Amazon Fire TV.',
       'STRICT ANTI-SPOILER RULE: Use ONLY the provided TemporalProgramContext. Never reveal events, plot twists, or character fates that occur after the current playback_position_ms.',
@@ -61,7 +67,7 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
       '}',
       '',
       `HARD CONSTRAINTS - violating any of these makes the card invalid:`,
-      `- "followUpChips" must contain between 2 and 4 entries. "actionType" must be exactly one of: ${BUILT_IN_ACTION_TYPES.join(', ')}.`,
+      `- "followUpChips" must contain between 2 and 4 entries. "actionType" must be exactly one of: ${permittedActionTypes.join(', ')}.`,
       `- Chip labels must be non-empty strings of at most 80 characters, and each "id" must be unique.`,
       `- "quizPayload" must be null, or an object with a non-empty "question", exactly 4 non-empty "options", an "explanation", and an integer "correctIndex` + '` between 0 and 3 inclusive.',
     ].join('\n');

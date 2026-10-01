@@ -38,6 +38,15 @@ export class AiFeatureRegistry {
     return (actionType: string) => this.canResolve(actionType);
   }
 
+  /**
+   * Action types the engine can dispatch right now. Prompt generation and output
+   * validation both read this list so the model is never told about an action
+   * the engine cannot honour, and never denied one it can.
+   */
+  listRegisteredActionTypes(): WispActionType[] {
+    return Array.from(this.features.keys());
+  }
+
   listRegisteredFeatures(): Array<{ actionType: WispActionType; description: string }> {
     return Array.from(this.features.values()).map((f) => ({
       actionType: f.actionType,

@@ -14,6 +14,7 @@ import {
 import { AiFeatureRegistry } from '../../ai-engine/src/features/feature-registry.ts';
 import { BaseAiFeatureModule } from '../../ai-engine/src/features/base.feature.ts';
 import { InteractiveQuizFeature } from '../../ai-engine/src/features/interactive-quiz.feature.ts';
+import { SceneExplainerFeature } from '../../ai-engine/src/features/scene-explainer.feature.ts';
 import type { QuickActionChip } from '../../ai-engine/src/types/index.ts';
 
 class ThemeAnalysisFeature extends BaseAiFeatureModule {
@@ -328,6 +329,140 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
       });
     });
 
+    describe('Prompt generation and validation share one registered action set', () => {
+      const promptActionTypes = (systemPrompt: string): string[] => {
+        const line = systemPrompt
+          .split('\n')
+          .find((entry) => entry.includes('must be exactly one of'));
+        assert.ok(line, 'prompt must state the permitted action types');
+        return line!
+          .split('must be exactly one of:')[1]
+          .replace('.', '')
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter((entry) => entry.length > 0);
+      };
+
+      it('lists every built-in action type when no registry is supplied', () => {
+        const feature = new SceneExplainerFeature();
+        const request = feature.buildPrompts(baseInput, {} as never, 'quick_glance');
+
+        assert.deepEqual(
+          promptActionTypes(request.systemPrompt).sort(),
+          [...BUILT_IN_ACTION_TYPES].sort(),
+        );
+      });
+
+      it('advertises a dynamically registered custom action type to the model', () => {
+        const registry = new AiFeatureRegistry();
+        registry.register(new ThemeAnalysisFeature());
+        const feature = new ThemeAnalysisFeature();
+
+        const request = feature.buildPrompts(
+          { ...baseInput, actionType: 'theme_analysis' },
+          {} as never,
+          'quick_glance',
+          registry.listRegisteredActionTypes(),
+        );
+
+        const advertised = promptActionTypes(request.systemPrompt);
+        assert.ok(advertised.includes('theme_analysis'), 'custom action must be advertised');
+        for (const builtIn of BUILT_IN_ACTION_TYPES) {
+          assert.ok(advertised.includes(builtIn), `built-in ${builtIn} must remain advertised`);
+        }
+      });
+
+      it('prompts the model with exactly the action types the validator will accept', async () => {
+        const registry = new AiFeatureRegistry();
+        registry.register(new ThemeAnalysisFeature());
+
+        const request = new ThemeAnalysisFeature().buildPrompts(
+          { ...baseInput, actionType: 'theme_analysis' },
+          {} as never,
+          'quick_glance',
+          registry.listRegisteredActionTypes(),
+        );
+
+        const advertised = promptActionTypes(request.systemPrompt);
+        assert.deepEqual(
+          advertised.slice().sort(),
+          registry.listRegisteredActionTypes().slice().sort(),
+          'prompt and registry must describe the same action set',
+        );
+        for (const actionType of advertised) {
+          assert.ok(
+            registry.canResolve(actionType),
+            `prompt advertises ${actionType} but the registry cannot resolve it`,
+          );
+        }
+      });
+
+      it('routes the same registered set through a real engine request', async () => {
+        const engine = WispAiEngine.createStandalone({ enableCache: false });
+        engine.registerFeature(new ThemeAnalysisFeature());
+        const adapter = new ScriptedCardAdapter(
+          JSON.stringify({ headline: 'H', body: 'B', followUpChips: [], quizPayload: null }),
+        );
+        engine.registerModelAdapter(adapter as never, 'first');
+
+        await engine.execute({
+          episodeId,
+          playbackPositionMs: 145000,
+          actionType: 'theme_analysis',
+          prompt: 'What themes are at play?',
+        });
+
+        const advertised = promptActionTypes(adapter.lastSystemPrompt);
+        assert.ok(advertised.includes('theme_analysis'), 'engine must pass the registry set');
+        assert.equal(
+          advertised.length,
+          engine.listFeatures().length,
+          'one advertised action type per registered feature',
+        );
+      });
+
+      it('falls back to the built-ins when the available set is omitted entirely', () => {
+        const request = new SceneExplainerFeature().buildPrompts(baseInput, {} as never, 'quick_glance', []);
+
+        assert.deepEqual(
+          promptActionTypes(request.systemPrompt).sort(),
+          [...BUILT_IN_ACTION_TYPES].sort(),
+          'an empty set must not produce an empty prompt constraint',
+        );
+      });
+
+      it('preserves a custom action type advertised by the prompt', async () => {
+        const engine = WispAiEngine.createStandalone({ enableCache: false });
+        engine.registerFeature(new ThemeAnalysisFeature());
+        const adapter = new ScriptedCardAdapter(
+          JSON.stringify({
+            headline: 'Thematic Read',
+            body: 'The harbour scene leans on water and reflection.',
+            followUpChips: [
+              { id: 'f1', label: 'What themes are at play?', actionType: 'theme_analysis' },
+              { id: 'f2', label: 'Explain the motif?', actionType: 'scene_explain' },
+            ],
+            quizPayload: null,
+          }),
+        );
+        engine.registerModelAdapter(adapter as never, 'first');
+
+        const card = await engine.execute({
+          episodeId,
+          playbackPositionMs: 145000,
+          actionType: 'theme_analysis',
+          prompt: 'What themes are at play?',
+        });
+
+        const advertised = promptActionTypes(adapter.lastSystemPrompt);
+        const emitted = card.followUpChips[0].actionType;
+
+        assert.ok(advertised.includes(emitted), 'emitted action type must have been advertised');
+        assert.equal(emitted, 'theme_analysis');
+        assert.equal(card.followUpChips[0].actionType, emitted, 'validator must not coerce it');
+      });
+    });
+
     describe('Registry-aware action type resolution', () => {
       it('accepts a built-in action type', () => {
         const result = validateChips(
@@ -423,7 +558,40 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
         );
       });
 
-      it('does not emit an undispatchable engine-fallback chip under a restrictive resolver', () => {
+      it('honours the minimum-chip invariant under a restrictive resolver', () => {
+        const permitted = 'post_watch_quiz';
+        const result = validateChips([], [], {
+          canResolveActionType: (actionType) => actionType === permitted,
+        });
+
+        assertChipInvariant(result.chips, 'single permitted action type');
+        for (const chip of result.chips) {
+          assert.equal(chip.actionType, permitted, 'every chip must stay dispatchable');
+        }
+      });
+
+      it('still honours the invariant when curated chips are unresolvable', () => {
+        const result = validateChips(
+          [
+            { id: 'custom-a', label: 'Unresolvable one?', actionType: 'not_registered' },
+            { id: 'custom-b', label: 'Unresolvable two?', actionType: 'also_missing' },
+          ],
+          FALLBACK_CHIPS,
+          { canResolveActionType: (actionType) => actionType === 'post_watch_quiz' },
+        );
+
+        assertChipInvariant(result.chips, 'unresolvable curated chips');
+        assert.equal(
+          result.coercedActionTypes,
+          2,
+          'unresolvable action types are coerced, not left undispatchable',
+        );
+        for (const chip of result.chips) {
+          assert.equal(chip.actionType, 'post_watch_quiz');
+        }
+      });
+
+      it('never emits an undispatchable engine-fallback chip under a restrictive resolver', () => {
         const result = validateChips([], [], {
           canResolveActionType: (actionType) => actionType === 'post_watch_quiz',
         });

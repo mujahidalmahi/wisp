@@ -183,6 +183,13 @@ export interface IAiFeatureModule {
     input: AiQueryInput,
     context: TemporalProgramContext,
     profileMode: HouseholdProfileMode,
+    /**
+     * Action types the engine can dispatch. Supplied by the engine so a
+     * dynamically registered feature is advertised to the model. Falls back to
+     * the five built-ins when omitted, so a feature can still be prompted in
+     * isolation without the engine or registry.
+     */
+    availableActionTypes?: WispActionType[],
   ): AiCompletionRequest;
   formatResponseCard(
     rawModelOutput: string,

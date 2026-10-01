@@ -32,6 +32,21 @@ const ENGINE_FALLBACK_CHIPS: ReadonlyArray<QuickActionChip> = [
   { id: 'wisp-fallback-context', label: 'Ask about this scene', actionType: 'contextual_qa' },
 ];
 
+/** Navigation label for any built-in action type that can top up a thin card. */
+const FALLBACK_ACTION_LABELS: Readonly<Record<string, string>> = {
+  entity_explain: 'Who are these people?',
+  episode_recap: 'Catch me up so far',
+  post_watch_quiz: 'Test what you remember?',
+};
+
+function fallbackLabelFor(actionType: string, variant: number): string {
+  const base =
+    FALLBACK_ACTION_LABELS[actionType] ??
+    ENGINE_FALLBACK_CHIPS.find((chip) => chip.actionType === actionType)?.label ??
+    'Ask about this scene';
+  return variant === 0 ? base : `${base} (${variant + 1})`;
+}
+
 export interface ChipValidationResult {
   chips: QuickActionChip[];
   coercedActionTypes: number;
@@ -67,6 +82,11 @@ export function validateChips(
 ): ChipValidationResult {
   const maxLabelLength = options.maxLabelLength ?? MAX_CHIP_LABEL_LENGTH;
   const canResolve = options.canResolveActionType ?? isBuiltInActionType;
+  // Coercion must not emit an action type the engine cannot dispatch either, so
+  // the safe target is resolved against the same predicate as the candidate.
+  const coercionTarget = canResolve(SAFE_FALLBACK_ACTION)
+    ? SAFE_FALLBACK_ACTION
+    : BUILT_IN_ACTION_TYPES.find(canResolve) ?? SAFE_FALLBACK_ACTION;
 
   const candidates = Array.isArray(rawChips) ? rawChips : [];
   const accepted: QuickActionChip[] = [];
@@ -76,7 +96,7 @@ export function validateChips(
   let truncatedChips = 0;
 
   for (const candidate of candidates) {
-    const normalized = normalizeChip(candidate, canResolve, seenIds);
+    const normalized = normalizeChip(candidate, canResolve, seenIds, maxLabelLength, coercionTarget);
 
     if (!normalized.ok) {
       droppedChips += 1;
@@ -101,7 +121,13 @@ export function validateChips(
     return { chips: accepted, coercedActionTypes, droppedChips, truncatedChips, usedFallback };
   }
 
-  const curated = collectCuratedChips(fallbackChips, canResolve, seenIds, maxLabelLength);
+  const curated = collectCuratedChips(
+    fallbackChips,
+    canResolve,
+    seenIds,
+    maxLabelLength,
+    coercionTarget,
+  );
   const chips =
     curated.length < MIN_CHIPS ? completeWithEngineFallback(curated, canResolve) : curated;
 
@@ -156,7 +182,8 @@ function normalizeChip(
   candidate: unknown,
   canResolve: ActionTypeResolver,
   seenIds: Set<string>,
-  maxLabelLength = MAX_CHIP_LABEL_LENGTH,
+  maxLabelLength: number,
+  coercionTarget: WispActionType,
 ): { ok: true; chip: QuickActionChip; coerced: boolean } | { ok: false } {
   if (!isRecord(candidate)) {
     return { ok: false };
@@ -181,7 +208,7 @@ function normalizeChip(
   return {
     ok: true,
     coerced: !resolvable,
-    chip: { id, label, actionType: resolvable ? requested : SAFE_FALLBACK_ACTION },
+    chip: { id, label, actionType: resolvable ? requested : coercionTarget },
   };
 }
 
@@ -190,6 +217,7 @@ function collectCuratedChips(
   canResolve: ActionTypeResolver,
   seenIds: Set<string>,
   maxLabelLength: number,
+  coercionTarget: WispActionType,
 ): QuickActionChip[] {
   const collected: QuickActionChip[] = [];
   const curatedIds = new Set(seenIds);
@@ -199,7 +227,7 @@ function collectCuratedChips(
       break;
     }
 
-    const normalized = normalizeChip(chip, canResolve, curatedIds, maxLabelLength);
+    const normalized = normalizeChip(chip, canResolve, curatedIds, maxLabelLength, coercionTarget);
     if (!normalized.ok) {
       continue;
     }
@@ -215,6 +243,13 @@ function collectCuratedChips(
  * Guarantees the minimum-chip contract even when the curated scene data is
  * missing or malformed. Only action types the resolver accepts are used, so the
  * guarantee cannot emit an undispatchable chip.
+ *
+ * The resolver may permit far fewer action types than the contract needs (a
+ * registry exposing a single feature, for instance). Chips are therefore filled
+ * from every resolvable action type and, if that still leaves the card short,
+ * from uniquely identified variants of the permitted ones. Every emitted chip
+ * keeps a non-empty label and a distinct id, so the viewer always has at least
+ * two things to press.
  */
 function completeWithEngineFallback(
   chips: QuickActionChip[],
@@ -223,15 +258,36 @@ function completeWithEngineFallback(
   const completed = [...chips];
   const usedIds = new Set(chips.map((chip) => chip.id));
 
+  const add = (id: string, label: string, actionType: WispActionType): void => {
+    if (completed.length >= MAX_CHIPS || usedIds.has(id) || !canResolve(actionType)) {
+      return;
+    }
+    usedIds.add(id);
+    completed.push({ id, label, actionType });
+  };
+
   for (const chip of ENGINE_FALLBACK_CHIPS) {
-    if (completed.length >= MAX_CHIPS) {
-      break;
+    add(chip.id, chip.label, chip.actionType);
+  }
+
+  if (completed.length >= MIN_CHIPS) {
+    return completed;
+  }
+
+  // The resolver permits fewer action types than the contract needs, which can
+  // happen at either end: no curated chips survived, or the resolver itself only
+  // accepts a narrow set. Widening to every permitted built-in comes first.
+  const resolvableBuiltIns = BUILT_IN_ACTION_TYPES.filter(canResolve);
+  for (const actionType of resolvableBuiltIns) {
+    add(`wisp-fallback-${actionType}`, fallbackLabelFor(actionType, 0), actionType);
+  }
+
+  // A resolver exposing a single action type still has to yield two selectable
+  // chips. Repeating it is safe because ids and labels stay distinct.
+  for (let variant = 1; variant < MIN_CHIPS && completed.length < MIN_CHIPS; variant++) {
+    for (const actionType of resolvableBuiltIns) {
+      add(`wisp-fallback-${actionType}-v${variant + 1}`, fallbackLabelFor(actionType, variant), actionType);
     }
-    if (usedIds.has(chip.id) || !canResolve(chip.actionType)) {
-      continue;
-    }
-    usedIds.add(chip.id);
-    completed.push(chip);
   }
 
   return completed;

@@ -303,8 +303,67 @@ describe('AI Integration: Provider Request Timeouts & Failure Classification', (
             userPrompt: '{}',
             signal: controller.signal,
           }),
+        (err: Error) => {
+          assert.ok(err instanceof AiProviderCallerAbortError, `received ${err.name}`);
+          assert.match(err.message, /already cancelled/);
+          return true;
+        },
+      );
+
+      assert.equal(
+        cooperative.callCount,
+        0,
+        'a pre-aborted caller signal must not start provider work',
+      );
+    });
+
+    it('rejects a pre-aborted signal immediately even when the adapter ignores AbortSignal', async () => {
+      const router = new AiProviderRouter({ providerTimeoutMs: 30000 });
+      const defiant = new HangingTestAiAdapter({
+        name: 'pre-aborted-defiant',
+        hangForMs: 30000,
+        respectSignal: false,
+      });
+      const backup = new DeterministicTestAiAdapter({ name: 'pre-aborted-backup' });
+      router.registerAdapter(defiant, 'first');
+      router.registerAdapter(backup, 'first');
+
+      const controller = new AbortController();
+      controller.abort(new Error('viewer closed the drawer'));
+
+      const startedAt = Date.now();
+      await assert.rejects(
+        () =>
+          router.completeWithFallback({
+            systemPrompt: 's',
+            userPrompt: '{}',
+            signal: controller.signal,
+          }),
         (err: Error) => err instanceof AiProviderCallerAbortError,
       );
+      const elapsedMs = Date.now() - startedAt;
+
+      assert.ok(elapsedMs < 1000, `router must not hang on a pre-aborted signal, took ${elapsedMs}ms`);
+      assert.equal(defiant.callCount, 0, 'no provider work may start after cancellation');
+      assert.equal(backup.callCount, 0, 'caller cancellation must not fail over to another provider');
+    });
+
+    it('aborts the adapter when the router budget fires and classifies it as a timeout', async () => {
+      const router = new AiProviderRouter({ providerTimeoutMs: 120 });
+      const cooperative = new HangingTestAiAdapter({
+        name: 'budget-fired-provider',
+        hangForMs: 30000,
+      });
+      const backup = new DeterministicTestAiAdapter({ name: 'budget-fired-backup' });
+      router.registerAdapter(backup, 'first');
+      router.registerAdapter(cooperative, 'first');
+
+      const result = await router.completeWithFallback({ systemPrompt: 's', userPrompt: '{}' });
+
+      assert.ok(cooperative.observedAbort, 'the adapter must receive the timeout abort');
+      assert.equal(cooperative.workInFlight, false, 'the adapter must stop its real work');
+      assert.equal(cooperative.callCount, 1, 'a timeout is not a caller cancellation, so fallback continues');
+      assert.match(result.providerName, /budget-fired-backup/);
     });
 
     it('does not abort the provider signal on a successful completion', async () => {

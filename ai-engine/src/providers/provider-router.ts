@@ -114,27 +114,34 @@ export class AiProviderRouter {
     request: AiCompletionRequest,
     budgetMs: number,
   ): Promise<AiCompletionResult> {
-    const controller = new AbortController();
     const callerSignal = request.signal;
     const timeoutError = new AiProviderTimeoutError(adapter.name, budgetMs);
 
+    // A pre-aborted signal never replays its event to listeners attached later,
+    // so the abort composed below would never notify the deadline promise and a
+    // non-cooperative adapter would hold the attempt open indefinitely. Settle
+    // before any timer exists and before the provider is called.
+    if (callerSignal?.aborted) {
+      throw new AiProviderCallerAbortError(adapter.name, callerSignal.reason);
+    }
+
+    const controller = new AbortController();
     const abortForBudget = () => controller.abort(timeoutError);
     const budgetTimer = unrefTimer(setTimeout(abortForBudget, budgetMs));
-
     const onCallerAbort = () => controller.abort(callerSignal?.reason);
-    if (callerSignal?.aborted) {
-      onCallerAbort();
-    } else {
-      callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
-    }
+    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
 
     const signal = composeAbortSignal(controller.signal, callerSignal);
     const deadline = new Promise<never>((_, reject) => {
-      signal.addEventListener(
-        'abort',
-        () => reject(controller.signal.reason ?? timeoutError),
-        { once: true },
-      );
+      const rejectOnAbort = () => reject(controller.signal.reason ?? timeoutError);
+      // The composed signal can already be aborted if the caller cancelled
+      // between the check above and this listener being attached, and an
+      // already-aborted signal never replays its event to a new listener.
+      if (signal.aborted) {
+        rejectOnAbort();
+        return;
+      }
+      signal.addEventListener('abort', rejectOnAbort, { once: true });
     });
 
     try {

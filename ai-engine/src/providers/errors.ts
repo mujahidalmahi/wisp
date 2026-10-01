@@ -50,12 +50,6 @@ export class AiProviderCallerAbortError extends Error {
 }
 
 /**
- * Combines the router's budget controller with a caller-supplied signal so both
- * cancellation sources reach the adapter. Falls back to the controller alone on
- * runtimes without AbortSignal.any, where the router mirrors caller aborts onto
- * the controller and behaviour is preserved either way.
- */
-/**
  * Stops a Node timer from holding the process open. Under the DOM lib the return
  * type is a number, so the capability is probed rather than assumed.
  */
@@ -65,6 +59,12 @@ export function unrefTimer<T>(timer: T): T {
   return timer;
 }
 
+/**
+ * Combines the router's budget controller with a caller-supplied signal so both
+ * cancellation sources reach the adapter. Falls back to the controller alone on
+ * runtimes without AbortSignal.any, where the router mirrors caller aborts onto
+ * the controller and behaviour is preserved either way.
+ */
 export function composeAbortSignal(
   controllerSignal: AbortSignal,
   callerSignal?: AbortSignal,
