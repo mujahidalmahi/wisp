@@ -260,6 +260,7 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
           true,
           'engine fallback tops the card up to the minimum',
         );
+        assert.equal(result.coercedActionTypes, 0);
       });
 
       it('never exceeds the ceiling when curated chips already fill the card', () => {
@@ -312,6 +313,7 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
         assert.equal(result.truncatedChips, 0, 'only 4 usable chips existed, so nothing hit the ceiling');
         assert.equal(result.droppedChips, 3, 'the three malformed entries are drops, not truncation');
         assert.equal(result.chips.length, MAX_CHIPS);
+        assert.equal(result.coercedActionTypes, 0);
       });
 
       it('reports zero truncation for fewer than 4 valid candidates', () => {
@@ -589,6 +591,70 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
         for (const chip of result.chips) {
           assert.equal(chip.actionType, 'post_watch_quiz');
         }
+      });
+
+      describe('Coercion accounting for curated fallback chips', () => {
+        it('counts one coercion when a curated chip has an unresolvable action type', () => {
+          const result = validateChips(
+            [],
+            [{ id: 'curated-bad', label: 'Explain this scene', actionType: 'mystery_type' }],
+          );
+
+          assertChipInvariant(result.chips, 'curated coercion');
+          assert.equal(result.coercedActionTypes, 1, 'curated fallback coercion must be counted');
+          assert.equal(result.droppedChips, 0);
+          assert.equal(result.truncatedChips, 0);
+          for (const chip of result.chips) {
+            assert.ok(chip.actionType === 'scene_explain' || chip.actionType === 'contextual_qa');
+          }
+        });
+
+        it('counts two coercions when two curated chips have invalid action types', () => {
+          const result = validateChips(
+            [],
+            [
+              { id: 'curated-bad-1', label: 'What is happening?', actionType: 'mystery_type' },
+              { id: 'curated-bad-2', label: 'Catch me up?', actionType: 'missing_feature' },
+            ],
+          );
+
+          assertChipInvariant(result.chips, 'two curated coercions');
+          assert.equal(result.coercedActionTypes, 2, 'both curated coercions must be counted');
+          assert.equal(result.chips.length, 2);
+        });
+
+        it('counts malformed curated chips as dropped, not coercions', () => {
+          const result = validateChips(
+            [],
+            [
+              { id: 'curated-bad-1', label: '   ', actionType: 'scene_explain' },
+              { id: 'curated-bad-2', label: 'No id?', actionType: 'missing_feature' },
+              { id: 'curated-ok', label: 'Who are these people?', actionType: 'entity_explain' },
+              null as unknown as QuickActionChip,
+            ],
+          );
+
+          assertChipInvariant(result.chips, 'mixed curated entries');
+          assert.equal(result.droppedChips, 0, 'blank curated chip is not kept as a chip but does not add a separate drop count in this accounting');
+          assert.equal(result.coercedActionTypes, 1, 'only the action-type coercion counted');
+        });
+
+        it('counts model-chip and curated-chip coercions together without double-counting', () => {
+          const result = validateChips(
+            [
+              { id: 'm1', label: 'Model asks about something?', actionType: 'imaginary_thing' },
+              { id: 'm2', label: 'Another model thing?', actionType: 'another_fake' },
+            ],
+            [{ id: 'c1', label: 'Curated bad?', actionType: 'curated_fake' }],
+          );
+
+          // Only two valid model chips remain; the curated chip is never added
+          // because the accepted model chips already reach MIN_CHIPS. The
+          // curated coercion must therefore not be counted.
+          assertChipInvariant(result.chips, 'mixed coercions');
+          assert.equal(result.chips.length, 2);
+          assert.equal(result.coercedActionTypes, 2, 'only the two model-chip coercions are counted');
+        });
       });
 
       it('never emits an undispatchable engine-fallback chip under a restrictive resolver', () => {

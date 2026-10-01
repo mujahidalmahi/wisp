@@ -128,8 +128,12 @@ export function validateChips(
     maxLabelLength,
     coercionTarget,
   );
+  coercedActionTypes += curated.coercedActionTypes;
+
   const chips =
-    curated.length < MIN_CHIPS ? completeWithEngineFallback(curated, canResolve) : curated;
+    curated.chips.length < MIN_CHIPS
+      ? completeWithEngineFallback(curated.chips, canResolve)
+      : curated.chips;
 
   return { chips, coercedActionTypes, droppedChips, truncatedChips, usedFallback };
 }
@@ -212,18 +216,25 @@ function normalizeChip(
   };
 }
 
+/**
+ * Curated scene chips are also repaired, so a chip whose action type is not
+ * resolvable is coerced to the same safe target as a model chip. The count is
+ * returned rather than accumulated through module state so each repair is
+ * attributed to exactly one source and nothing is double counted.
+ */
 function collectCuratedChips(
   fallbackChips: QuickActionChip[],
   canResolve: ActionTypeResolver,
   seenIds: Set<string>,
   maxLabelLength: number,
   coercionTarget: WispActionType,
-): QuickActionChip[] {
-  const collected: QuickActionChip[] = [];
+): { chips: QuickActionChip[]; coercedActionTypes: number } {
+  const chips: QuickActionChip[] = [];
   const curatedIds = new Set(seenIds);
+  let coercedActionTypes = 0;
 
   for (const chip of Array.isArray(fallbackChips) ? fallbackChips : []) {
-    if (collected.length >= MAX_CHIPS) {
+    if (chips.length >= MAX_CHIPS) {
       break;
     }
 
@@ -232,11 +243,15 @@ function collectCuratedChips(
       continue;
     }
 
+    if (normalized.coerced) {
+      coercedActionTypes += 1;
+    }
+
     curatedIds.add(normalized.chip.id);
-    collected.push(normalized.chip);
+    chips.push(normalized.chip);
   }
 
-  return collected;
+  return { chips, coercedActionTypes };
 }
 
 /**
