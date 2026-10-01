@@ -51,3 +51,14 @@
 - **Actual Behavior:** Node's native TypeScript strip-only loader throws `ERR_MODULE_NOT_FOUND` on extensionless imports, fails on non-type interface imports, and throws `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript parameter property is not supported in strip-only mode`.
 - **Workaround Implemented:** Configured `ai-engine/package.json` with `"type": "module"`, enabled `"allowImportingTsExtensions": true` in `ai-engine/tsconfig.json`, replaced constructor parameter properties with explicit class field declarations, and standardized on `import type` + `.ts` import specifiers across `ai-engine/src/**`.
 - **Actionable Recommendation:** Enable `"erasableSyntaxOnly": true` in shared TypeScript templates targeting Node 22/24 native execution so the IDE flags constructor parameter properties at authoring time.
+
+---
+
+### [FL-004] `engines: ">=20.0.0"` Advertises Node 20, But Every `npm test` Script Requires Node 24
+- **Date:** 2026-10-01
+- **Component / SDK:** Node.js v20.20.2 vs v24 TypeScript Runner / `ai-engine` verification loop
+- **Severity:** Medium
+- **Expected Behavior:** `npm test`, `npm run test:ai`, `npm run test:database`, and `npm run ai:playground` should execute on the Node version declared in root `package.json` `engines`, so a contributor who satisfies the declared engine constraint is never blocked from running the test suite.
+- **Actual Behavior:** Root `package.json` declares `"engines": { "node": ">=20.0.0", "npm": ">=10.0.0" }`, but all six `test:*` scripts invoke `node --test "<glob>.test.ts"` against raw TypeScript. On the declared-minimum Node 20.20.2 every one of them dies before running a single assertion with `TypeError [ERR_UNKNOWN_FILE_EXTENSION]: Unknown file extension ".ts"`. `ai-engine/package.json` declares no `engines` at all. Installing deps is not possible as a fallback because the repo ships no lockfile and no `node_modules`, so `npm ci` cannot resolve the tree.
+- **Workaround Implemented:** Ran the suites through an on-demand Node 24 binary, `npx -y node@24 --test ...`, which requires no repo mutation, no dependency install, and no lockfile. For type checking, used `npx -y -p typescript@5.7.3 tsc --noEmit`; this still reports 11 pre-existing `TS2580`/`TS2307` errors because `@types/node` is absent with no `node_modules` installed, so typecheck baseline was captured by `git stash` before/after comparison rather than by expecting a clean exit.
+- **Actionable Recommendation:** Set root `engines.node` to `>=24.0.0`, or declare the real floor that supports type stripping (Node 22.18+/23.6+), so `engines` matches the toolchain the scripts actually require. Adding `erasableSyntaxOnly` to `ai-engine/tsconfig.json` and committing a lockfile would additionally make `npm ci && npm run typecheck` reproducible on a clean checkout.
