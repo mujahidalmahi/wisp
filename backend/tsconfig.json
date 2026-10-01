@@ -16,6 +16,10 @@
     "noImplicitAny": false,
     "strictBindCallApply": false,
     "forceConsistentCasingInFileNames": true,
-    "noFallthroughCasesInSwitch": true
-  }
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@wisp/ai-engine": ["src/types/ai-engine.d.ts"]
+    }
+  },
+  "include": ["src/**/*"]
 }
