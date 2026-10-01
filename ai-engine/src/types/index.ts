@@ -165,6 +165,13 @@ export interface IAiModelAdapter {
 }
 
 /**
+ * Predicate deciding whether an actionType can actually be dispatched by the
+ * engine. Backed by AiFeatureRegistry at runtime so dynamically registered
+ * features validate without being coerced.
+ */
+export type ActionTypeResolver = (actionType: string) => boolean;
+
+/**
  * Pluggable AI Feature Module interface
  * Each feature (Q&A, Entity Explain, Scene Explain, Recap, Quiz, or new features)
  * builds its own specialized prompts and post-processes the response card.
@@ -184,6 +191,7 @@ export interface IAiFeatureModule {
     profileMode: HouseholdProfileMode,
     providerName: string,
     latencyMs: number,
+    canResolveActionType?: ActionTypeResolver,
   ): WispResponseCard;
 }
 

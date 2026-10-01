@@ -8,9 +8,42 @@ import {
   RecoveringAuthTestAiAdapter,
 } from '../helpers/mock-ai-adapter.ts';
 import { AiProviderRouter } from '../../ai-engine/src/providers/provider-router.ts';
+import { AiProviderCallerAbortError } from '../../ai-engine/src/providers/errors.ts';
+
+const episodeId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1';
+
+class ScriptedSignalRecorder {
+  readonly name: string;
+  private readonly seen: Array<AbortSignal | undefined>;
+
+  constructor(name: string, seen: Array<AbortSignal | undefined>) {
+    this.name = name;
+    this.seen = seen;
+  }
+
+  isConfigured(): boolean {
+    return true;
+  }
+
+  async complete(req: { userPrompt: string; signal?: AbortSignal }) {
+    this.seen.push(req.signal);
+    return {
+      providerName: this.name,
+      latencyMs: 5,
+      rawText: JSON.stringify({
+        headline: 'Recorded',
+        body: 'Body.',
+        bulletPoints: [],
+        followUpChips: [
+          { id: 'f1', label: 'Follow up one?', actionType: 'contextual_qa' },
+          { id: 'f2', label: 'Follow up two?', actionType: 'entity_explain' },
+        ],
+      }),
+    };
+  }
+}
 
 describe('AI Integration: Provider Request Timeouts & Failure Classification', () => {
-  const episodeId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1';
 
   const baseInput = {
     episodeId,
@@ -173,6 +206,139 @@ describe('AI Integration: Provider Request Timeouts & Failure Classification', (
 
     await engine.execute(baseInput);
     assert.equal(rateLimited.callCount, 2, 'a 429 must stay eligible on the very next request');
+  });
+
+  describe('AbortSignal delivery and cooperative termination', () => {
+    it('aborts the provider signal so a cooperative adapter stops its real work', async () => {
+      const engine = WispAiEngine.createStandalone({ enableCache: false });
+      const cooperative = new HangingTestAiAdapter({
+        name: 'cooperative-hung-provider',
+        timeoutMs: 120,
+        hangForMs: 30000,
+      });
+      const backup = new DeterministicTestAiAdapter({ name: 'cooperative-backup' });
+
+      engine.registerModelAdapter(backup, 'first');
+      engine.registerModelAdapter(cooperative, 'first');
+
+      assert.equal(cooperative.workInFlight, false, 'no work before the call');
+
+      const card = await engine.execute(baseInput);
+
+      assert.equal(card.providerUsed, 'cooperative-backup');
+      assert.ok(cooperative.sawSignal, 'router must inject a signal');
+      assert.ok(cooperative.observedAbort, 'the adapter must observe the abort event');
+      assert.equal(
+        cooperative.workInFlight,
+        false,
+        'a cooperative adapter must not still be working after the timeout',
+      );
+      assert.equal(cooperative.callCount, 1, 'aborted work is abandoned, not retried');
+    });
+
+    it('passes a caller-supplied signal through without replacing it', async () => {
+      const router = new AiProviderRouter({ providerTimeoutMs: 5000 });
+      const seen: Array<AbortSignal | undefined> = [];
+      const recorder = new ScriptedSignalRecorder('signal-recorder', seen);
+      const backup = new DeterministicTestAiAdapter({ name: 'unused-recorder-backup' });
+
+      router.registerAdapter(backup, 'first');
+      router.registerAdapter(recorder, 'first');
+
+      const callerSignal = new AbortController().signal;
+      await router.completeWithFallback({ systemPrompt: 's', userPrompt: '{}', signal: callerSignal });
+
+      assert.equal(seen.length, 1);
+      assert.notEqual(seen[0], callerSignal, 'router composes its own signal rather than reusing');
+      assert.equal(seen[0]?.aborted, false, 'caller signal must not be aborted by the router');
+      assert.equal(callerSignal.aborted, false);
+    });
+
+    it('terminates a cooperative attempt when the caller aborts', async () => {
+      const router = new AiProviderRouter({ providerTimeoutMs: 10000 });
+      const cooperative = new HangingTestAiAdapter({
+        name: 'caller-abort-cooperative',
+        hangForMs: 30000,
+      });
+      router.registerAdapter(cooperative, 'first');
+
+      const controller = new AbortController();
+      const attempt = router.completeWithFallback({
+        systemPrompt: 's',
+        userPrompt: '{}',
+        signal: controller.signal,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      controller.abort(new Error('viewer closed the drawer'));
+
+      await assert.rejects(
+        () => attempt,
+        (err: Error) => {
+          assert.ok(
+            err instanceof AiProviderCallerAbortError,
+            `expected caller-abort error, received ${err.name}`,
+          );
+          assert.match(err.message, /viewer closed the drawer/);
+          return true;
+        },
+      );
+
+      assert.ok(cooperative.observedAbort, 'caller abort must reach the adapter signal');
+      assert.equal(cooperative.workInFlight, false, 'cooperative adapter stopped its real work');
+    });
+
+    it('honours a caller signal that is already aborted before the attempt', async () => {
+      const router = new AiProviderRouter({ providerTimeoutMs: 10000 });
+      const cooperative = new HangingTestAiAdapter({ name: 'pre-aborted-provider' });
+      router.registerAdapter(cooperative, 'first');
+
+      const controller = new AbortController();
+      controller.abort(new Error('already cancelled'));
+
+      await assert.rejects(
+        () =>
+          router.completeWithFallback({
+            systemPrompt: 's',
+            userPrompt: '{}',
+            signal: controller.signal,
+          }),
+        (err: Error) => err instanceof AiProviderCallerAbortError,
+      );
+    });
+
+    it('does not abort the provider signal on a successful completion', async () => {
+      const router = new AiProviderRouter({ providerTimeoutMs: 5000 });
+      const seen: Array<AbortSignal | undefined> = [];
+      const recorder = new ScriptedSignalRecorder('success-signal-recorder', seen);
+      router.registerAdapter(recorder, 'first');
+
+      const result = await router.completeWithFallback({ systemPrompt: 's', userPrompt: '{}' });
+
+      assert.match(result.providerName, /success-signal-recorder/);
+      assert.equal(seen[0]?.aborted, false, 'signal must survive a successful attempt');
+    });
+
+    it('still bounds a non-cooperative adapter that ignores the signal', async () => {
+      const router = new AiProviderRouter({ providerTimeoutMs: 150 });
+      const defiant = new HangingTestAiAdapter({
+        name: 'signal-defiant-router',
+        hangForMs: 30000,
+        respectSignal: false,
+      });
+      const backup = new DeterministicTestAiAdapter({ name: 'defiant-router-backup' });
+
+      router.registerAdapter(backup, 'first');
+      router.registerAdapter(defiant, 'first');
+
+      const startedAt = Date.now();
+      const result = await router.completeWithFallback({ systemPrompt: 's', userPrompt: '{}' });
+      const elapsedMs = Date.now() - startedAt;
+
+      assert.ok(elapsedMs < 2000, `router must bound the wait, took ${elapsedMs}ms`);
+      assert.match(result.providerName, /defiant-router-backup/);
+      assert.equal(defiant.observedAbort, false, 'this adapter never observes the abort');
+    });
   });
 
   it('expires quarantine so a rotated key recovers without a process restart', async () => {

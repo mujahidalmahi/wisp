@@ -1,4 +1,5 @@
 import type {
+  ActionTypeResolver,
   AiCompletionRequest,
   AiQueryInput,
   HouseholdProfileMode,
@@ -90,10 +91,13 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
     profileMode: HouseholdProfileMode,
     providerName: string,
     latencyMs: number,
+    canResolveActionType?: ActionTypeResolver,
   ): WispResponseCard {
     const parsed = this.parseJsonSafely(rawModelOutput);
 
-    const chipResult = validateChips(parsed.followUpChips, context.active_scene.quick_action_chips);
+    const chipResult = validateChips(parsed.followUpChips, context.active_scene.quick_action_chips, {
+      canResolveActionType,
+    });
     const quizResult = validateQuizPayload(parsed.quizPayload);
     this.repairCount = chipResult.droppedChips + chipResult.truncatedChips + chipResult.coercedActionTypes;
 

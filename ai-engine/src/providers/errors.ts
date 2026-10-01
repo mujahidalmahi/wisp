@@ -35,6 +35,54 @@ export class AiProviderHttpError extends Error {
   }
 }
 
+/**
+ * Raised when the caller's own signal aborts an in-flight provider attempt,
+ * distinct from the router's per-provider timeout budget.
+ */
+export class AiProviderCallerAbortError extends Error {
+  readonly providerName: string;
+
+  constructor(providerName: string, reason?: unknown) {
+    super(`${providerName} attempt cancelled by caller${describeReason(reason)}`);
+    this.name = 'AiProviderCallerAbortError';
+    this.providerName = providerName;
+  }
+}
+
+/**
+ * Combines the router's budget controller with a caller-supplied signal so both
+ * cancellation sources reach the adapter. Falls back to the controller alone on
+ * runtimes without AbortSignal.any, where the router mirrors caller aborts onto
+ * the controller and behaviour is preserved either way.
+ */
+/**
+ * Stops a Node timer from holding the process open. Under the DOM lib the return
+ * type is a number, so the capability is probed rather than assumed.
+ */
+export function unrefTimer<T>(timer: T): T {
+  const maybeNodeTimer = timer as { unref?: () => void };
+  maybeNodeTimer.unref?.();
+  return timer;
+}
+
+export function composeAbortSignal(
+  controllerSignal: AbortSignal,
+  callerSignal?: AbortSignal,
+): AbortSignal {
+  if (!callerSignal) {
+    return controllerSignal;
+  }
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([controllerSignal, callerSignal]);
+  }
+  return controllerSignal;
+}
+
+function describeReason(reason: unknown): string {
+  const message = (reason as { message?: string } | null)?.message;
+  return message ? `: ${message}` : '';
+}
+
 export function isAbortLikeError(err: unknown): boolean {
   const name = (err as { name?: string } | null)?.name;
   return name === 'AbortError' || name === 'TimeoutError';

@@ -5,12 +5,40 @@ import {
   DeterministicTestAiAdapter,
 } from '../helpers/mock-ai-adapter.ts';
 import {
+  BUILT_IN_ACTION_TYPES,
   MAX_CHIPS,
   MIN_CHIPS,
   validateChips,
   validateQuizPayload,
 } from '../../ai-engine/src/features/output-validation.ts';
+import { AiFeatureRegistry } from '../../ai-engine/src/features/feature-registry.ts';
+import { BaseAiFeatureModule } from '../../ai-engine/src/features/base.feature.ts';
 import { InteractiveQuizFeature } from '../../ai-engine/src/features/interactive-quiz.feature.ts';
+import type { QuickActionChip } from '../../ai-engine/src/types/index.ts';
+
+class ThemeAnalysisFeature extends BaseAiFeatureModule {
+  readonly actionType = 'theme_analysis';
+  readonly description = 'Analyzes visual motifs and narrative themes in the active scene.';
+
+  protected getFeatureSpecificInstructions(): string {
+    return 'Task: Explain the visual motifs and symbolism in active_scene without spoiling future scenes.';
+  }
+}
+
+function assertChipInvariant(chips: Array<{ id: string; label: string }>, label: string) {
+  assert.ok(
+    chips.length >= MIN_CHIPS && chips.length <= MAX_CHIPS,
+    `${label}: expected ${MIN_CHIPS}-${MAX_CHIPS} chips, received ${chips.length}`,
+  );
+  assert.equal(
+    new Set(chips.map((chip) => chip.id)).size,
+    chips.length,
+    `${label}: chip ids must be unique`,
+  );
+  for (const chip of chips) {
+    assert.ok(chip.label.trim().length > 0, `${label}: chip "${chip.id}" has a blank label`);
+  }
+}
 
 const FALLBACK_CHIPS = [
   { id: 'scene-1', label: 'Explain this scene', actionType: 'scene_explain' },
@@ -159,6 +187,251 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
 
       assert.equal(result.chips.length, 2);
       assert.ok(result.chips.every((c) => typeof c.id === 'string' && c.id.length > 0));
+    });
+
+    describe('Minimum-chip invariant holds even when fallback data is unusable', () => {
+      const cases: Array<{ label: string; rawChips: unknown; fallbackChips: QuickActionChip[] }> = [
+        { label: 'empty model chips + valid fallback chips', rawChips: [], fallbackChips: FALLBACK_CHIPS },
+        {
+          label: 'empty model chips + one fallback chip',
+          rawChips: [],
+          fallbackChips: [{ id: 'only-one', label: 'Explain this scene', actionType: 'scene_explain' }],
+        },
+        { label: 'empty model chips + empty fallback array', rawChips: [], fallbackChips: [] },
+        {
+          label: 'malformed fallback chips',
+          rawChips: [],
+          fallbackChips: [
+            null as unknown as QuickActionChip,
+            { id: 'blank', label: '   ', actionType: 'scene_explain' } as QuickActionChip,
+            { id: 42, label: 'Non-string id', actionType: 'nope' } as unknown as QuickActionChip,
+            'not-a-chip' as unknown as QuickActionChip,
+          ],
+        },
+        {
+          label: 'undefined model chips + undefined-ish fallback',
+          rawChips: undefined,
+          fallbackChips: undefined as unknown as QuickActionChip[],
+        },
+      ];
+
+      for (const testCase of cases) {
+        it(`guarantees 2-4 chips: ${testCase.label}`, () => {
+          const result = validateChips(testCase.rawChips, testCase.fallbackChips);
+          assertChipInvariant(result.chips, testCase.label);
+          assert.equal(result.usedFallback, true);
+        });
+      }
+
+      it('prefers curated scene chips over the engine-level fallback when they are valid', () => {
+        const result = validateChips([], FALLBACK_CHIPS);
+        assert.deepEqual(
+          result.chips.map((chip) => chip.id),
+          ['scene-1', 'scene-2', 'scene-3'],
+          'curated chips must be preserved',
+        );
+      });
+
+      it('falls back to engine-level navigation chips when curated data is unusable', () => {
+        const result = validateChips([], []);
+        assert.deepEqual(
+          result.chips.map((chip) => chip.actionType),
+          ['scene_explain', 'contextual_qa'],
+        );
+        for (const chip of result.chips) {
+          assert.ok(
+            BUILT_IN_ACTION_TYPES.includes(chip.actionType),
+            'engine fallback must only use resolvable action types',
+          );
+        }
+      });
+
+      it('tops up a single curated chip with engine fallback instead of returning one', () => {
+        const result = validateChips(
+          [],
+          [{ id: 'curated-only', label: 'Explain this scene', actionType: 'scene_explain' }],
+        );
+
+        assertChipInvariant(result.chips, 'single curated chip');
+        assert.equal(result.chips[0].id, 'curated-only', 'curated chip is kept');
+        assert.equal(
+          result.chips.some((chip) => chip.id.startsWith('wisp-fallback-')),
+          true,
+          'engine fallback tops the card up to the minimum',
+        );
+      });
+
+      it('never exceeds the ceiling when curated chips already fill the card', () => {
+        const manyCurated = Array.from({ length: 6 }, (_, index) => ({
+          id: `curated-${index}`,
+          label: `Curated question ${index}?`,
+          actionType: 'contextual_qa' as const,
+        }));
+        const result = validateChips([], manyCurated);
+
+        assertChipInvariant(result.chips, 'six curated chips');
+        assert.equal(result.chips.length, MAX_CHIPS);
+      });
+
+      it('keeps the invariant for an empty card with no context chips at all', async () => {
+        const { card } = await renderCard(
+          JSON.stringify({ headline: 'No Context', body: 'Body.', followUpChips: [], quizPayload: null }),
+        );
+
+        assertChipInvariant(card.followUpChips, 'engine-rendered card');
+      });
+    });
+
+    describe('truncatedChips counts only over-limit discards', () => {
+      it('reports 3 truncated when 7 valid chips are supplied', () => {
+        const sevenValid = Array.from({ length: 7 }, (_, index) => ({
+          id: `c${index}`,
+          label: `Question ${index}?`,
+          actionType: 'contextual_qa' as const,
+        }));
+        const result = validateChips(sevenValid, FALLBACK_CHIPS);
+
+        assert.equal(result.truncatedChips, 3);
+        assert.equal(result.droppedChips, 0);
+        assert.equal(result.chips.length, MAX_CHIPS);
+      });
+
+      it('does not count malformed entries as truncated', () => {
+        const candidates = [
+          { id: 'v1', label: 'Valid one?', actionType: 'contextual_qa' },
+          { id: 'v2', label: 'Valid two?', actionType: 'entity_explain' },
+          { id: 'v3', label: 'Valid three?', actionType: 'scene_explain' },
+          { id: 'v4', label: 'Valid four?', actionType: 'episode_recap' },
+          null,
+          'garbage',
+          { id: 'bad', label: '  ', actionType: 'contextual_qa' },
+        ];
+        const result = validateChips(candidates, FALLBACK_CHIPS);
+
+        assert.equal(result.truncatedChips, 0, 'only 4 usable chips existed, so nothing hit the ceiling');
+        assert.equal(result.droppedChips, 3, 'the three malformed entries are drops, not truncation');
+        assert.equal(result.chips.length, MAX_CHIPS);
+      });
+
+      it('reports zero truncation for fewer than 4 valid candidates', () => {
+        const result = validateChips(
+          [
+            { id: 'a', label: 'One?', actionType: 'contextual_qa' },
+            { id: 'b', label: 'Two?', actionType: 'entity_explain' },
+            null,
+          ],
+          FALLBACK_CHIPS,
+        );
+
+        assert.equal(result.truncatedChips, 0);
+        assert.equal(result.droppedChips, 1);
+      });
+    });
+
+    describe('Registry-aware action type resolution', () => {
+      it('accepts a built-in action type', () => {
+        const result = validateChips(
+          [
+            { id: 'a', label: 'Built-in question?', actionType: 'episode_recap' },
+            { id: 'b', label: 'Another built-in?', actionType: 'scene_explain' },
+          ],
+          FALLBACK_CHIPS,
+        );
+
+        assert.equal(result.coercedActionTypes, 0);
+        assert.deepEqual(
+          result.chips.map((chip) => chip.actionType),
+          ['episode_recap', 'scene_explain'],
+        );
+      });
+
+      it('accepts a dynamically registered custom action type unchanged', () => {
+        const registry = new AiFeatureRegistry();
+        registry.register(new ThemeAnalysisFeature());
+
+        const result = validateChips(
+          [
+            { id: 'a', label: 'What themes are at play?', actionType: 'theme_analysis' },
+            { id: 'b', label: 'Explain the motif?', actionType: 'scene_explain' },
+          ],
+          FALLBACK_CHIPS,
+          { canResolveActionType: registry.asActionTypeResolver() },
+        );
+
+        assert.equal(result.coercedActionTypes, 0, 'a registered custom action must not be coerced');
+        assert.deepEqual(
+          result.chips.map((chip) => chip.actionType),
+          ['theme_analysis', 'scene_explain'],
+        );
+      });
+
+      it('still coerces a genuinely unregistered action type', () => {
+        const registry = new AiFeatureRegistry();
+
+        const result = validateChips(
+          [
+            { id: 'a', label: 'Never registered?', actionType: 'not_a_real_feature' },
+            { id: 'b', label: 'Also unknown?', actionType: 'another_fake' },
+          ],
+          FALLBACK_CHIPS,
+          { canResolveActionType: registry.asActionTypeResolver() },
+        );
+
+        assert.equal(result.coercedActionTypes, 2);
+        assert.deepEqual(
+          result.chips.map((chip) => chip.actionType),
+          ['contextual_qa', 'contextual_qa'],
+        );
+      });
+
+      it('exposes canResolve consistently with resolve()', () => {
+        const registry = new AiFeatureRegistry();
+        assert.equal(registry.canResolve('theme_analysis'), false);
+        registry.register(new ThemeAnalysisFeature());
+        assert.equal(registry.canResolve('theme_analysis'), true);
+        assert.equal(registry.canResolve('episode_recap'), true);
+      });
+
+      it('carries a custom action type end-to-end through the engine', async () => {
+        const engine = WispAiEngine.createStandalone({ enableCache: false });
+        engine.registerFeature(new ThemeAnalysisFeature());
+        const adapter = new ScriptedCardAdapter(
+          JSON.stringify({
+            headline: 'Thematic Read',
+            body: 'The harbour scene leans on water and reflection.',
+            bulletPoints: [],
+            followUpChips: [
+              { id: 'f1', label: 'What themes are at play?', actionType: 'theme_analysis' },
+              { id: 'f2', label: 'Explain the scene?', actionType: 'scene_explain' },
+            ],
+            quizPayload: null,
+          }),
+        );
+        engine.registerModelAdapter(adapter as never, 'first');
+
+        const card = await engine.execute({
+          episodeId,
+          playbackPositionMs: 145000,
+          actionType: 'theme_analysis',
+          prompt: 'What themes are at play?',
+        });
+
+        assert.equal(
+          card.followUpChips[0].actionType,
+          'theme_analysis',
+          'engine must preserve a registered custom action type',
+        );
+      });
+
+      it('does not emit an undispatchable engine-fallback chip under a restrictive resolver', () => {
+        const result = validateChips([], [], {
+          canResolveActionType: (actionType) => actionType === 'post_watch_quiz',
+        });
+
+        for (const chip of result.chips) {
+          assert.equal(chip.actionType, 'post_watch_quiz');
+        }
+      });
     });
 
     it('repairs a fully malformed chip array rather than emitting an unusable card', async () => {

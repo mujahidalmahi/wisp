@@ -83,6 +83,7 @@ export class WispAiEngine {
       profileMode,
       result.providerName,
       result.latencyMs,
+      this.features.asActionTypeResolver(),
     );
 
     if (this.enableCache && !input.inlineContextOverride) {

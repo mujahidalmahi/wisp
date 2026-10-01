@@ -14,12 +14,21 @@ import { AiProviderHttpError } from '../../ai-engine/src/providers/errors.ts';
  * `respectSignal: false` models an adapter that ignores the injected
  * AbortSignal, proving the router's own deadline still bounds the attempt.
  */
+function abortErrorFor(reason: unknown): Error {
+  return reason instanceof Error
+    ? reason
+    : Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+}
+
 export class HangingTestAiAdapter implements IAiModelAdapter {
   readonly name: string;
   readonly timeoutMs?: number;
   public callCount = 0;
   public sawSignal = false;
   public observedAbort = false;
+  /** True while the simulated request is still running; a cooperative adapter
+   * clears this the moment it observes the abort. */
+  public workInFlight = false;
   private readonly hangForMs: number;
   private readonly respectSignal: boolean;
 
@@ -41,27 +50,59 @@ export class HangingTestAiAdapter implements IAiModelAdapter {
 
   async complete(req: AiCompletionRequest): Promise<AiCompletionResult> {
     this.callCount += 1;
+    this.workInFlight = true;
 
-    if (req.signal) {
-      this.sawSignal = true;
-      if (this.respectSignal) {
-        req.signal.addEventListener(
-          'abort',
-          () => {
-            this.observedAbort = true;
-          },
-          { once: true },
-        );
+    try {
+      if (req.signal) {
+        this.sawSignal = true;
+        if (this.respectSignal) {
+          req.signal.addEventListener(
+            'abort',
+            () => {
+              this.observedAbort = true;
+            },
+            { once: true },
+          );
+          await this.simulateWorkUntilAborted(req.signal);
+          throw abortErrorFor(req.signal.reason);
+        }
       }
+
+      await new Promise((resolve) => setTimeout(resolve, this.hangForMs));
+
+      return {
+        providerName: this.name,
+        latencyMs: this.hangForMs,
+        rawText: JSON.stringify({
+          headline: 'unreachable',
+          body: '',
+          bulletPoints: [],
+          followUpChips: [],
+        }),
+      };
+    } finally {
+      this.workInFlight = false;
     }
+  }
 
-    await new Promise((resolve) => setTimeout(resolve, this.hangForMs));
+  private simulateWorkUntilAborted(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
 
-    return {
-      providerName: this.name,
-      latencyMs: this.hangForMs,
-      rawText: JSON.stringify({ headline: 'unreachable', body: '', bulletPoints: [], followUpChips: [] }),
-    };
+      const timer = setTimeout(resolve, this.hangForMs);
+      timer.unref?.();
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
   }
 }
 

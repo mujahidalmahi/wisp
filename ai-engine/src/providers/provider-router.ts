@@ -8,7 +8,14 @@ import { GroqModelAdapter } from './groq.adapter.ts';
 import { GeminiModelAdapter } from './gemini.adapter.ts';
 import { OpenRouterModelAdapter } from './openrouter.adapter.ts';
 import { OllamaModelAdapter } from './ollama.adapter.ts';
-import { AiProviderHttpError, AiProviderTimeoutError, isAbortLikeError } from './errors.ts';
+import {
+  AiProviderCallerAbortError,
+  AiProviderHttpError,
+  AiProviderTimeoutError,
+  composeAbortSignal,
+  isAbortLikeError,
+  unrefTimer,
+} from './errors.ts';
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = 10000;
 const DEFAULT_PROVIDER_QUARANTINE_MS = 300000;
@@ -77,6 +84,11 @@ export class AiProviderRouter {
       try {
         return await this.attemptWithinBudget(adapter, request, budgetMs);
       } catch (err: any) {
+        // Caller cancellation is not a provider fault, so it must not fall
+        // through to the next adapter or be reported as an aggregate failure.
+        if (err instanceof AiProviderCallerAbortError) {
+          throw err;
+        }
         if (err instanceof AiProviderHttpError && err.isConfigFault()) {
           this.quarantine(adapter);
         }
@@ -87,16 +99,42 @@ export class AiProviderRouter {
     throw new Error(`All configured AI providers failed -> ${errors.join(' | ')}`);
   }
 
+  /**
+   * Runs one adapter under a hard budget that genuinely cancels the underlying
+   * work. A controller is aborted either by the caller's signal or by the
+   * budget timer, and that combined signal is what the adapter receives, so a
+   * cooperative adapter can terminate its own in-flight request.
+   *
+   * The race against a timer remains as a backstop for adapters that ignore the
+   * signal entirely; those cannot be forced to stop, so bounding the wait is the
+   * only lever available for them.
+   */
   private async attemptWithinBudget(
     adapter: IAiModelAdapter,
     request: AiCompletionRequest,
     budgetMs: number,
   ): Promise<AiCompletionResult> {
-    const signal = AbortSignal.timeout(budgetMs);
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    const controller = new AbortController();
+    const callerSignal = request.signal;
+    const timeoutError = new AiProviderTimeoutError(adapter.name, budgetMs);
 
+    const abortForBudget = () => controller.abort(timeoutError);
+    const budgetTimer = unrefTimer(setTimeout(abortForBudget, budgetMs));
+
+    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    if (callerSignal?.aborted) {
+      onCallerAbort();
+    } else {
+      callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
+    }
+
+    const signal = composeAbortSignal(controller.signal, callerSignal);
     const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new AiProviderTimeoutError(adapter.name, budgetMs)), budgetMs);
+      signal.addEventListener(
+        'abort',
+        () => reject(controller.signal.reason ?? timeoutError),
+        { once: true },
+      );
     });
 
     try {
@@ -105,18 +143,29 @@ export class AiProviderRouter {
       if (err instanceof AiProviderTimeoutError) {
         throw err;
       }
-      if (isAbortLikeError(err)) {
-        throw new AiProviderTimeoutError(adapter.name, budgetMs);
+      // Cancellation is classified from signal state rather than the thrown
+      // error's shape: an adapter may surface its own error on abort, and a
+      // pre-aborted caller signal never even reaches the deadline race.
+      if (controller.signal.aborted && controller.signal.reason === timeoutError) {
+        throw timeoutError;
+      }
+      if (callerSignal?.aborted || isAbortLikeError(err)) {
+        throw new AiProviderCallerAbortError(adapter.name, callerSignal?.reason);
       }
       throw err;
     } finally {
-      clearTimeout(timer);
+      clearTimeout(budgetTimer);
+      callerSignal?.removeEventListener('abort', onCallerAbort);
     }
   }
 
   private describeFailure(adapter: IAiModelAdapter, budgetMs: number, err: unknown): string {
     if (err instanceof AiProviderTimeoutError) {
       return `${adapter.name}: timed out after ${budgetMs}ms`;
+    }
+
+    if (err instanceof AiProviderCallerAbortError) {
+      return `${adapter.name}: cancelled by caller`;
     }
 
     if (err instanceof AiProviderHttpError) {
