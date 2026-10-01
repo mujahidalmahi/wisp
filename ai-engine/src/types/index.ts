@@ -139,6 +139,12 @@ export interface AiCompletionRequest {
   userPrompt: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Abort signal injected by {@link AiProviderRouter} to bound a single provider
+   * attempt. Adapters must forward this to `fetch` so the underlying socket is
+   * released, not merely abandoned.
+   */
+  signal?: AbortSignal;
 }
 
 export interface AiCompletionResult {
@@ -149,6 +155,11 @@ export interface AiCompletionResult {
 
 export interface IAiModelAdapter {
   readonly name: string;
+  /**
+   * Per-provider wall-clock budget in milliseconds. Falls back to the router
+   * default when omitted, so custom adapters stay bounded without changes.
+   */
+  readonly timeoutMs?: number;
   isConfigured(): boolean;
   complete(request: AiCompletionRequest): Promise<AiCompletionResult>;
 }
@@ -186,4 +197,11 @@ export interface WispAiEngineConfig {
   ollamaBaseUrl?: string;
   ollamaModel?: string;
   enableCache?: boolean;
+  /** Default per-provider attempt budget in ms. Individual adapters may override. */
+  providerTimeoutMs?: number;
+  /**
+   * How long a provider is skipped after a credential or model-not-found fault.
+   * Expires automatically so a rotated key recovers without a restart.
+   */
+  providerQuarantineMs?: number;
 }
