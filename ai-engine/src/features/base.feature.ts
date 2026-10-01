@@ -7,11 +7,23 @@ import type {
   WispActionType,
   WispResponseCard,
 } from '../types/index.ts';
+import {
+  BUILT_IN_ACTION_TYPES,
+  validateChips,
+  validateQuizPayload,
+} from './output-validation.ts';
 
 export abstract class BaseAiFeatureModule implements IAiFeatureModule {
   abstract readonly actionType: WispActionType;
   abstract readonly description: string;
   protected abstract getFeatureSpecificInstructions(): string;
+
+  /** Fields repaired on the most recent card. Useful for engine metrics and tests. */
+  protected repairCount = 0;
+
+  getLastRepairCount(): number {
+    return this.repairCount;
+  }
 
   protected getModeInstructions(mode: HouseholdProfileMode): string {
     switch (mode) {
@@ -46,6 +58,11 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
       '  ],',
       '  "quizPayload": null',
       '}',
+      '',
+      `HARD CONSTRAINTS - violating any of these makes the card invalid:`,
+      `- "followUpChips" must contain between 2 and 4 entries. "actionType" must be exactly one of: ${BUILT_IN_ACTION_TYPES.join(', ')}.`,
+      `- Chip labels must be non-empty strings of at most 80 characters, and each "id" must be unique.`,
+      `- "quizPayload" must be null, or an object with a non-empty "question", exactly 4 non-empty "options", an "explanation", and an integer "correctIndex` + '` between 0 and 3 inclusive.',
     ].join('\n');
 
     const userPrompt = JSON.stringify(
@@ -75,20 +92,24 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
     latencyMs: number,
   ): WispResponseCard {
     const parsed = this.parseJsonSafely(rawModelOutput);
+
+    const chipResult = validateChips(parsed.followUpChips, context.active_scene.quick_action_chips);
+    const quizResult = validateQuizPayload(parsed.quizPayload);
+    this.repairCount = chipResult.droppedChips + chipResult.truncatedChips + chipResult.coercedActionTypes;
+
     return {
       headline: parsed.headline || context.active_scene.scene_title,
       body: parsed.body || context.active_scene.spoiler_safe_summary,
-      bulletPoints: Array.isArray(parsed.bulletPoints) ? parsed.bulletPoints : [],
+      bulletPoints: Array.isArray(parsed.bulletPoints)
+        ? parsed.bulletPoints.filter((point): point is string => typeof point === 'string')
+        : [],
       spoilerSafeUpToMs: input.playbackPositionMs,
       profileMode,
       providerUsed: providerName,
       cached: false,
       latencyMs,
-      followUpChips:
-        Array.isArray(parsed.followUpChips) && parsed.followUpChips.length > 0
-          ? parsed.followUpChips
-          : context.active_scene.quick_action_chips,
-      quizPayload: parsed.quizPayload || undefined,
+      followUpChips: chipResult.chips,
+      quizPayload: quizResult.quizPayload,
     };
   }
 
