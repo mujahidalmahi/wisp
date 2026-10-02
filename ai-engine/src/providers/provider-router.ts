@@ -14,29 +14,41 @@ import {
   AiProviderInternalAbortError,
   AiProviderTimeoutError,
   AiProvidersQuarantinedError,
+  AiGlobalTimeoutError,
   composeAbortSignal,
   isAbortLikeError,
   unrefTimer,
 } from './errors.ts';
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = 10000;
+const DEFAULT_GLOBAL_TIMEOUT_MS = 15000;
+const DEFAULT_MIN_ATTEMPT_MS = 3000;
 const DEFAULT_PROVIDER_QUARANTINE_MS = 300000;
 
 export class AiProviderRouter {
   private readonly adapters: IAiModelAdapter[] = [];
   private readonly defaultTimeoutMs: number;
+  private readonly globalTimeoutMs: number;
+  private readonly minAttemptMs: number;
   private readonly quarantineMs: number;
   private readonly quarantinedUntil = new Map<string, number>();
 
   constructor(config: WispAiEngineConfig = {}) {
     this.defaultTimeoutMs = config.providerTimeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+    this.globalTimeoutMs = config.globalTimeoutMs ?? DEFAULT_GLOBAL_TIMEOUT_MS;
+    this.minAttemptMs = config.minAttemptMs ?? DEFAULT_MIN_ATTEMPT_MS;
     this.quarantineMs = config.providerQuarantineMs ?? DEFAULT_PROVIDER_QUARANTINE_MS;
-    this.adapters = [
-      new GroqModelAdapter(config.groqApiKey, config.groqModel),
-      new GeminiModelAdapter(config.geminiApiKey, config.geminiModel),
-      new OpenRouterModelAdapter(config.openRouterApiKey, config.openRouterModel),
-      new OllamaModelAdapter(config.ollamaBaseUrl, config.ollamaModel),
-    ];
+
+    if (Array.isArray(config.adapters) && config.adapters.length > 0) {
+      this.adapters = [...config.adapters];
+    } else {
+      this.adapters = [
+        new GroqModelAdapter(config.groqApiKey, config.groqModel),
+        new GeminiModelAdapter(config.geminiApiKey, config.geminiModel),
+        new OpenRouterModelAdapter(config.openRouterApiKey, config.openRouterModel),
+        new OllamaModelAdapter(config.ollamaBaseUrl, config.ollamaModel),
+      ];
+    }
   }
 
   registerAdapter(adapter: IAiModelAdapter, priority: 'first' | 'last' = 'last'): void {
@@ -65,8 +77,8 @@ export class AiProviderRouter {
    * requests skip it instead of paying the same failed round trip. Quarantine
    * expires so a rotated key recovers without a process restart.
    */
-  private quarantine(adapter: IAiModelAdapter): void {
-    this.quarantinedUntil.set(adapter.name, Date.now() + this.quarantineMs);
+  private quarantine(adapter: IAiModelAdapter, durationMs?: number): void {
+    this.quarantinedUntil.set(adapter.name, Date.now() + (durationMs ?? this.quarantineMs));
   }
 
   private isQuarantined(adapter: IAiModelAdapter): boolean {
@@ -96,21 +108,38 @@ export class AiProviderRouter {
       );
     }
 
+    const startedAt = Date.now();
+    const globalTimeoutMs = request.timeoutMs ?? this.globalTimeoutMs;
     const errors: string[] = [];
+
     for (const adapter of active) {
-      const budgetMs = adapter.timeoutMs ?? this.defaultTimeoutMs;
+      if (request.signal?.aborted) {
+        throw new AiProviderCallerAbortError('router', request.signal.reason);
+      }
+
+      const elapsed = Date.now() - startedAt;
+      const remainingMs = globalTimeoutMs - elapsed;
+      if (remainingMs < this.minAttemptMs) {
+        errors.push(`${adapter.name}: skipped, only ${Math.max(0, remainingMs)}ms left`);
+        throw new AiGlobalTimeoutError(globalTimeoutMs, errors.map((e) => e.split(':')[0]));
+      }
+
+      const adapterBudget = adapter.timeoutMs ?? this.defaultTimeoutMs;
+      const budgetMs = Math.min(adapterBudget, remainingMs);
       try {
         return await this.attemptWithinBudget(adapter, request, budgetMs);
       } catch (err: any) {
-        // Caller cancellation is not a provider fault, so it must not fall
-        // through to the next adapter or be reported as an aggregate failure.
         if (err instanceof AiProviderCallerAbortError) {
           throw err;
         }
         if (err instanceof AiProviderHttpError && err.isConfigFault()) {
-          this.quarantine(adapter);
+          this.quarantine(adapter, request.quarantineMs ?? undefined);
         }
         errors.push(this.describeFailure(adapter, budgetMs, err));
+        const elapsedAfter = Date.now() - startedAt;
+        if (elapsedAfter >= globalTimeoutMs || remainingMs <= 0) {
+          throw new AiGlobalTimeoutError(globalTimeoutMs, errors.map((e) => e.split(':')[0]));
+        }
       }
     }
 
@@ -135,10 +164,6 @@ export class AiProviderRouter {
     const callerSignal = request.signal;
     const timeoutError = new AiProviderTimeoutError(adapter.name, budgetMs);
 
-    // A pre-aborted signal never replays its event to listeners attached later,
-    // so the abort composed below would never notify the deadline promise and a
-    // non-cooperative adapter would hold the attempt open indefinitely. Settle
-    // before any timer exists and before the provider is called.
     if (callerSignal?.aborted) {
       throw new AiProviderCallerAbortError(adapter.name, callerSignal.reason);
     }
@@ -152,9 +177,6 @@ export class AiProviderRouter {
     const signal = composeAbortSignal(controller.signal, callerSignal);
     const deadline = new Promise<never>((_, reject) => {
       const rejectOnAbort = () => reject(controller.signal.reason ?? timeoutError);
-      // The composed signal can already be aborted if the caller cancelled
-      // between the check above and this listener being attached, and an
-      // already-aborted signal never replays its event to a new listener.
       if (signal.aborted) {
         rejectOnAbort();
         return;
@@ -168,9 +190,6 @@ export class AiProviderRouter {
       if (err instanceof AiProviderTimeoutError) {
         throw err;
       }
-      // Cancellation is classified from signal state rather than the thrown
-      // error's shape: an adapter may surface its own error on abort, and a
-      // pre-aborted caller signal never even reaches the deadline race.
       if (callerSignal?.aborted) {
         throw new AiProviderCallerAbortError(adapter.name, callerSignal.reason);
       }

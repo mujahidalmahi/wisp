@@ -53,6 +53,22 @@ export class AiProviderCallerAbortError extends Error {
  * Raised when an adapter aborts internally (e.g., its own AbortSignal) rather
  * than the caller explicitly cancelling the request.
  */
+export class AiGlobalTimeoutError extends Error {
+  readonly timeoutMs: number;
+  readonly attempts: string[];
+
+  constructor(timeoutMs: number, attempts: string[] = []) {
+    super(
+      attempts.length
+        ? `Global request timeout (${timeoutMs}ms) after attempting: ${attempts.join(', ')}`
+        : `Global request timeout (${timeoutMs}ms)`,
+    );
+    this.name = 'AiGlobalTimeoutError';
+    this.timeoutMs = timeoutMs;
+    this.attempts = attempts;
+  }
+}
+
 export class AiProviderInternalAbortError extends Error {
   readonly providerName: string;
 

@@ -145,6 +145,8 @@ export interface AiCompletionRequest {
    * released, not merely abandoned.
    */
   signal?: AbortSignal;
+  timeoutMs?: number;
+  quarantineMs?: number;
 }
 
 export interface AiCompletionResult {
@@ -219,4 +221,7 @@ export interface WispAiEngineConfig {
    * Expires automatically so a rotated key recovers without a restart.
    */
   providerQuarantineMs?: number;
+  globalTimeoutMs?: number;
+  minAttemptMs?: number;
+  adapters?: import('./index.ts').IAiModelAdapter[];
 }
