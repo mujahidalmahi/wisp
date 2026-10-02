@@ -5,15 +5,15 @@ import path from 'node:path';
 
 describe('Database: Supabase PostgreSQL Migrations, Anti-Spoiler RPC & 3-Genre Seeds', () => {
   const schemaSql = fs.readFileSync(
-    path.resolve('database/migrations/0001_initial_wisp_schema.sql'),
+    path.resolve('supabase/migrations/0001_initial_wisp_schema.sql'),
     'utf8',
   );
   const rpcSql = fs.readFileSync(
-    path.resolve('database/migrations/0002_temporal_context_functions.sql'),
+    path.resolve('supabase/migrations/0002_temporal_context_functions.sql'),
     'utf8',
   );
   const seedSql = fs.readFileSync(
-    path.resolve('database/seeds/seed_demo_catalog.sql'),
+    path.resolve('supabase/seed.sql'),
     'utf8',
   );
 

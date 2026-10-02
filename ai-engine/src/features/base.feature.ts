@@ -62,7 +62,7 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
       systemPrompt,
       userPrompt,
       temperature: 0.3,
-      maxTokens: 450,
+      maxTokens: 800,
     };
   }
 
@@ -97,10 +97,21 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
       const cleaned = rawText
         .replace(/^```json\s*/i, '')
         .replace(/^```\s*/i, '')
-        .replace(/```$/i, '')
+        .replace(/```\s*$/i, '')
         .trim();
       return JSON.parse(cleaned);
     } catch {
+      try {
+        const headlineMatch = rawText.match(/"headline"\s*:\s*"((?:\\.|[^"\\])*)"/);
+        const bodyMatch = rawText.match(/"body"\s*:\s*"((?:\\.|[^"\\])*)"/);
+        if (headlineMatch || bodyMatch) {
+          const unescape = (str: string) => str.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+          return {
+            headline: headlineMatch ? unescape(headlineMatch[1]) : 'Contextual Insight',
+            body: bodyMatch ? unescape(bodyMatch[1]) : rawText.trim(),
+          };
+        }
+      } catch {}
       return {
         headline: 'Contextual Insight',
         body: rawText.trim(),
