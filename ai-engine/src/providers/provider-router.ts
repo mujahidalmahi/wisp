@@ -11,7 +11,9 @@ import { OllamaModelAdapter } from './ollama.adapter.ts';
 import {
   AiProviderCallerAbortError,
   AiProviderHttpError,
+  AiProviderInternalAbortError,
   AiProviderTimeoutError,
+  AiProvidersQuarantinedError,
   composeAbortSignal,
   isAbortLikeError,
   unrefTimer,
@@ -45,6 +47,15 @@ export class AiProviderRouter {
     }
   }
 
+  private quarantineRemainingMs(adapter: IAiModelAdapter): number {
+    const until = this.quarantinedUntil.get(adapter.name);
+    if (until === undefined) {
+      return 0;
+    }
+    const remaining = until - Date.now();
+    return remaining < 0 ? 0 : remaining;
+  }
+
   getConfiguredAdapters(): IAiModelAdapter[] {
     return this.adapters.filter((a) => a.isConfigured() && !this.isQuarantined(a));
   }
@@ -71,10 +82,17 @@ export class AiProviderRouter {
   }
 
   async completeWithFallback(request: AiCompletionRequest): Promise<AiCompletionResult> {
-    const active = this.getConfiguredAdapters();
-    if (active.length === 0) {
+    const configured = this.adapters.filter((a) => a.isConfigured());
+    if (configured.length === 0) {
       throw new Error(
         'No AI model adapters configured in @wisp/ai-engine. Provide groqApiKey, geminiApiKey, openRouterApiKey, or ollamaBaseUrl.',
+      );
+    }
+
+    const active = configured.filter((a) => !this.isQuarantined(a));
+    if (active.length === 0) {
+      throw new AiProvidersQuarantinedError(
+        configured.map((a) => ({ name: a.name, retryInMs: this.quarantineRemainingMs(a) })),
       );
     }
 
@@ -153,11 +171,14 @@ export class AiProviderRouter {
       // Cancellation is classified from signal state rather than the thrown
       // error's shape: an adapter may surface its own error on abort, and a
       // pre-aborted caller signal never even reaches the deadline race.
+      if (callerSignal?.aborted) {
+        throw new AiProviderCallerAbortError(adapter.name, callerSignal.reason);
+      }
       if (controller.signal.aborted && controller.signal.reason === timeoutError) {
         throw timeoutError;
       }
-      if (callerSignal?.aborted || isAbortLikeError(err)) {
-        throw new AiProviderCallerAbortError(adapter.name, callerSignal?.reason);
+      if (isAbortLikeError(err)) {
+        throw new AiProviderInternalAbortError(adapter.name, err);
       }
       throw err;
     } finally {
@@ -173,6 +194,10 @@ export class AiProviderRouter {
 
     if (err instanceof AiProviderCallerAbortError) {
       return `${adapter.name}: cancelled by caller`;
+    }
+
+    if (err instanceof AiProviderInternalAbortError) {
+      return `${adapter.name}: aborted internally`;
     }
 
     if (err instanceof AiProviderHttpError) {

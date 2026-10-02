@@ -50,6 +50,42 @@ export class AiProviderCallerAbortError extends Error {
 }
 
 /**
+ * Raised when an adapter aborts internally (e.g., its own AbortSignal) rather
+ * than the caller explicitly cancelling the request.
+ */
+export class AiProviderInternalAbortError extends Error {
+  readonly providerName: string;
+
+  constructor(providerName: string, reason?: unknown) {
+    const message = (reason as { message?: string } | null)?.message;
+    super(
+      message
+        ? `${providerName} aborted internally: ${message}`
+        : `${providerName} aborted internally`,
+    );
+    this.name = 'AiProviderInternalAbortError';
+    this.providerName = providerName;
+  }
+}
+
+/**
+ * Raised when all configured providers are temporarily quarantined.
+ */
+export class AiProvidersQuarantinedError extends Error {
+  readonly providers: { name: string; retryInMs: number }[];
+
+  constructor(providers: { name: string; retryInMs: number }[]) {
+    super(
+      `All configured AI providers are temporarily quarantined -> ${providers
+        .map((p) => `${p.name} (retry in ${Math.ceil(p.retryInMs / 1000)}s)`)
+        .join(', ')}`,
+    );
+    this.name = 'AiProvidersQuarantinedError';
+    this.providers = providers;
+  }
+}
+
+/**
  * Stops a Node timer from holding the process open. Under the DOM lib the return
  * type is a number, so the capability is probed rather than assumed.
  */

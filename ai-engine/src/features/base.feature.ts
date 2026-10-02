@@ -132,9 +132,28 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
         .trim();
       return JSON.parse(cleaned);
     } catch {
+      const text = rawText || '';
+      const cleaned = text
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```\s*$/i, '')
+        .trim();
+
+      const headlineMatch = cleaned.match(/"headline"\s*:\s*"((?:\\.|[^"\\])*)"/);
+      const bodyMatch = cleaned.match(/"body"\s*:\s*"((?:\\.|[^"\\])*)"/);
+
+      const unescape = (str: string) => str.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+
+      if (headlineMatch || bodyMatch) {
+        return {
+          headline: headlineMatch ? unescape(headlineMatch[1]) : 'Contextual Insight',
+          body: bodyMatch ? unescape(bodyMatch[1]) : cleaned,
+        };
+      }
+
       return {
         headline: 'Contextual Insight',
-        body: rawText.trim(),
+        body: cleaned,
       };
     }
   }
