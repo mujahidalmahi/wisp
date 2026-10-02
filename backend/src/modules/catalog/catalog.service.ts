@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { GetProgramsQueryDto } from './dto/get-programs-query.dto';
 
@@ -39,6 +44,15 @@ export interface EpisodeDetails {
 
 export interface ProgramWithEpisodes extends ProgramSummary {
   episodes: EpisodeDetails[];
+}
+
+export interface PaginatedPrograms {
+  items: ProgramSummary[];
+  pagination: {
+    limit: number;
+    next_cursor: string | null;
+    has_more: boolean;
+  };
 }
 
 export const FALLBACK_PROGRAMS: ProgramWithEpisodes[] = [
@@ -101,34 +115,34 @@ export const FALLBACK_PROGRAMS: ProgramWithEpisodes[] = [
   },
   {
     id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
-    slug: 'cosmic-origins',
-    title: 'Cosmic Origins: Deep Field',
-    genre: 'Documentary',
+    slug: 'sintel',
+    title: 'Sintel',
+    genre: 'Fantasy / Action',
     synopsis:
-      'An immersive scientific exploration traversing the earliest infrared light captured by deep space observatories.',
-    release_year: 2024,
-    rating: 'TV-G',
-    poster_url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=800',
-    backdrop_url: 'https://images.unsplash.com/photo-1446776811953-b23d57bd21aa?w=1200',
-    license_info: 'NASA / ESA / Public Domain Data',
+      'A solitary young woman roams a snow-swept wasteland seeking Scales, a diminutive dragon she nurtured from injury before a predator snatched him away.',
+    release_year: 2010,
+    rating: 'TV-PG',
+    poster_url: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=800',
+    backdrop_url: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200',
+    license_info: 'CC-BY Blender Foundation',
     is_active: true,
     episode_count: 1,
     episodes: [
       {
         id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
         program_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
-        program_title: 'Cosmic Origins: Deep Field',
-        program_slug: 'cosmic-origins',
+        program_title: 'Sintel',
+        program_slug: 'sintel',
         season_number: 1,
         episode_number: 1,
-        title: 'Deep Field Epochs',
+        title: 'The Dragon’s Valley',
         summary:
-          'Spectrographs decode photons that journeyed 13.4 billion years through expanding spacetime.',
-        duration_ms: 840000,
-        video_stream_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-        thumbnail_url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=600',
-        intro_end_ms: 20000,
-        credits_start_ms: 800000,
+          'Sintel reaches the treacherous cavern at the apex of the volcano, confronting a monstrous adult dragon that guards a tragic, irreversible secret.',
+        duration_ms: 888000,
+        video_stream_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+        thumbnail_url: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=600',
+        intro_end_ms: 24000,
+        credits_start_ms: 810000,
         default_bucket_sec: 15,
         is_published: true,
         prev_episode_id: null,
@@ -138,34 +152,34 @@ export const FALLBACK_PROGRAMS: ProgramWithEpisodes[] = [
   },
   {
     id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3',
-    slug: 'the-midnight-cipher',
-    title: 'The Midnight Cipher',
-    genre: 'Mystery',
+    slug: 'cosmos-laundromat',
+    title: 'Cosmos Laundromat',
+    genre: 'Surreal / Drama',
     synopsis:
-      'A Cold War investigative thriller set in 1961 Rotterdam, where an acoustic analyst intercepts coded shortwave broadcasts.',
-    release_year: 2023,
+      'On a desolate island, a despondent sheep named Franck meets an eccentric salesman named Victor, who offers him the gift of infinite synthetic lifetimes.',
+    release_year: 2015,
     rating: 'TV-MA',
     poster_url: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=800',
-    backdrop_url: 'https://images.unsplash.com/photo-1517420704952-d9f39e95b43e?w=1200',
-    license_info: 'CC-BY-SA 4.0 / Public Domain Assets',
+    backdrop_url: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1200',
+    license_info: 'CC-BY Blender Foundation',
     is_active: true,
     episode_count: 1,
     episodes: [
       {
         id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4',
         program_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3',
-        program_title: 'The Midnight Cipher',
-        program_slug: 'the-midnight-cipher',
+        program_title: 'Cosmos Laundromat',
+        program_slug: 'cosmos-laundromat',
         season_number: 1,
         episode_number: 1,
-        title: 'Shadows on the Maas',
+        title: 'First Cycle: On Foreign Ground',
         summary:
-          'A mysterious numbers broadcast on frequency 4625 kHz correlates with shipping movements in the Rotterdam harbor.',
-        duration_ms: 900000,
-        video_stream_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+          'Franck enters Victor’s temporal spinning capsule and awakens transformed on an alien, pastel-hued shoreline populated by enigmatic avian observers.',
+        duration_ms: 720000,
+        video_stream_url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/CosmosLaundromat.mp4',
         thumbnail_url: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=600',
-        intro_end_ms: 40000,
-        credits_start_ms: 860000,
+        intro_end_ms: 35000,
+        credits_start_ms: 660000,
         default_bucket_sec: 15,
         is_published: true,
         prev_episode_id: null,
@@ -181,83 +195,191 @@ export class CatalogService {
 
   constructor(private readonly supabaseService: SupabaseService) {}
 
-  async listPrograms(query: GetProgramsQueryDto): Promise<ProgramSummary[]> {
-    const client = this.supabaseService.getClient();
-    const limit = query.limit ?? 20;
-    const offset = query.offset ?? 0;
-    const ascending = query.order !== 'desc';
+  private encodeCursor(title: string, id: string): string {
+    return Buffer.from(JSON.stringify({ title, id })).toString('base64url');
+  }
 
-    if (client) {
+  private decodeCursor(cursor: string): { title: string; id: string } | null {
+    try {
+      const decoded = Buffer.from(cursor, 'base64url').toString('utf-8');
+      const parsed = JSON.parse(decoded);
+      if (parsed && typeof parsed.title === 'string' && typeof parsed.id === 'string') {
+        return parsed;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async listPrograms(query: GetProgramsQueryDto): Promise<PaginatedPrograms> {
+    const limit = query.limit ?? 20;
+    const ascending = query.order !== 'desc';
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+
+    // 1. Production Database Path (when Supabase is configured)
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () => {
           let qb = client
             .from('programs')
-            .select('id, slug, title, genre, synopsis, release_year, rating, poster_url, backdrop_url, license_info, is_active')
+            .select(
+              'id, slug, title, genre, synopsis, release_year, rating, poster_url, backdrop_url, license_info, is_active',
+            )
             .eq('is_active', true)
             .order('title', { ascending })
-            .range(offset, offset + limit - 1);
+            .order('id', { ascending });
+
+          // Stable cursor filtering
+          if (query.cursor) {
+            const cursorData = this.decodeCursor(query.cursor);
+            if (cursorData) {
+              if (ascending) {
+                qb = qb.or(
+                  `title.gt."${cursorData.title}",and(title.eq."${cursorData.title}",id.gt."${cursorData.id}")`,
+                );
+              } else {
+                qb = qb.or(
+                  `title.lt."${cursorData.title}",and(title.eq."${cursorData.title}",id.lt."${cursorData.id}")`,
+                );
+              }
+            }
+          }
 
           if (query.genre) {
-            const cleanGenre = query.genre.trim().replace(/[%,]/g, '');
-            qb = qb.ilike('genre', `%${cleanGenre}%`);
+            const cleanGenre = query.genre.replace(/[^\w\s-]/g, '').trim();
+            if (cleanGenre) {
+              qb = qb.ilike('genre', `%${cleanGenre}%`);
+            }
           }
 
+          // Strict PostgREST filter injection protection (Item 3)
           if (query.q) {
-            const cleanQ = query.q.trim().replace(/[%,]/g, '');
-            qb = qb.or(`title.ilike.%${cleanQ}%,synopsis.ilike.%${cleanQ}%`);
+            const cleanQ = query.q.replace(/[^a-zA-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+            if (cleanQ) {
+              qb = qb.or(`title.ilike.%${cleanQ}%,synopsis.ilike.%${cleanQ}%`);
+            }
           }
 
-          return qb;
+          // Fetch limit + 1 to determine if next page exists
+          return qb.limit(limit + 1);
         });
 
-        if (!error && data && data.length > 0) {
-          return data as ProgramSummary[];
-        }
         if (error) {
-          this.logger.warn(`Database program list query failed: ${error.message}. Using fallback catalog.`);
+          this.logger.error(`Database program query failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database catalog unavailable: ${error.message}`);
+          }
+        } else if (data) {
+          const rawItems = data as ProgramSummary[];
+          const hasMore = rawItems.length > limit;
+          const items = hasMore ? rawItems.slice(0, limit) : rawItems;
+          const nextCursor =
+            hasMore && items.length > 0
+              ? this.encodeCursor(items[items.length - 1].title, items[items.length - 1].id)
+              : null;
+
+          return {
+            items,
+            pagination: {
+              limit,
+              next_cursor: nextCursor,
+              has_more: hasMore,
+            },
+          };
         }
       } catch (err: any) {
-        this.logger.warn(`Error querying database programs: ${err?.message}. Using fallback catalog.`);
+        if (err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Error querying database catalog: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database catalog unavailable');
+        }
       }
     }
 
-    // In-memory canonical catalog fallback
-    let result = FALLBACK_PROGRAMS.filter((p) => p.is_active);
+    // 2. Resilient In-Memory Fallback Path (only for standalone / unconfigured mode)
+    let filtered = FALLBACK_PROGRAMS.filter((p) => p.is_active);
 
     if (query.genre) {
       const g = query.genre.toLowerCase().trim();
-      result = result.filter((p) => p.genre.toLowerCase().includes(g));
+      filtered = filtered.filter((p) => p.genre.toLowerCase().includes(g));
     }
 
     if (query.q) {
-      const q = query.q.toLowerCase().trim();
-      result = result.filter(
-        (p) => p.title.toLowerCase().includes(q) || p.synopsis.toLowerCase().includes(q),
-      );
+      const cleanQ = query.q.replace(/[^a-zA-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').toLowerCase().trim();
+      if (cleanQ) {
+        filtered = filtered.filter(
+          (p) =>
+            p.title.toLowerCase().includes(cleanQ) ||
+            p.synopsis.toLowerCase().includes(cleanQ),
+        );
+      }
     }
 
-    result.sort((a, b) => (ascending ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title)));
+    filtered.sort((a, b) =>
+      ascending ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title),
+    );
 
-    return result.slice(offset, offset + limit).map(({ episodes, ...rest }) => ({
+    // Apply cursor in fallback
+    if (query.cursor) {
+      const cursorData = this.decodeCursor(query.cursor);
+      if (cursorData) {
+        const idx = filtered.findIndex((p) => p.id === cursorData.id);
+        if (idx >= 0) {
+          filtered = filtered.slice(idx + 1);
+        }
+      }
+    } else if (query.offset && query.offset > 0) {
+      filtered = filtered.slice(query.offset);
+    }
+
+    const hasMore = filtered.length > limit;
+    const pageItems = hasMore ? filtered.slice(0, limit) : filtered;
+    const items = pageItems.map(({ episodes, ...rest }) => ({
       ...rest,
       episode_count: episodes.length,
     }));
+
+    const nextCursor =
+      hasMore && items.length > 0
+        ? this.encodeCursor(items[items.length - 1].title, items[items.length - 1].id)
+        : null;
+
+    return {
+      items,
+      pagination: {
+        limit,
+        next_cursor: nextCursor,
+        has_more: hasMore,
+      },
+    };
   }
 
   async getProgramBySlug(slug: string): Promise<ProgramWithEpisodes> {
     const cleanSlug = slug.trim().toLowerCase();
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-    if (client) {
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       try {
         const { data: program, error: progError } = await this.supabaseService.executeWithRetry(async () =>
           client
             .from('programs')
-            .select('id, slug, title, genre, synopsis, release_year, rating, poster_url, backdrop_url, license_info, is_active')
+            .select(
+              'id, slug, title, genre, synopsis, release_year, rating, poster_url, backdrop_url, license_info, is_active',
+            )
             .eq('slug', cleanSlug)
             .eq('is_active', true)
             .single(),
         );
+
+        if (progError && progError.code === 'PGRST116') {
+          // Explicit Not Found in production database (Item 5)
+          throw new NotFoundException(`Program with slug '${cleanSlug}' not found`);
+        }
 
         if (program && !progError) {
           const { data: episodes, error: epError } = await this.supabaseService.executeWithRetry(async () =>
@@ -274,7 +396,6 @@ export class CatalogService {
 
           if (!epError) {
             const epList = (episodes || []) as EpisodeDetails[];
-            // Link prev and next episode pointers
             const enriched = epList.map((ep, idx) => ({
               ...ep,
               program_title: program.title,
@@ -291,7 +412,11 @@ export class CatalogService {
           }
         }
       } catch (err: any) {
-        this.logger.warn(`Database query for slug ${cleanSlug} failed: ${err?.message}. Using fallback catalog.`);
+        if (err instanceof NotFoundException) throw err;
+        this.logger.error(`Database query for slug ${cleanSlug} failed: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database catalog unavailable');
+        }
       }
     }
 
@@ -307,53 +432,81 @@ export class CatalogService {
   }
 
   async getEpisodeById(episodeId: string): Promise<EpisodeDetails> {
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-    if (client) {
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       try {
+        // Query episode with joined program metadata (Item 9)
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client
             .from('episodes')
             .select(
-              'id, program_id, season_number, episode_number, title, summary, duration_ms, video_stream_url, thumbnail_url, intro_end_ms, credits_start_ms, default_bucket_sec, is_published',
+              'id, program_id, season_number, episode_number, title, summary, duration_ms, video_stream_url, thumbnail_url, intro_end_ms, credits_start_ms, default_bucket_sec, is_published, programs(title, slug)',
             )
             .eq('id', episodeId)
             .eq('is_published', true)
             .single(),
         );
 
+        if (error && error.code === 'PGRST116') {
+          // Explicit Not Found in production database (Item 5)
+          throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+        }
+
         if (data && !error) {
-          // Fetch program title and sibling episodes for next/prev navigation
-          const { data: siblings } = await client
-            .from('episodes')
-            .select('id, season_number, episode_number')
-            .eq('program_id', data.program_id)
-            .eq('is_published', true)
-            .order('season_number', { ascending: true })
-            .order('episode_number', { ascending: true });
+          const raw = data as any;
+          const programTitle = raw.programs?.title || raw.program_title;
+          const programSlug = raw.programs?.slug || raw.program_slug;
+
+          // Sibling lookup with retry policy (Item 10)
+          const { data: siblings } = await this.supabaseService.executeWithRetry(async () =>
+            client
+              .from('episodes')
+              .select('id, season_number, episode_number')
+              .eq('program_id', raw.program_id)
+              .eq('is_published', true)
+              .order('season_number', { ascending: true })
+              .order('episode_number', { ascending: true }),
+          );
 
           let prevId: string | null = null;
           let nextId: string | null = null;
           if (siblings && siblings.length > 0) {
-            const idx = siblings.findIndex((s) => s.id === data.id);
+            const idx = siblings.findIndex((s: any) => s.id === raw.id);
             if (idx > 0) prevId = siblings[idx - 1].id;
             if (idx >= 0 && idx < siblings.length - 1) nextId = siblings[idx + 1].id;
           }
 
+          const { programs: _, ...rest } = raw;
           return {
-            ...(data as EpisodeDetails),
+            ...rest,
+            program_title: programTitle,
+            program_slug: programSlug,
             prev_episode_id: prevId,
             next_episode_id: nextId,
           };
         }
       } catch (err: any) {
-        this.logger.warn(`Database query for episode ${episodeId} failed: ${err?.message}. Using fallback catalog.`);
+        if (err instanceof NotFoundException) throw err;
+        this.logger.error(`Database episode query failed: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database catalog unavailable');
+        }
       }
     }
 
+    // In-memory fallback
     for (const prog of FALLBACK_PROGRAMS) {
       const ep = prog.episodes.find((e) => e.id === episodeId && e.is_published);
-      if (ep) return ep;
+      if (ep) {
+        return {
+          ...ep,
+          program_title: ep.program_title || prog.title,
+          program_slug: ep.program_slug || prog.slug,
+        };
+      }
     }
 
     throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);

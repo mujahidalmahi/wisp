@@ -10,6 +10,7 @@
     "start:prod": "node dist/main",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
+    "pretest": "tsc --noEmit && nest build",
     "test": "node --test"
   },
   "dependencies": {

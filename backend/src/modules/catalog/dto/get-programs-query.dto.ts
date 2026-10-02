@@ -1,4 +1,4 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsIn,
   IsInt,
@@ -13,11 +13,13 @@ export class GetProgramsQueryDto {
   @IsOptional()
   @IsString()
   @MaxLength(50)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   genre?: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(100)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   q?: string;
 
   @IsOptional()
@@ -28,10 +30,15 @@ export class GetProgramsQueryDto {
   limit?: number = 20;
 
   @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  cursor?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  offset?: number = 0;
+  offset?: number;
 
   @IsOptional()
   @IsIn(['asc', 'desc'])

@@ -45,6 +45,7 @@ export interface ContextSource {
   getSpoilerSafeContext(
     episodeId: string,
     playbackPositionMs: number,
+    lookbackMs?: number,
   ): Promise<TemporalProgramContext>;
 }
 
@@ -53,6 +54,7 @@ export declare class InMemoryCatalogContextSource implements ContextSource {
   getSpoilerSafeContext(
     episodeId: string,
     playbackPositionMs: number,
+    lookbackMs?: number,
   ): Promise<TemporalProgramContext>;
 }
 
@@ -68,6 +70,7 @@ export declare class HybridContextSource implements ContextSource {
   getSpoilerSafeContext(
     episodeId: string,
     playbackPositionMs: number,
+    lookbackMs?: number,
   ): Promise<TemporalProgramContext>;
 }
 

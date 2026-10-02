@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -94,8 +95,38 @@ export class ProfilesService {
     );
   }
 
-  async createProfile(dto: CreateProfileDto): Promise<ViewingProfile> {
-    const cleanDeviceId = dto.deviceId.trim();
+  async getProfileById(profileId: string): Promise<ViewingProfile | null> {
+    const client = this.supabaseService.getClient();
+
+    if (client) {
+      try {
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client
+            .from('profiles')
+            .select('id, device_id, display_name, mode, spoiler_strictness, voice_tts_enabled, avatar_color, last_active_at, created_at, updated_at')
+            .eq('id', profileId)
+            .single(),
+        );
+
+        if (!error && data) {
+          return data as ViewingProfile;
+        }
+      } catch {
+        // Fall through to memory
+      }
+    }
+
+    return IN_MEMORY_PROFILES.get(profileId) || null;
+  }
+
+  async createProfile(dto: CreateProfileDto, authenticatedDeviceId?: string): Promise<ViewingProfile> {
+    const cleanDeviceId = (authenticatedDeviceId || dto.deviceId).trim();
+    if (authenticatedDeviceId && dto.deviceId && dto.deviceId.trim() !== authenticatedDeviceId) {
+      throw new ForbiddenException(
+        `Device mismatch: cannot create profile for '${dto.deviceId}' on behalf of '${authenticatedDeviceId}'`,
+      );
+    }
+
     const cleanDisplayName = dto.displayName.trim();
     const mode = dto.mode || HouseholdProfileMode.QUICK_GLANCE;
     const spoilerStrictness = dto.spoilerStrictness || 'strict';
@@ -154,6 +185,7 @@ export class ProfilesService {
       voice_tts_enabled: voiceTtsEnabled,
       avatar_color: avatarColor,
       last_active_at: new Date().toISOString(),
+      created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
@@ -161,41 +193,55 @@ export class ProfilesService {
     return profileRecord;
   }
 
-  async updateProfile(profileId: string, dto: UpdateProfileDto): Promise<ViewingProfile> {
+  async updateProfile(
+    profileId: string,
+    updates: UpdateProfileDto,
+    authenticatedDeviceId?: string,
+  ): Promise<ViewingProfile> {
     const client = this.supabaseService.getClient();
 
-    const updates: Record<string, any> = {
-      updated_at: new Date().toISOString(),
-    };
-    if (dto.displayName !== undefined) updates.display_name = dto.displayName.trim();
-    if (dto.mode !== undefined) updates.mode = dto.mode;
-    if (dto.spoilerStrictness !== undefined) updates.spoiler_strictness = dto.spoilerStrictness;
-    if (dto.voiceTtsEnabled !== undefined) updates.voice_tts_enabled = dto.voiceTtsEnabled;
-    if (dto.avatarColor !== undefined) updates.avatar_color = dto.avatarColor;
-
     if (client) {
-      try {
-        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
-          client
-            .from('profiles')
-            .update(updates)
-            .eq('id', profileId)
-            .select()
-            .single(),
-        );
+      // 1. Verify existence and device ownership
+      const { data: existing, error: findError } = await this.supabaseService.executeWithRetry(async () =>
+        client
+          .from('profiles')
+          .select('id, device_id')
+          .eq('id', profileId)
+          .single(),
+      );
 
-        if (!error && data) {
-          return data as ViewingProfile;
-        }
-        if (error && error.code === 'PGRST116') {
-          throw new NotFoundException(`Profile with ID '${profileId}' not found`);
-        }
-        if (error) {
-          this.logger.warn(`Database profile update failed: ${error.message}. Using in-memory fallback.`);
-        }
-      } catch (err: any) {
-        if (err instanceof NotFoundException) throw err;
-        this.logger.warn(`Database profile update error: ${err?.message}. Using in-memory fallback.`);
+      if (findError || !existing) {
+        throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+      }
+
+      if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
+        throw new ForbiddenException('Profile does not belong to the authenticated device');
+      }
+
+      const patchData: Record<string, any> = {
+        updated_at: new Date().toISOString(),
+      };
+      if (updates.displayName !== undefined) patchData.display_name = updates.displayName.trim();
+      if (updates.mode !== undefined) patchData.mode = updates.mode;
+      if (updates.spoilerStrictness !== undefined) patchData.spoiler_strictness = updates.spoilerStrictness;
+      if (updates.voiceTtsEnabled !== undefined) patchData.voice_tts_enabled = updates.voiceTtsEnabled;
+      if (updates.avatarColor !== undefined) patchData.avatar_color = updates.avatarColor;
+
+      const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+        client
+          .from('profiles')
+          .update(patchData)
+          .eq('id', profileId)
+          .eq('device_id', existing.device_id)
+          .select()
+          .single(),
+      );
+
+      if (!error && data) {
+        return data as ViewingProfile;
+      }
+      if (error) {
+        this.logger.warn(`Database updateProfile error: ${error.message}. Using in-memory fallback.`);
       }
     }
 
@@ -204,45 +250,68 @@ export class ProfilesService {
       throw new NotFoundException(`Profile with ID '${profileId}' not found`);
     }
 
+    if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
+      throw new ForbiddenException('Profile does not belong to the authenticated device');
+    }
+
     const updated: ViewingProfile = {
       ...existing,
-      ...updates,
+      ...(updates.displayName !== undefined ? { display_name: updates.displayName.trim() } : {}),
+      ...(updates.mode !== undefined ? { mode: updates.mode } : {}),
+      ...(updates.spoilerStrictness !== undefined ? { spoiler_strictness: updates.spoilerStrictness } : {}),
+      ...(updates.voiceTtsEnabled !== undefined ? { voice_tts_enabled: updates.voiceTtsEnabled } : {}),
+      ...(updates.avatarColor !== undefined ? { avatar_color: updates.avatarColor } : {}),
       last_active_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
     IN_MEMORY_PROFILES.set(profileId, updated);
     return updated;
   }
 
-  async touchProfile(profileId: string): Promise<ViewingProfile> {
+  async touchProfile(profileId: string, authenticatedDeviceId?: string): Promise<ViewingProfile> {
     const client = this.supabaseService.getClient();
     const nowIso = new Date().toISOString();
 
     if (client) {
-      try {
-        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
-          client
-            .from('profiles')
-            .update({ last_active_at: nowIso, updated_at: nowIso })
-            .eq('id', profileId)
-            .select()
-            .single(),
-        );
+      // 1. Verify existence and device ownership
+      const { data: existing, error: findError } = await this.supabaseService.executeWithRetry(async () =>
+        client
+          .from('profiles')
+          .select('id, device_id')
+          .eq('id', profileId)
+          .single(),
+      );
 
-        if (!error && data) {
-          return data as ViewingProfile;
-        }
-        if (error && error.code === 'PGRST116') {
-          throw new NotFoundException(`Profile with ID '${profileId}' not found`);
-        }
-      } catch (err: any) {
-        if (err instanceof NotFoundException) throw err;
-        this.logger.warn(`Database touchProfile error: ${err?.message}. Using in-memory fallback.`);
+      if (findError || !existing) {
+        throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+      }
+
+      if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
+        throw new ForbiddenException('Profile does not belong to the authenticated device');
+      }
+
+      const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+        client
+          .from('profiles')
+          .update({ last_active_at: nowIso, updated_at: nowIso })
+          .eq('id', profileId)
+          .eq('device_id', existing.device_id)
+          .select()
+          .single(),
+      );
+
+      if (!error && data) {
+        return data as ViewingProfile;
       }
     }
 
     const existing = IN_MEMORY_PROFILES.get(profileId);
     if (!existing) {
       throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+    }
+
+    if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
+      throw new ForbiddenException('Profile does not belong to the authenticated device');
     }
 
     const touched: ViewingProfile = {
@@ -254,52 +323,74 @@ export class ProfilesService {
     return touched;
   }
 
-  async deleteProfile(profileId: string): Promise<{ success: boolean; message: string }> {
+  async deleteProfile(
+    profileId: string,
+    authenticatedDeviceId?: string,
+  ): Promise<{ success: boolean; message: string }> {
     const client = this.supabaseService.getClient();
 
     if (client) {
-      try {
-        // Check profile exists and device has at least one other profile
-        const { data: target } = await client
+      // 1. Check profile exists and device ownership
+      const { data: target, error: targetError } = await this.supabaseService.executeWithRetry(async () =>
+        client
           .from('profiles')
           .select('id, device_id')
           .eq('id', profileId)
-          .single();
+          .single(),
+      );
 
-        if (!target) {
-          throw new NotFoundException(`Profile with ID '${profileId}' not found`);
-        }
+      if (targetError || !target) {
+        throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+      }
 
-        const { count } = await client
+      if (authenticatedDeviceId && target.device_id !== authenticatedDeviceId) {
+        throw new ForbiddenException('Profile does not belong to the authenticated device');
+      }
+
+      // 2. Atomic sole-profile check: Ensure device has more than 1 profile
+      const { count, error: countError } = await this.supabaseService.executeWithRetry(async () =>
+        client
           .from('profiles')
           .select('id', { count: 'exact', head: true })
-          .eq('device_id', target.device_id);
+          .eq('device_id', target.device_id),
+      );
 
-        if (count && count <= 1) {
-          throw new BadRequestException('Cannot delete the sole viewing profile on this device');
-        }
-
-        const { error } = await client.from('profiles').delete().eq('id', profileId);
-        if (!error) {
-          return { success: true, message: `Profile '${profileId}' deleted successfully` };
-        }
-      } catch (err: any) {
-        if (err instanceof NotFoundException || err instanceof BadRequestException) throw err;
-        this.logger.warn(`Database profile delete error: ${err?.message}. Using in-memory fallback.`);
+      if (countError) {
+        throw countError;
       }
+
+      if (count !== null && count !== undefined && count <= 1) {
+        throw new BadRequestException('Cannot delete the sole viewing profile on this device');
+      }
+
+      const { error: deleteError } = await this.supabaseService.executeWithRetry(async () =>
+        client
+          .from('profiles')
+          .delete()
+          .eq('id', profileId)
+          .eq('device_id', target.device_id),
+      );
+
+      if (!deleteError) {
+        return { success: true, message: `Profile '${profileId}' deleted successfully` };
+      }
+      throw deleteError;
     }
 
+    // In-memory fallback
     const existing = IN_MEMORY_PROFILES.get(profileId);
     if (!existing) {
       throw new NotFoundException(`Profile with ID '${profileId}' not found`);
     }
 
-    let deviceProfileCount = 0;
-    for (const p of IN_MEMORY_PROFILES.values()) {
-      if (p.device_id === existing.device_id) deviceProfileCount++;
+    if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
+      throw new ForbiddenException('Profile does not belong to the authenticated device');
     }
 
-    if (deviceProfileCount <= 1) {
+    const deviceProfiles = Array.from(IN_MEMORY_PROFILES.values()).filter(
+      (p) => p.device_id === existing.device_id,
+    );
+    if (deviceProfiles.length <= 1) {
       throw new BadRequestException('Cannot delete the sole viewing profile on this device');
     }
 

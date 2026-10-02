@@ -1,10 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import {
   HybridContextSource,
   InMemoryCatalogContextSource,
   TemporalProgramContext,
 } from '@wisp/ai-engine';
 import { SupabaseService } from '../supabase/supabase.service';
+import { CatalogService } from '../catalog/catalog.service';
+import { ProfilesService } from '../profiles/profiles.service';
 
 export { TemporalProgramContext };
 
@@ -53,7 +59,11 @@ export class ContextService {
   private readonly contextSource: HybridContextSource;
   private readonly inMemoryFallback = new InMemoryCatalogContextSource();
 
-  constructor(private readonly supabaseService: SupabaseService) {
+  constructor(
+    private readonly supabaseService: SupabaseService,
+    private readonly catalogService: CatalogService,
+    private readonly profilesService: ProfilesService,
+  ) {
     this.contextSource = new HybridContextSource(
       async (episodeId, playbackPositionMs, lookbackMs) => {
         const client = this.supabaseService.getClient();
@@ -69,7 +79,7 @@ export class ContextService {
         );
 
         if (error || !data) {
-          this.logger.warn(`Supabase RPC fallback to @wisp/ai-engine in-memory catalog: ${error?.message}`);
+          this.logger.warn(`Supabase RPC fallback to in-memory context: ${error?.message}`);
           return null;
         }
         return data as TemporalProgramContext;
@@ -88,13 +98,13 @@ export class ContextService {
     lookbackMs = 120000,
   ): Promise<TemporalProgramContext> {
     const safeMs = Math.max(0, playbackPositionMs);
-    return this.contextSource.getSpoilerSafeContext(episodeId, safeMs);
+    // Propagate lookbackMs through to the ContextSource implementation (Item 6)
+    return this.contextSource.getSpoilerSafeContext(episodeId, safeMs, lookbackMs);
   }
 
   /**
    * Stage-1 Single-Roundtrip Fire TV Bootstrap RPC
-   * Returns active scene, D-pad quick action chips, verified pre-warmed cache cards,
-   * and claim-bound profile/session state in <50ms.
+   * Fast-path latency critical: zero retries on bootstrap to guarantee predictable response times.
    */
   async getFireTvBootstrap(
     episodeId: string,
@@ -103,8 +113,35 @@ export class ContextService {
     profileId?: string,
   ): Promise<Stage1BootstrapResponse> {
     const cleanDeviceId = deviceId.trim();
+    const cleanProfileId = profileId ? profileId.trim() : undefined;
     const safeMs = Math.max(0, playbackPositionMs);
     const client = this.supabaseService.getClient();
+
+    // 1. Verify profile-to-device ownership before proceeding (Item 2)
+    if (cleanProfileId) {
+      if (client) {
+        const { data: profileCheck } = await this.supabaseService.executeWithRetry(async () =>
+          client
+            .from('profiles')
+            .select('id, device_id')
+            .eq('id', cleanProfileId)
+            .single(),
+        );
+
+        if (profileCheck && profileCheck.device_id !== cleanDeviceId) {
+          throw new ForbiddenException(
+            `Profile '${cleanProfileId}' does not belong to device '${cleanDeviceId}'`,
+          );
+        }
+      } else {
+        const profile = await this.profilesService.getProfileById(cleanProfileId);
+        if (profile && profile.device_id !== cleanDeviceId) {
+          throw new ForbiddenException(
+            `Profile '${cleanProfileId}' does not belong to device '${cleanDeviceId}'`,
+          );
+        }
+      }
+    }
 
     if (client) {
       try {
@@ -113,33 +150,66 @@ export class ContextService {
           p_device_id: cleanDeviceId,
           p_playback_ms: safeMs,
         };
-        if (profileId) {
-          params.p_profile_id = profileId.trim();
+        if (cleanProfileId) {
+          params.p_profile_id = cleanProfileId;
         }
 
-        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
-          client.rpc('get_firetv_stage1_bootstrap', params),
+        // Fast-path latency critical: maxRetries: 0 so retries never block the bootstrap deadline (Item 13)
+        const { data, error } = await this.supabaseService.executeWithRetry(
+          async () => client.rpc('get_firetv_stage1_bootstrap', params),
+          { maxRetries: 0 },
         );
 
         if (!error && data) {
           const payload = data as Stage1BootstrapResponse;
           // Ensure zero-typing quick action chips invariant (Rule #4)
-          if (payload.active_scene && (!payload.active_scene.quick_action_chips || payload.active_scene.quick_action_chips.length === 0)) {
+          if (
+            payload.active_scene &&
+            (!payload.active_scene.quick_action_chips ||
+              payload.active_scene.quick_action_chips.length === 0)
+          ) {
             payload.active_scene.quick_action_chips = this.getDefaultQuickActionChips();
           }
           return payload;
         }
         if (error) {
-          this.logger.warn(`get_firetv_stage1_bootstrap RPC failed: ${error.message}. Using in-memory fallback.`);
+          this.logger.warn(
+            `get_firetv_stage1_bootstrap RPC failed: ${error.message}. Using resilient fallback.`,
+          );
         }
       } catch (err: any) {
-        this.logger.warn(`Error calling get_firetv_stage1_bootstrap: ${err?.message}. Using in-memory fallback.`);
+        if (err instanceof ForbiddenException) throw err;
+        this.logger.warn(`Error calling get_firetv_stage1_bootstrap: ${err?.message}. Using resilient fallback.`);
       }
     }
 
-    // High-performance standalone in-memory fallback
+    // 2. High-performance fallback without fabricating unverified profile/session state (Item 7)
     const context = await this.inMemoryFallback.getSpoilerSafeContext(episodeId, safeMs);
     const activeScene = context.active_scene;
+
+    // Resolve episode duration from catalog data instead of fixed constant
+    let episodeDurationMs = 0;
+    try {
+      const ep = await this.catalogService.getEpisodeById(episodeId);
+      episodeDurationMs = ep?.duration_ms ?? 0;
+    } catch {
+      episodeDurationMs = 0;
+    }
+
+    // Resolve profile from storage if profileId provided; otherwise return null
+    let resolvedProfile: Stage1BootstrapResponse['profile'] = null;
+    if (cleanProfileId) {
+      const p = await this.profilesService.getProfileById(cleanProfileId);
+      if (p && p.device_id === cleanDeviceId) {
+        resolvedProfile = {
+          id: p.id,
+          display_name: p.display_name,
+          mode: p.mode,
+          spoiler_strictness: p.spoiler_strictness,
+          voice_tts_enabled: p.voice_tts_enabled,
+        };
+      }
+    }
 
     const chips: QuickActionChipItem[] =
       activeScene?.quick_action_chips && activeScene.quick_action_chips.length >= 2
@@ -151,13 +221,7 @@ export class ContextService {
         : this.getDefaultQuickActionChips();
 
     return {
-      profile: {
-        id: profileId || '11111111-1111-1111-1111-111111111111',
-        display_name: 'Living Room TV',
-        mode: 'quick_glance',
-        spoiler_strictness: 'strict',
-        voice_tts_enabled: false,
-      },
+      profile: resolvedProfile,
       active_scene: activeScene
         ? {
             scene_index: activeScene.scene_index,
@@ -188,22 +252,17 @@ export class ContextService {
           },
         },
       ],
-      session: {
-        session_id: 'session-demo-01',
-        current_playback_ms: safeMs,
-        recent_turn_count: 0,
-        pinned_timestamps: [],
-      },
+      session: null, // Do not fabricate fake session IDs (Item 7)
       safe_playback_ms: safeMs,
-      episode_duration_ms: 734000,
+      episode_duration_ms: episodeDurationMs,
     };
   }
 
   private getDefaultQuickActionChips(): QuickActionChipItem[] {
     return [
-      { id: 'chip-1', label: 'Who is Thom?', actionType: 'entity_explain' },
-      { id: 'chip-2', label: 'Explain the Beacon', actionType: 'scene_explain' },
-      { id: 'chip-3', label: 'What just happened?', actionType: 'contextual_qa' },
+      { id: 'chip-scene', label: 'Explain Scene', actionType: 'scene_explain' },
+      { id: 'chip-characters', label: 'Who is on screen?', actionType: 'character_identify' },
+      { id: 'chip-recap', label: 'Quick Recap', actionType: 'recap' },
     ];
   }
 }

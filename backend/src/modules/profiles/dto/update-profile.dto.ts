@@ -1,3 +1,4 @@
+import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
@@ -12,6 +13,7 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   @MaxLength(50)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   displayName?: string;
 
   @IsOptional()
@@ -33,5 +35,6 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   avatarColor?: string;
 }

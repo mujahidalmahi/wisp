@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { CatalogService } from './catalog.service';
 import { GetProgramsQueryDto } from './dto/get-programs-query.dto';
+import { ParseSlugPipe } from '../../common/pipes/parse-slug.pipe';
 
 @Controller('catalog')
 export class CatalogController {
@@ -18,7 +19,7 @@ export class CatalogController {
   }
 
   @Get('programs/:slug')
-  async getProgramBySlug(@Param('slug') slug: string) {
+  async getProgramBySlug(@Param('slug', ParseSlugPipe) slug: string) {
     return this.catalogService.getProgramBySlug(slug);
   }
 

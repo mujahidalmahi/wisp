@@ -1,3 +1,4 @@
+import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
@@ -13,11 +14,13 @@ export class CreateProfileDto {
   @IsNotEmpty({ message: 'deviceId is required' })
   @IsString()
   @MaxLength(100)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   deviceId: string;
 
   @IsNotEmpty({ message: 'displayName is required' })
   @IsString()
   @MaxLength(50)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   displayName: string;
 
   @IsOptional()
@@ -39,5 +42,6 @@ export class CreateProfileDto {
   @IsOptional()
   @IsString()
   @MaxLength(20)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   avatarColor?: string;
 }
