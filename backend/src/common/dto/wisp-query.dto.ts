@@ -15,7 +15,8 @@ export enum HouseholdProfileMode {
 }
 
 export class WispQueryRequestDto {
-  @IsUUID()
+  @IsString()
+  @IsNotEmpty()
   episodeId!: string;
 
   @IsInt()
@@ -34,7 +35,7 @@ export class WispQueryRequestDto {
   profileMode?: HouseholdProfileMode = HouseholdProfileMode.QUICK_GLANCE;
 
   @IsOptional()
-  @IsUUID()
+  @IsString()
   profileId?: string;
 }
 
