@@ -52,7 +52,7 @@ In Wisp, **leaking future plot spoilers is treated as a P0 data-boundary securit
 ### 3.1 Dual-Layer Temporal Enforcement
 Spoiler protection is never entrusted solely to LLM prompt instructions. It is enforced deterministically at two independent layers before any LLM call occurs:
 
-1. **PostgreSQL Database Boundary ([`0002_temporal_context_functions.sql`](./database/migrations/0002_temporal_context_functions.sql)):**
+1. **PostgreSQL Database Boundary ([`0002_temporal_context_functions.sql`](./supabase/migrations/0002_temporal_context_functions.sql)):**
    * The `get_spoiler_safe_context(p_episode_id, p_playback_position_ms, p_window_ms)` RPC filters out all rows where:
      * `transcript_lines.end_time_ms > p_playback_position_ms`
      * `scenes.start_time_ms > p_playback_position_ms`
@@ -67,7 +67,7 @@ Every Pull Request runs [`testing/ai-integration/temporal-filter.test.ts`](./tes
 
 ## 4. Database Row-Level Security (RLS) & API Validation
 
-1. **Supabase PostgreSQL RLS ([`0001_initial_wisp_schema.sql`](./database/migrations/0001_initial_wisp_schema.sql)):**
+1. **Supabase PostgreSQL RLS ([`0001_initial_wisp_schema.sql`](./supabase/migrations/0001_initial_wisp_schema.sql)):**
    * Row-Level Security is enabled on all core tables (`media_catalog`, `episodes`, `scenes`, `transcript_lines`, `entities`, `entity_lore`, `household_profiles`, `wisp_interaction_logs`).
    * Public clients have read-only access to catalog metadata; write operations require the server-side `service_role` key inside `backend/`.
 2. **Strict DTO Input Validation ([`wisp-query.dto.ts`](./backend/src/common/dto/wisp-query.dto.ts)):**
