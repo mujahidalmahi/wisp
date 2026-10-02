@@ -323,6 +323,69 @@ describe('AI Integration: Provider Request Timeouts & Failure Classification', (
     assert.equal(deadKey.state.calls, 1, 'a quarantined provider must not be re-attempted');
   });
 
+  it('lets a pre-aborted caller cancel ahead of a fully quarantined chain', async () => {
+    const deadKey = scriptedAdapter('mock-dead-a', { failWithStatus: 401 });
+    const alsoDead = scriptedAdapter('mock-dead-b', { failWithStatus: 403 });
+    const router = new AiProviderRouter({
+      adapters: [deadKey.adapter, alsoDead.adapter],
+      providerQuarantineMs: 60000,
+    });
+
+    // Warm the quarantine with an uncancelled request so that *every* configured
+    // provider is quarantined, which is the only state in which the chain is
+    // unavailable rather than merely a failover.
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' }),
+      /All configured AI providers failed/,
+    );
+    assert.equal(deadKey.state.calls, 1);
+    assert.equal(alsoDead.state.calls, 1);
+
+    // Both configured providers are now quarantined and the caller has already
+    // cancelled, so cancellation must win over the availability report.
+    const controller = new AbortController();
+    const reason = new Error('viewer closed the drawer');
+    controller.abort(reason);
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u', signal: controller.signal }),
+      (err: unknown) => {
+        assert.ok(
+          !(err instanceof AiProvidersQuarantinedError),
+          `a cancelled request must not be reported as quarantine, received ${(err as Error).name}`,
+        );
+        const cancelled = assertRejectedAs(err, AiProviderCallerAbortError, 'pre-aborted caller');
+        assert.equal(cancelled.providerName, 'router');
+        assert.match(cancelled.message, /attempt cancelled by caller/);
+        assert.match(cancelled.message, /viewer closed the drawer/);
+        return true;
+      },
+    );
+
+    assert.equal(deadKey.state.calls, 1, 'no provider work may start after the caller cancels');
+    assert.equal(alsoDead.state.calls, 1, 'no failover may be attempted after the caller cancels');
+  });
+
+  it('lets a pre-aborted caller cancel ahead of an unconfigured engine', async () => {
+    const router = new AiProviderRouter({ adapters: [{ name: 'never-configured', isConfigured: () => false } as never] });
+    const controller = new AbortController();
+    controller.abort(new Error('viewer closed the drawer'));
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u', signal: controller.signal }),
+      (err: unknown) => {
+        assert.doesNotMatch(
+          (err as Error).message,
+          /No AI model adapters configured/,
+          'a cancelled request must not be reported as a configuration fault',
+        );
+        const cancelled = assertRejectedAs(err, AiProviderCallerAbortError, 'pre-aborted caller, unconfigured engine');
+        assert.equal(cancelled.providerName, 'router');
+        return true;
+      },
+    );
+  });
+
   it('still reports an unconfigured engine distinctly from a quarantined one', async () => {
     const router = new AiProviderRouter({ adapters: [{ name: 'never-configured', isConfigured: () => false } as never] });
 

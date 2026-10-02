@@ -94,6 +94,10 @@ export class AiProviderRouter {
   }
 
   async completeWithFallback(request: AiCompletionRequest): Promise<AiCompletionResult> {
+    if (request.signal?.aborted) {
+      throw new AiProviderCallerAbortError('router', request.signal.reason);
+    }
+
     const configured = this.adapters.filter((a) => a.isConfigured());
     if (configured.length === 0) {
       throw new Error(
