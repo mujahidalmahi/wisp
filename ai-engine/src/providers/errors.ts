@@ -50,14 +50,19 @@ export class AiProviderCallerAbortError extends Error {
 }
 
 /**
- * Raised when an adapter aborts internally (e.g., its own AbortSignal) rather
- * than the caller explicitly cancelling the request.
+ * Raised when the overall request budget is exhausted, so the failure can be
+ * attributed to the ceiling rather than to whichever provider happened to be
+ * in flight. `attempts` carries the adapter names the router actually tried,
+ * recorded structurally, so a caller can map this cleanly onto a 504. `failures`
+ * keeps the per-attempt descriptions the aggregate error used to carry, so the
+ * typed error is not a downgrade in diagnosability.
  */
 export class AiGlobalTimeoutError extends Error {
   readonly timeoutMs: number;
   readonly attempts: string[];
+  readonly failures: string[];
 
-  constructor(timeoutMs: number, attempts: string[] = []) {
+  constructor(timeoutMs: number, attempts: string[] = [], failures: string[] = []) {
     super(
       attempts.length
         ? `Global request timeout (${timeoutMs}ms) after attempting: ${attempts.join(', ')}`
@@ -65,12 +70,16 @@ export class AiGlobalTimeoutError extends Error {
     );
     this.name = 'AiGlobalTimeoutError';
     this.timeoutMs = timeoutMs;
-    this.attempts = attempts;
-    this.attemptedProviders = attempts;
+    this.attempts = [...attempts];
+    this.failures = [...failures];
     Object.setPrototypeOf(this, AiGlobalTimeoutError.prototype);
   }
 }
 
+/**
+ * Raised when an adapter aborts internally (e.g., its own AbortSignal) rather
+ * than the caller explicitly cancelling the request.
+ */
 export class AiProviderInternalAbortError extends Error {
   readonly providerName: string;
 

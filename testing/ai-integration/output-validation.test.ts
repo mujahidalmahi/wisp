@@ -811,6 +811,141 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
     });
   });
 
+  describe('Malformed-JSON recovery (escaped quotes, backslashes and fences)', () => {
+    // Every payload below is unparseable by JSON.parse on purpose: the model
+    // emitted a trailing comma, an unquoted field, or an unterminated object.
+    // parseJsonSafely must still recover a readable 10-foot card instead of
+    // dumping raw JSON onto the TV.
+    it('recovers a headline whose value contains escaped quotes', async () => {
+      const { card } = await renderCard(
+        '```json\n' +
+          '{\n' +
+          '  "headline": "Who said \\"Tony\\"?",\n' +
+          '  "body": Tony cut in before she finished,\n' +
+          '}\n' +
+          '```',
+      );
+
+      assert.equal(card.headline, 'Who said "Tony"?');
+    });
+
+    it('recovers a body whose value contains escaped quotes', async () => {
+      const { card } = await renderCard(
+        '{\n' +
+          '  "headline": "Only one spoke",\n' +
+          '  "body": "Tony said \\"ask Celia\\".",\n' +
+          '}',
+      );
+
+      assert.equal(card.headline, 'Only one spoke');
+      assert.equal(card.body, 'Tony said "ask Celia".');
+    });
+
+    it('recovers both fields when each contains escaped quotes', async () => {
+      const { card } = await renderCard(
+        '{\n' +
+          '  "headline": "Who said \\"Tony\\"?",\n' +
+          '  "body": "Only \\"Tony\\" answered, and nobody else did.",\n' +
+          '  "bulletPoints": [\n' +
+          '}',
+      );
+
+      assert.equal(card.headline, 'Who said "Tony"?');
+      assert.equal(card.body, 'Only "Tony" answered, and nobody else did.');
+    });
+
+    it('converts an escaped backslash sequence into a single backslash', async () => {
+      const { card } = await renderCard(
+        '{\n' +
+          '  "headline": "Archive at C:\\\\Shows",\n' +
+          '  "body": "He read C:\\\\Notes\\\\file.txt aloud.",\n' +
+          '  "followUpChips": [],\n' +
+          '}',
+      );
+
+      assert.equal(card.headline, 'Archive at C:\\Shows');
+      assert.equal(card.body, 'He read C:\\Notes\\file.txt aloud.');
+    });
+
+    it('keeps the body fallback to the raw text when only the headline is recoverable', async () => {
+      const { card } = await renderCard(
+        '{\n' +
+          '  "headline": "The kitchen argument",\n' +
+          '  "body": Nobody finished the sentence,\n' +
+          '}',
+      );
+
+      assert.equal(card.headline, 'The kitchen argument');
+      assert.match(card.body, /Nobody finished the sentence/);
+      assert.doesNotMatch(card.body, /```/, 'markdown fences must not reach the TV card');
+    });
+
+    it('keeps the headline fallback to "Contextual Insight" when only the body is recoverable', async () => {
+      const { card } = await renderCard(
+        '{\n' +
+          '  "headline": Only one spoke,\n' +
+          '  "body": "Nobody answered the question."\n' +
+          '}',
+      );
+
+      assert.equal(card.headline, 'Contextual Insight');
+      assert.equal(card.body, 'Nobody answered the question.');
+    });
+
+    it('falls back to the generic headline and raw body when nothing is recoverable', async () => {
+      const { card } = await renderCard('```json\nThe model rambled instead of emitting JSON.\n```');
+
+      assert.equal(card.headline, 'Contextual Insight');
+      assert.equal(card.body, 'The model rambled instead of emitting JSON.');
+      assert.doesNotMatch(card.body, /```/);
+    });
+
+    it('handles a closing fence followed by trailing whitespace', async () => {
+      const { card } = await renderCard(
+        '```json\n' +
+          '{\n' +
+          '  "headline": "Trailing fence card",\n' +
+          '  "body": "Body text."\n' +
+          '}\n' +
+          '```   \n\n',
+      );
+
+      assert.equal(card.headline, 'Trailing fence card');
+      assert.equal(card.body, 'Body text.');
+    });
+
+    it('recovers a malformed payload wrapped in a fence with trailing whitespace', async () => {
+      const { card } = await renderCard(
+        '```json\n' +
+          '{\n' +
+          '  "headline": "Who said \\"Tony\\"?",\n' +
+          '  "body": Tony cut in before she finished,\n' +
+          '}\n' +
+          '```  \n',
+      );
+
+      assert.equal(card.headline, 'Who said "Tony"?');
+      assert.doesNotMatch(card.body, /```/);
+      assert.ok(card.followUpChips.length >= MIN_CHIPS, 'a recovered card still honours the chip invariant');
+    });
+
+    it('leaves well-formed JSON untouched, so recovery is not a blanket rewrite', async () => {
+      const { card } = await renderCard(
+        JSON.stringify({
+          headline: 'Already clean',
+          body: 'Body that mentions "Tony" and a C:\\ path.',
+          bulletPoints: ['one'],
+          followUpChips: [],
+          quizPayload: null,
+        }),
+      );
+
+      assert.equal(card.headline, 'Already clean');
+      assert.equal(card.body, 'Body that mentions "Tony" and a C:\\ path.');
+      assert.deepEqual(card.bulletPoints, ['one']);
+    });
+  });
+
   describe('Structural resilience', () => {
     it('still yields a usable card when the model returns non-array chips and a garbage quiz', async () => {
       const { card } = await renderCard(

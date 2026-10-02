@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { WispAiEngine } from '../../ai-engine/src/engine.ts';
 import {
   DeterministicTestAiAdapter,
@@ -10,10 +12,11 @@ import {
 import { AiProviderRouter } from '../../ai-engine/src/providers/provider-router.ts';
 import {
   AiProviderCallerAbortError,
-  AiProviderInternalAbortError,
+  AiProviderHttpError,
   AiProvidersQuarantinedError,
   AiGlobalTimeoutError,
 } from '../../ai-engine/src/providers/errors.ts';
+import type { IAiModelAdapter } from '../../ai-engine/src/types/index.ts';
 
 const episodeId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1';
 
@@ -46,6 +49,83 @@ class ScriptedSignalRecorder {
       }),
     };
   }
+}
+
+/**
+ * Asserts a rejection carries the expected class and hands the narrowed value
+ * back, so a validator can read typed fields without a bare cast. `assert.ok` is
+ * not a TypeScript assertion function in this repo's setup, so narrowing is
+ * done here explicitly.
+ */
+function assertRejectedAs<T>(
+  err: unknown,
+  ctor: new (...args: never[]) => T,
+  label: string,
+): T {
+  assert.ok(err instanceof ctor, `${label}: expected ${ctor.name}, received ${(err as Error)?.name}`);
+  return err as T;
+}
+
+/**
+ * Router-level double. Each variant reproduces one failure mode the router has
+ * to classify: a hung adapter, an HTTP fault, or an adapter that raises its own
+ * abort. `state.calls` / `state.aborted` let a test prove that work was or was
+ * not actually started, rather than only inspecting the resulting message.
+ */
+function scriptedAdapter(
+  name: string,
+  options: {
+    timeoutMs?: number;
+    delayMs?: number;
+    failWithStatus?: number;
+    throwAbortLike?: boolean;
+    hang?: boolean;
+  } = {},
+) {
+  const state = { calls: 0, aborted: false };
+
+  const adapter: IAiModelAdapter = {
+    name,
+    timeoutMs: options.timeoutMs,
+    isConfigured: () => true,
+    async complete(req) {
+      state.calls += 1;
+
+      if (options.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+      }
+
+      if (options.throwAbortLike) {
+        throw Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+      }
+
+      if (options.failWithStatus !== undefined) {
+        throw new AiProviderHttpError(name, options.failWithStatus, '{"detail":"simulated"}');
+      }
+
+      if (options.hang) {
+        return new Promise<never>((_resolve, reject) => {
+          const onAbort = () => {
+            state.aborted = true;
+            reject(req.signal?.reason ?? new Error('aborted'));
+          };
+          if (req.signal?.aborted) {
+            onAbort();
+            return;
+          }
+          req.signal?.addEventListener('abort', onAbort, { once: true });
+        });
+      }
+
+      return {
+        providerName: name,
+        latencyMs: options.delayMs ?? 0,
+        rawText: '{"headline":"Mock card","body":"Mock body."}',
+      };
+    },
+  };
+
+  return { adapter, state };
 }
 
 describe('AI Integration: Provider Request Timeouts & Failure Classification', () => {
@@ -182,98 +262,220 @@ describe('AI Integration: Provider Request Timeouts & Failure Classification', (
   });
 
   it('treats adapter-internal abort as internal, not caller cancellation', async () => {
-    const controller = new AbortController();
-    const adapter = {
-      name: 'mock-abort',
-      isConfigured: () => true,
-      timeoutMs: 2000,
-      complete: async () => {
-        const e = new Error('The operation was aborted');
-        (e as any).name = 'AbortError';
-        throw e;
+    const aborter = scriptedAdapter('mock-abort', { throwAbortLike: true });
+    const backup = scriptedAdapter('mock-abort-backup');
+    const router = new AiProviderRouter({ adapters: [aborter.adapter, backup.adapter] });
+    const callerSignal = new AbortController().signal;
+
+    const result = await router.completeWithFallback({
+      systemPrompt: 's',
+      userPrompt: 'u',
+      signal: callerSignal,
+    });
+
+    assert.equal(result.providerName, 'mock-abort-backup');
+    assert.equal(aborter.state.calls, 1);
+    assert.equal(callerSignal.aborted, false, 'the router must not cancel a live caller signal');
+  });
+
+  it('never reports an adapter-internal abort as "cancelled by caller"', async () => {
+    const aborter = scriptedAdapter('mock-abort-only', { throwAbortLike: true });
+    const router = new AiProviderRouter({ adapters: [aborter.adapter] });
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' }),
+      (err: Error) => {
+        assert.match(err.message, /mock-abort-only: aborted internally/);
+        assert.doesNotMatch(err.message, /cancelled by caller/);
+        return true;
       },
-    } as any;
-    const router = new AiProviderRouter({ adapters: [adapter], providerTimeoutMs: 10000 });
-    let threw: any;
-    try {
-      await router.completeWithFallback({
-        systemPrompt: 's',
-        userPrompt: 'u',
-        signal: controller.signal,
-      });
-    } catch (err) {
-      threw = err;
-    }
-    assert.ok(threw);
-    assert.ok(threw.name === 'AiProviderInternalAbortError' || threw.constructor.name === 'AiProviderInternalAbortError');
-    assert.ok(threw.name !== 'AiProviderCallerAbortError');
+    );
   });
 
   it('throws AiProvidersQuarantinedError when all configured providers quarantined', async () => {
-    const adapter = {
-      name: 'mock-q',
-      isConfigured: () => true,
-      timeoutMs: 1000,
-      complete: async () => {
-        const e = new AiProviderHttpError('mock-q', 401, 'unauth');
-        throw e;
+    const deadKey = scriptedAdapter('mock-q', { failWithStatus: 401 });
+    const router = new AiProviderRouter({ adapters: [deadKey.adapter], providerQuarantineMs: 60000 });
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' }),
+      (err: Error) => {
+        assert.match(err.message, /mock-q: config-fault HTTP 401/);
+        return true;
       },
-    } as any;
-    const router = new AiProviderRouter({ adapters: [adapter], providerTimeoutMs: 1000, providerQuarantineMs: 60000 });
-    try {
-      await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' });
-    } catch (err: any) {
-      assert.ok(err.name === 'AiProvidersQuarantinedError' || err.constructor.name === 'AiProvidersQuarantinedError');
-      assert.ok(err.providers);
-    }
+    );
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' }),
+      (err: unknown) => {
+        const quarantined = assertRejectedAs(err, AiProvidersQuarantinedError, 'all providers quarantined');
+        assert.doesNotMatch(
+          quarantined.message,
+          /No AI model adapters configured/,
+          'a fully quarantined chain must not masquerade as an unconfigured engine',
+        );
+        assert.equal(quarantined.providers.length, 1);
+        assert.equal(quarantined.providers[0].name, 'mock-q');
+        assert.ok(quarantined.providers[0].retryInMs > 0, 'the error must report when the provider becomes eligible again');
+        return true;
+      },
+    );
+
+    assert.equal(deadKey.state.calls, 1, 'a quarantined provider must not be re-attempted');
   });
 
-  it('raises AiGlobalTimeoutError on global deadline', async () => {
-    const adapter = {
-      name: 'mock-slow',
-      isConfigured: () => true,
-      timeoutMs: 5000,
-      complete: async () => {
-        await new Promise((r) => setTimeout(r, 100));
-        return { content: 'ok' } as any;
+  it('still reports an unconfigured engine distinctly from a quarantined one', async () => {
+    const router = new AiProviderRouter({ adapters: [{ name: 'never-configured', isConfigured: () => false } as never] });
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' }),
+      (err: unknown) => {
+        assert.ok(!(err instanceof AiProvidersQuarantinedError));
+        assert.match((err as Error).message, /No AI model adapters configured/);
+        return true;
       },
-    } as any;
-    const router = new AiProviderRouter({ adapters: [adapter], globalTimeoutMs: 1, minAttemptMs: 0, providerTimeoutMs: 5000 });
-    let threw: any;
-    try {
-      await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' });
-    } catch (err) {
-      threw = err;
-    }
-    assert.ok(threw);
-    assert.equal(threw.name, 'AiGlobalTimeoutError');
+    );
   });
 
-  it('skips provider when minAttemptMs exceeds remaining', async () => {
-    const a1 = {
-      name: 'a1',
-      isConfigured: () => true,
-      timeoutMs: 1000,
-      complete: async () => {
-        const e = new AiProviderHttpError('a1', 500, 'fail');
-        throw e;
+  it('raises AiGlobalTimeoutError naming the providers actually attempted', async () => {
+    // The name deliberately contains ':' so a router that recovered names by
+    // slicing the formatted failure string would report "mock" instead.
+    const hung = scriptedAdapter('mock:slow', { hang: true, timeoutMs: 5000 });
+    const router = new AiProviderRouter({ adapters: [hung.adapter], globalTimeoutMs: 80, minAttemptMs: 10 });
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' }),
+      (err: unknown) => {
+        const timedOut = assertRejectedAs(err, AiGlobalTimeoutError, 'global ceiling reached');
+        assert.equal(timedOut.timeoutMs, 80);
+        assert.deepEqual(timedOut.attempts, ['mock:slow'], 'attempted names must be recorded, not parsed from a message');
+        return true;
       },
-    } as any;
-    const a2 = {
-      name: 'a2',
-      isConfigured: () => true,
-      timeoutMs: 1000,
-      complete: async () => ({ content: 'ok' } as any),
-    } as any;
-    const router = new AiProviderRouter({ adapters: [a1, a2], globalTimeoutMs: 5, minAttemptMs: 10, providerTimeoutMs: 1000 });
-    let threw: any;
-    try {
-      await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' });
-    } catch (err) {
-      threw = err;
-    }
-    assert.ok(threw);
-    assert.equal(threw.name, 'AiGlobalTimeoutError');
+    );
+
+    assert.ok(Date.now() - startedAt < 1000, 'the ceiling must stop the chain near the global budget');
+    assert.equal(hung.state.aborted, true, 'the in-flight attempt must actually be aborted at the ceiling');
+  });
+
+  it('skips the next provider when remaining global time drops below minAttemptMs', async () => {
+    const slow = scriptedAdapter('mock-a', { delayMs: 60, failWithStatus: 500 });
+    const skipped = scriptedAdapter('mock-b');
+    const router = new AiProviderRouter({
+      adapters: [slow.adapter, skipped.adapter],
+      globalTimeoutMs: 200,
+      minAttemptMs: 150,
+      providerTimeoutMs: 1000,
+    });
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' }),
+      (err: unknown) => {
+        const timedOut = assertRejectedAs(err, AiGlobalTimeoutError, 'insufficient remaining budget');
+        assert.deepEqual(timedOut.attempts, ['mock-a'], 'the skipped provider was never attempted');
+        assert.deepEqual(timedOut.failures, ['mock-a: retryable HTTP 500']);
+        return true;
+      },
+    );
+
+    assert.equal(skipped.state.calls, 0, 'no provider work may start without a useful budget');
+  });
+
+  it('honours a per-request global timeout override over the config default', async () => {
+    const hung = scriptedAdapter('mock-hang', { hang: true, timeoutMs: 60000 });
+    const router = new AiProviderRouter({ adapters: [hung.adapter], globalTimeoutMs: 60000 });
+
+    const startedAt = Date.now();
+    await assert.rejects(
+      () =>
+        router.completeWithFallback({
+          systemPrompt: 's',
+          userPrompt: 'u',
+          timeoutMs: 90,
+          minAttemptMs: 10,
+        }),
+      (err: unknown) => {
+        const timedOut = assertRejectedAs(err, AiGlobalTimeoutError, 'per-request ceiling reached');
+        assert.equal(timedOut.timeoutMs, 90, 'the request override must win over the engine default');
+        return true;
+      },
+    );
+
+    assert.ok(
+      Date.now() - startedAt < 1500,
+      'the per-request ceiling must beat both the config default and the adapter budget',
+    );
+  });
+
+  it('honours a per-request quarantine duration override', async () => {
+    const deadKey = scriptedAdapter('mock-quarantine', { failWithStatus: 401 });
+    const router = new AiProviderRouter({ adapters: [deadKey.adapter], providerQuarantineMs: 600000 });
+
+    await assert.rejects(
+      () =>
+        router.completeWithFallback({
+          systemPrompt: 's',
+          userPrompt: 'u',
+          quarantineMs: 30,
+        }),
+      (err: Error) => {
+        assert.match(err.message, /mock-quarantine: config-fault HTTP 401/);
+        return true;
+      },
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    await assert.rejects(
+      () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u', quarantineMs: 30 }),
+      (err: unknown) => {
+        assert.ok(
+          !(err instanceof AiProvidersQuarantinedError),
+          'the 30ms request cooldown must have expired long before the 600s engine default',
+        );
+        assert.match((err as Error).message, /mock-quarantine: config-fault HTTP 401/);
+        return true;
+      },
+    );
+
+    assert.equal(deadKey.state.calls, 2, 'the provider must become eligible again after the overridden cooldown');
+  });
+
+  it('keeps every shipped provider reachable inside the default global budget', () => {
+    // The per-adapter budgets are only granted when the preceding ones leave at
+    // least `minAttemptMs` behind, so raising one "to be safer" can silently
+    // delete the providers after it. This pins the coupling the shipped
+    // defaults have to satisfy; see docs/FRICTION_LOG.md FL-006.
+    const readSource = (relative: string) =>
+      fs.readFileSync(path.resolve(relative), 'utf8');
+
+    const routerSource = readSource('ai-engine/src/providers/provider-router.ts');
+    const globalTimeoutMs = Number(
+      routerSource.match(/DEFAULT_GLOBAL_TIMEOUT_MS\s*=\s*(\d+)/)?.[1],
+    );
+    const minAttemptMs = Number(
+      routerSource.match(/DEFAULT_MIN_ATTEMPT_MS\s*=\s*(\d+)/)?.[1],
+    );
+
+    assert.ok(globalTimeoutMs > 0, 'the router must declare a global request ceiling');
+    assert.ok(minAttemptMs > 0, 'the router must declare a minimum useful attempt');
+
+    const remoteAdapters = ['groq', 'gemini', 'openrouter'];
+    const budgets = remoteAdapters.map((provider) => {
+      const source = readSource(`ai-engine/src/providers/${provider}.adapter.ts`);
+      const timeoutMs = Number(source.match(/readonly timeoutMs\s*=\s*(\d+)/)?.[1]);
+      assert.ok(timeoutMs > 0, `${provider} must declare a per-request budget`);
+      return { provider, timeoutMs };
+    });
+
+    const remoteBudgetMs = budgets.reduce((sum, entry) => sum + entry.timeoutMs, 0);
+    assert.ok(
+      remoteBudgetMs <= globalTimeoutMs - minAttemptMs,
+      `sum of remote adapter budgets (${remoteBudgetMs}ms) must leave at least ` +
+        `minAttemptMs (${minAttemptMs}ms) for the local ollama fallback inside the ` +
+        `${globalTimeoutMs}ms ceiling; budgets: ${budgets
+          .map((b) => `${b.provider}=${b.timeoutMs}ms`)
+          .join(', ')}`,
+    );
   });
 
   it('quarantines a credential-faulted provider so later requests skip the dead round trip', async () => {

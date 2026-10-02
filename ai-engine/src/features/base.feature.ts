@@ -122,30 +122,17 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
   }
 
   protected parseJsonSafely(rawText: string): Partial<WispResponseCard> {
+    const cleaned = stripJsonFences(rawText || '');
     try {
-      const cleaned = rawText
-        .replace(/^```json\s*/i, '')
-        .replace(/^```\s*/i, '')
-        .replace(/```$/i, '')
-        .trim();
       return JSON.parse(cleaned);
     } catch {
-      const text = rawText || '';
-      const cleaned = text
-        .replace(/^```json\s*/i, '')
-        .replace(/^```\s*/i, '')
-        .replace(/```\s*$/i, '')
-        .trim();
-
       const headlineMatch = cleaned.match(/"headline"\s*:\s*"((?:\\.|[^"\\])*)"/);
       const bodyMatch = cleaned.match(/"body"\s*:\s*"((?:\\.|[^"\\])*)"/);
 
-      const unescape = (str: string) => str.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
-
       if (headlineMatch || bodyMatch) {
         return {
-          headline: headlineMatch ? unescape(headlineMatch[1]) : 'Contextual Insight',
-          body: bodyMatch ? unescape(bodyMatch[1]) : cleaned,
+          headline: headlineMatch ? unescapeJsonString(headlineMatch[1]) : 'Contextual Insight',
+          body: bodyMatch ? unescapeJsonString(bodyMatch[1]) : cleaned,
         };
       }
 
@@ -155,4 +142,27 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
       };
     }
   }
+}
+
+/**
+ * Removes an optional ```json wrapper and its closing fence. The closing fence
+ * is matched with trailing whitespace permitted, because models routinely emit
+ * a newline or two after it and a fence that survives stripping turns a valid
+ * payload into an unparseable one.
+ */
+function stripJsonFences(rawText: string): string {
+  return rawText
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+}
+
+/**
+ * Resolves the escape sequences a model can emit inside a headline or body. The
+ * values recovered here come from a regex over unparseable text, so they are
+ * still JSON-escaped and must be decoded before they are rendered on the card.
+ */
+function unescapeJsonString(value: string): string {
+  return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
 }

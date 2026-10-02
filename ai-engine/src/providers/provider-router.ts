@@ -112,6 +112,9 @@ export class AiProviderRouter {
     const globalTimeoutMs = request.globalTimeoutMs ?? request.timeoutMs ?? this.globalTimeoutMs;
     const minAttemptMs = request.minAttemptMs ?? this.minAttemptMs;
     const errors: string[] = [];
+    // Recorded when an attempt begins rather than recovered from the formatted
+    // failure strings, so a provider name that itself contains ':' survives.
+    const attemptedProviders: string[] = [];
 
     for (const adapter of active) {
       if (request.signal?.aborted) {
@@ -121,11 +124,12 @@ export class AiProviderRouter {
       const elapsed = Date.now() - startedAt;
       const remainingMs = globalTimeoutMs - elapsed;
       if (remainingMs < minAttemptMs) {
-        throw new AiGlobalTimeoutError(globalTimeoutMs, []);
+        throw new AiGlobalTimeoutError(globalTimeoutMs, attemptedProviders, errors);
       }
 
       const adapterBudget = adapter.timeoutMs ?? this.defaultTimeoutMs;
       const budgetMs = Math.min(adapterBudget, remainingMs);
+      attemptedProviders.push(adapter.name);
       try {
         return await this.attemptWithinBudget(adapter, request, budgetMs);
       } catch (err: any) {
@@ -136,13 +140,9 @@ export class AiProviderRouter {
           this.quarantine(adapter, request.quarantineMs ?? undefined);
         }
         errors.push(this.describeFailure(adapter, budgetMs, err));
-        const elapsedAfter = Date.now() - startedAt;
-        if (elapsedAfter >= globalTimeoutMs || remainingMs <= 0) {
-          const attempted = errors.map((e) => {
-            const idx = e.indexOf(':');
-            return idx > 0 ? e.slice(0, idx) : e;
-          });
-          throw new AiGlobalTimeoutError(globalTimeoutMs, attempted);
+        const remainingAfterMs = globalTimeoutMs - (Date.now() - startedAt);
+        if (remainingAfterMs < minAttemptMs) {
+          throw new AiGlobalTimeoutError(globalTimeoutMs, attemptedProviders, errors);
         }
       }
     }
@@ -201,11 +201,10 @@ export class AiProviderRouter {
         throw timeoutError;
       }
       if (isAbortLikeError(err)) {
-        if (callerSignal?.aborted) {
-          throw new AiProviderCallerAbortError(adapter.name, callerSignal.reason);
-        }
-        const ie = new AiProviderInternalAbortError(adapter.name, err);
-        throw ie as any;
+        // The caller signal is not aborted, so this abort came from inside the
+        // adapter (its own timeout, for example) and must not be misreported as
+        // viewer cancellation.
+        throw new AiProviderInternalAbortError(adapter.name, err);
       }
       throw err;
     } finally {
