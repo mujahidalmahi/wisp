@@ -21,7 +21,31 @@ import { GetContextQueryDto } from '../dist/modules/context/dto/get-context-quer
 import { GetBootstrapQueryDto } from '../dist/modules/context/dto/get-bootstrap-query.dto.js';
 import { HouseholdProfileMode } from '../dist/common/dto/wisp-query.dto.js';
 
-describe('Phase 1 Basic Backend: Catalog Module', () => {
+/**
+ * Mock helper to create a configured SupabaseService simulating production database responses
+ */
+function createMockSupabaseService(handlers: {
+  from?: (table: string) => any;
+  rpc?: (name: string, params: any) => Promise<{ data: any; error: any }>;
+}) {
+  const service = Object.create(SupabaseService.prototype);
+  (service as any).logger = { log: () => {}, warn: () => {}, error: () => {} };
+  (service as any).isConfiguredFlag = true;
+  (service as any).client = {
+    from: handlers.from || (() => ({ select: () => ({}) })),
+    rpc: handlers.rpc || (async () => ({ data: null, error: null })),
+  };
+  service.isConfigured = () => true;
+  service.getClient = () => (service as any).client;
+  service.isTransientError = SupabaseService.prototype.isTransientError;
+  (service as any).recordOperation = () => {};
+  service.executeWithRetry = SupabaseService.prototype.executeWithRetry.bind(service);
+  service.executeRpc = SupabaseService.prototype.executeRpc.bind(service);
+  service.checkHealth = SupabaseService.prototype.checkHealth.bind(service);
+  return service as SupabaseService;
+}
+
+describe('Phase 1 Basic Backend: Catalog Module (In-Memory Fallback Path)', () => {
   const config = new ConfigService({});
   const supabase = new SupabaseService(config);
   const catalog = new CatalogService(supabase);
@@ -97,6 +121,108 @@ describe('Phase 1 Basic Backend: Catalog Module', () => {
       async () => catalog.getEpisodeById('00000000-0000-0000-0000-000000000000'),
       { name: 'NotFoundException' },
     );
+  });
+});
+
+describe('Phase 1 Basic Backend: Configured Database Path & Strict Fallback Boundary (Items 3, 5, 9)', () => {
+  it('returns empty array and does NOT fall back to fixtures when DB returns empty list (Item 5)', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            order: () => ({
+              order: () => ({
+                limit: async () => ({ data: [], error: null }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    const catalog = new CatalogService(mockSupabase);
+    const res = await catalog.listPrograms({ limit: 10 });
+    assert.deepEqual(res.items, []);
+    assert.equal(res.pagination.has_more, false);
+    assert.equal(res.pagination.next_cursor, null);
+  });
+
+  it('preserves 404 NotFoundException on program slug miss when DB is configured (Item 5)', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              single: async () => ({ data: null, error: { code: 'PGRST116', message: 'No rows' } }),
+            }),
+          }),
+        }),
+      }),
+    });
+    const catalog = new CatalogService(mockSupabase);
+    // Even if 'tears-of-steel' is in fixtures, DB miss must throw 404
+    await assert.rejects(
+      async () => catalog.getProgramBySlug('tears-of-steel'),
+      { name: 'NotFoundException' },
+    );
+  });
+
+  it('preserves 404 NotFoundException on episode ID miss when DB is configured (Item 5)', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              single: async () => ({ data: null, error: { code: 'PGRST116', message: 'No rows' } }),
+            }),
+          }),
+        }),
+      }),
+    });
+    const catalog = new CatalogService(mockSupabase);
+    await assert.rejects(
+      async () => catalog.getEpisodeById('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1'),
+      { name: 'NotFoundException' },
+    );
+  });
+
+  it('populates program_title and program_slug from joined database relation (Item 9)', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: (table) => ({
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              single: async () => ({
+                data: {
+                  id: 'ep-db-1',
+                  program_id: 'prog-db-1',
+                  season_number: 1,
+                  episode_number: 1,
+                  title: 'Database Episode',
+                  summary: 'Episode from DB',
+                  duration_ms: 600000,
+                  video_stream_url: 'https://example.com/stream.mp4',
+                  is_published: true,
+                  programs: { title: 'DB Program Title', slug: 'db-program-slug' },
+                },
+                error: null,
+              }),
+              order: () => ({
+                order: async () => ({
+                  data: [{ id: 'ep-db-1', season_number: 1, episode_number: 1 }],
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    const catalog = new CatalogService(mockSupabase);
+    const ep = await catalog.getEpisodeById('ep-db-1');
+    assert.equal(ep.program_title, 'DB Program Title');
+    assert.equal(ep.program_slug, 'db-program-slug');
+    assert.equal(ep.prev_episode_id, null);
+    assert.equal(ep.next_episode_id, null);
   });
 });
 
@@ -200,6 +326,38 @@ describe('Phase 1 Basic Backend: Household Profiles Module', () => {
       { name: 'ForbiddenException' },
     );
   });
+
+  it('enforces atomic sole-profile check in database path (Item 11)', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: (_fields: any, opts: any) => {
+          if (opts && opts.count === 'exact') {
+            return {
+              eq: async () => ({ count: 1, data: null, error: null }),
+            };
+          }
+          return {
+            eq: () => ({
+              single: async () => ({
+                data: { id: 'prof-sole', device_id: 'dev-atomic' },
+                error: null,
+              }),
+            }),
+          };
+        },
+        delete: () => ({
+          eq: () => ({
+            eq: async () => ({ error: null }),
+          }),
+        }),
+      }),
+    });
+    const dbProfiles = new ProfilesService(mockSupabase);
+    await assert.rejects(
+      async () => dbProfiles.deleteProfile('prof-sole', 'dev-atomic'),
+      { name: 'BadRequestException' },
+    );
+  });
 });
 
 describe('Phase 1 Basic Backend: Temporal Context & Stage-1 Bootstrap', () => {
@@ -246,7 +404,7 @@ describe('Phase 1 Basic Backend: Temporal Context & Stage-1 Bootstrap', () => {
     assert.equal(boot.session, null); // never fabricates fake session in fallback
   });
 
-  it('rejects bootstrap when requested profileId does not belong to deviceId (Item 2)', async () => {
+  it('rejects bootstrap when requested profileId does not belong to deviceId in fallback (Item 2)', async () => {
     await assert.rejects(
       async () =>
         context.getFireTvBootstrap(
@@ -258,9 +416,96 @@ describe('Phase 1 Basic Backend: Temporal Context & Stage-1 Bootstrap', () => {
       { name: 'ForbiddenException' },
     );
   });
+
+  it('proves that lookbackMs explicitly reaches the database RPC (Item 6 & Inline Comment 2)', async () => {
+    let capturedRpc: { name: string; params: any } | null = null;
+    const mockSupabase = createMockSupabaseService({
+      rpc: async (name, params) => {
+        capturedRpc = { name, params };
+        return {
+          data: {
+            metadata: {
+              program_title: 'RPC Program',
+              genre: 'Sci-Fi',
+              episode_title: 'RPC Episode',
+              season_number: 1,
+              episode_number: 1,
+              playback_position_ms: 60000,
+            },
+            active_scene: {
+              scene_index: 1,
+              scene_title: 'RPC Scene',
+              location_name: 'Tower',
+              spoiler_safe_summary: 'RPC Summary',
+              quick_action_chips: [{ id: '1', label: 'Explain', actionType: 'scene_explain' }],
+            },
+            prior_scenes: [],
+            recent_transcript: [],
+            unlocked_entities: [],
+          },
+          error: null,
+        };
+      },
+    });
+
+    const rpcContext = new ContextService(mockSupabase, catalog, profiles);
+    const result = await rpcContext.getSpoilerSafeContext('ep-uuid-1234', 60000, 300000);
+
+    assert.ok(capturedRpc);
+    assert.equal(capturedRpc.name, 'get_spoiler_safe_context');
+    assert.equal(capturedRpc.params.p_episode_id, 'ep-uuid-1234');
+    assert.equal(capturedRpc.params.p_playback_ms, 60000);
+    assert.equal(capturedRpc.params.p_lookback_ms, 300000); // lookbackMs proven to reach database RPC!
+    assert.equal(result.metadata.program_title, 'RPC Program');
+  });
+
+  it('proves bootstrap validates profile-to-device ownership against database (Item 2)', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            single: async () => ({
+              data: { id: 'prof-db-1', device_id: 'authorized-device-abc' },
+              error: null,
+            }),
+          }),
+        }),
+      }),
+      rpc: async () => ({
+        data: {
+          profile: { id: 'prof-db-1', display_name: 'User 1' },
+          active_scene: { quick_action_chips: [] },
+          prewarmed_cards: [],
+          session: null,
+          safe_playback_ms: 10000,
+          episode_duration_ms: 500000,
+        },
+        error: null,
+      }),
+    });
+
+    const dbContext = new ContextService(mockSupabase, catalog, profiles);
+
+    // Mismatched device must be rejected by database check
+    await assert.rejects(
+      async () =>
+        dbContext.getFireTvBootstrap('ep-1', 'rogue-device-xyz', 10000, 'prof-db-1'),
+      { name: 'ForbiddenException' },
+    );
+
+    // Matching device succeeds
+    const boot = await dbContext.getFireTvBootstrap(
+      'ep-1',
+      'authorized-device-abc',
+      10000,
+      'prof-db-1',
+    );
+    assert.ok(boot);
+    assert.equal(boot.profile?.id, 'prof-db-1');
+  });
 });
 
-describe('Phase 1 Basic Backend: SupabaseService Transient Error Classification (Item 12)', () => {
+describe('Phase 1 Basic Backend: SupabaseService Transient Error Classification & Retries (Item 12)', () => {
   const config = new ConfigService({});
   const supabase = new SupabaseService(config);
 
@@ -277,6 +522,32 @@ describe('Phase 1 Basic Backend: SupabaseService Transient Error Classification 
     assert.equal(supabase.isTransientError({ code: '23505', message: 'unique_violation' }), false);
     assert.equal(supabase.isTransientError({ code: '22P02', message: 'invalid_text_representation' }), false);
     assert.equal(supabase.isTransientError({ code: 'PGRST116', message: '0 rows returned' }), false);
+  });
+
+  it('retries transient errors up to maxRetries (Item 12)', async () => {
+    let callCount = 0;
+    const { error } = await supabase.executeWithRetry(
+      async () => {
+        callCount++;
+        return { data: null, error: new Error('network timeout') };
+      },
+      { maxRetries: 2, initialDelayMs: 1 },
+    );
+    assert.ok(error);
+    assert.equal(callCount, 3); // initial attempt + 2 retries
+  });
+
+  it('aborts immediately without retrying non-transient errors (Item 12)', async () => {
+    let callCount = 0;
+    const { error } = await supabase.executeWithRetry(
+      async () => {
+        callCount++;
+        return { data: null, error: { status: 400, message: 'Bad Request' } };
+      },
+      { maxRetries: 2, initialDelayMs: 1 },
+    );
+    assert.ok(error);
+    assert.equal(callCount, 1); // 0 retries, aborted on first attempt!
   });
 });
 
@@ -363,3 +634,226 @@ describe('Phase 1 Basic Backend: DTO Validation Guards (Item 14)', () => {
     assert.ok(errors.some((e) => e.property === 'playbackMs'));
   });
 });
+
+describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 1)', () => {
+  const guard = new DeviceAuthGuard();
+
+  function createMockContext(req: any) {
+    return {
+      switchToHttp: () => ({
+        getRequest: () => req,
+      }),
+    } as any;
+  }
+
+  it('authenticates via X-Device-Id header and attaches deviceId to request', () => {
+    const req: any = {
+      headers: { 'x-device-id': 'firetv-4k-living-room' },
+      query: {},
+      body: {},
+    };
+    const res = guard.canActivate(createMockContext(req));
+    assert.equal(res, true);
+    assert.equal(req.deviceId, 'firetv-4k-living-room');
+  });
+
+  it('authenticates via Authorization: Device header scheme', () => {
+    const req: any = {
+      headers: { authorization: 'Device firetv-bedroom' },
+      query: {},
+      body: {},
+    };
+    const res = guard.canActivate(createMockContext(req));
+    assert.equal(res, true);
+    assert.equal(req.deviceId, 'firetv-bedroom');
+  });
+
+  it('rejects requests with no device identification in header or parameters', () => {
+    const req: any = {
+      headers: {},
+      query: {},
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('rejects requests where query deviceId conflicts with authenticated header deviceId', () => {
+    const req: any = {
+      headers: { 'x-device-id': 'dev-real' },
+      query: { deviceId: 'dev-spoofed' },
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'ForbiddenException' },
+    );
+  });
+
+  it('rejects requests where body deviceId conflicts with authenticated header deviceId', () => {
+    const req: any = {
+      headers: { 'x-device-id': 'dev-real' },
+      query: {},
+      body: { deviceId: 'dev-spoofed' },
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'ForbiddenException' },
+    );
+  });
+
+  it('strictly requires X-Device-Id header in production mode', () => {
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const req: any = {
+        headers: {},
+        query: { deviceId: 'dev-param-only' },
+        body: {},
+      };
+      assert.throws(
+        () => guard.canActivate(createMockContext(req)),
+        { name: 'UnauthorizedException' },
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+});
+
+describe('Phase 1 Basic Backend: Production Credential Enforcement (Item 17)', () => {
+  it('marks service unconfigured in production when SUPABASE_SERVICE_ROLE_KEY is missing', () => {
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const config = new ConfigService({
+        SUPABASE_URL: 'https://xyzcompany.supabase.co',
+        SUPABASE_ANON_KEY: 'anon-key-only',
+        // SUPABASE_SERVICE_ROLE_KEY omitted
+      });
+      const supabase = new SupabaseService(config);
+      assert.equal(supabase.isConfigured(), false);
+      assert.equal(supabase.getClient(), null);
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+
+  it('initializes Supabase client in production when SUPABASE_SERVICE_ROLE_KEY is provided', () => {
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const config = new ConfigService({
+        SUPABASE_URL: 'https://xyzcompany.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+      });
+      const supabase = new SupabaseService(config);
+      assert.equal(supabase.isConfigured(), true);
+      assert.ok(supabase.getClient());
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+});
+
+describe('Phase 1 Basic Backend: Database Profiles Mutation & Ownership Verification (Item 1)', () => {
+  it('updates profile in database when device owns the profile', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            single: async () => ({
+              data: { id: 'prof-db-123', device_id: 'authorized-device-1' },
+              error: null,
+            }),
+          }),
+        }),
+        update: (patch: any) => ({
+          eq: () => ({
+            eq: () => ({
+              select: () => ({
+                single: async () => ({
+                  data: {
+                    id: 'prof-db-123',
+                    device_id: 'authorized-device-1',
+                    display_name: patch.display_name || 'Updated Name',
+                    mode: patch.mode || 'quick_glance',
+                    spoiler_strictness: 'strict',
+                    voice_tts_enabled: false,
+                    last_active_at: new Date().toISOString(),
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    const profiles = new ProfilesService(mockSupabase);
+
+    // Mismatched device is rejected
+    await assert.rejects(
+      async () =>
+        profiles.updateProfile('prof-db-123', { displayName: 'New Name' }, 'unauthorized-device'),
+      { name: 'ForbiddenException' },
+    );
+
+    // Matching device succeeds
+    const updated = await profiles.updateProfile(
+      'prof-db-123',
+      { displayName: 'New Name' },
+      'authorized-device-1',
+    );
+    assert.equal(updated.display_name, 'New Name');
+  });
+
+  it('touches profile in database when device owns the profile', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            single: async () => ({
+              data: { id: 'prof-db-touch', device_id: 'dev-touch' },
+              error: null,
+            }),
+          }),
+        }),
+        update: () => ({
+          eq: () => ({
+            eq: () => ({
+              select: () => ({
+                single: async () => ({
+                  data: {
+                    id: 'prof-db-touch',
+                    device_id: 'dev-touch',
+                    display_name: 'Touch Profile',
+                    mode: 'quick_glance',
+                    spoiler_strictness: 'strict',
+                    voice_tts_enabled: false,
+                    last_active_at: new Date().toISOString(),
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    const profiles = new ProfilesService(mockSupabase);
+
+    // Mismatched device is rejected with 403
+    await assert.rejects(
+      async () => profiles.touchProfile('prof-db-touch', 'rogue-device'),
+      { name: 'ForbiddenException' },
+    );
+
+    // Matching device succeeds
+    const touched = await profiles.touchProfile('prof-db-touch', 'dev-touch');
+    assert.ok(touched.last_active_at);
+  });
+});
+
