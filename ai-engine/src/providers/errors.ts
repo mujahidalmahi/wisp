@@ -66,14 +66,16 @@ export class AiGlobalTimeoutError extends Error {
     this.name = 'AiGlobalTimeoutError';
     this.timeoutMs = timeoutMs;
     this.attempts = attempts;
+    this.attemptedProviders = attempts;
+    Object.setPrototypeOf(this, AiGlobalTimeoutError.prototype);
   }
 }
 
 export class AiProviderInternalAbortError extends Error {
   readonly providerName: string;
 
-  constructor(providerName: string, reason?: unknown) {
-    const message = (reason as { message?: string } | null)?.message;
+  constructor(providerName: string, cause?: unknown) {
+    const message = (cause as { message?: string } | null)?.message;
     super(
       message
         ? `${providerName} aborted internally: ${message}`
@@ -81,6 +83,8 @@ export class AiProviderInternalAbortError extends Error {
     );
     this.name = 'AiProviderInternalAbortError';
     this.providerName = providerName;
+    // maintain prototype for instanceof in TS/ESM
+    Object.setPrototypeOf(this, AiProviderInternalAbortError.prototype);
   }
 }
 
@@ -98,6 +102,7 @@ export class AiProvidersQuarantinedError extends Error {
     );
     this.name = 'AiProvidersQuarantinedError';
     this.providers = providers;
+    Object.setPrototypeOf(this, AiProvidersQuarantinedError.prototype);
   }
 }
 

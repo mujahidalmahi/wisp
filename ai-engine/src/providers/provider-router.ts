@@ -121,8 +121,7 @@ export class AiProviderRouter {
       const elapsed = Date.now() - startedAt;
       const remainingMs = globalTimeoutMs - elapsed;
       if (remainingMs < minAttemptMs) {
-        errors.push(`${adapter.name}: skipped, only ${Math.max(0, remainingMs)}ms left`);
-        throw new AiGlobalTimeoutError(globalTimeoutMs, errors.map((e) => e.split(':')[0]));
+        throw new AiGlobalTimeoutError(globalTimeoutMs, []);
       }
 
       const adapterBudget = adapter.timeoutMs ?? this.defaultTimeoutMs;
@@ -139,7 +138,11 @@ export class AiProviderRouter {
         errors.push(this.describeFailure(adapter, budgetMs, err));
         const elapsedAfter = Date.now() - startedAt;
         if (elapsedAfter >= globalTimeoutMs || remainingMs <= 0) {
-          throw new AiGlobalTimeoutError(globalTimeoutMs, errors.map((e) => e.split(':')[0]));
+          const attempted = errors.map((e) => {
+            const idx = e.indexOf(':');
+            return idx > 0 ? e.slice(0, idx) : e;
+          });
+          throw new AiGlobalTimeoutError(globalTimeoutMs, attempted);
         }
       }
     }
@@ -198,7 +201,11 @@ export class AiProviderRouter {
         throw timeoutError;
       }
       if (isAbortLikeError(err)) {
-        throw new AiProviderInternalAbortError(adapter.name, err);
+        if (callerSignal?.aborted) {
+          throw new AiProviderCallerAbortError(adapter.name, callerSignal.reason);
+        }
+        const ie = new AiProviderInternalAbortError(adapter.name, err);
+        throw ie as any;
       }
       throw err;
     } finally {

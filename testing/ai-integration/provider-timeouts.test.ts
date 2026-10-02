@@ -8,7 +8,12 @@ import {
   RecoveringAuthTestAiAdapter,
 } from '../helpers/mock-ai-adapter.ts';
 import { AiProviderRouter } from '../../ai-engine/src/providers/provider-router.ts';
-import { AiProviderCallerAbortError } from '../../ai-engine/src/providers/errors.ts';
+import {
+  AiProviderCallerAbortError,
+  AiProviderInternalAbortError,
+  AiProvidersQuarantinedError,
+  AiGlobalTimeoutError,
+} from '../../ai-engine/src/providers/errors.ts';
 
 const episodeId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1';
 
@@ -174,6 +179,101 @@ describe('AI Integration: Provider Request Timeouts & Failure Classification', (
       activeNames().includes('groq-429-router'),
       'a 429 must NOT be quarantined; it can succeed on the next request',
     );
+  });
+
+  it('treats adapter-internal abort as internal, not caller cancellation', async () => {
+    const controller = new AbortController();
+    const adapter = {
+      name: 'mock-abort',
+      isConfigured: () => true,
+      timeoutMs: 2000,
+      complete: async () => {
+        const e = new Error('The operation was aborted');
+        (e as any).name = 'AbortError';
+        throw e;
+      },
+    } as any;
+    const router = new AiProviderRouter({ adapters: [adapter], providerTimeoutMs: 10000 });
+    let threw: any;
+    try {
+      await router.completeWithFallback({
+        systemPrompt: 's',
+        userPrompt: 'u',
+        signal: controller.signal,
+      });
+    } catch (err) {
+      threw = err;
+    }
+    assert.ok(threw);
+    assert.ok(threw.name === 'AiProviderInternalAbortError' || threw.constructor.name === 'AiProviderInternalAbortError');
+    assert.ok(threw.name !== 'AiProviderCallerAbortError');
+  });
+
+  it('throws AiProvidersQuarantinedError when all configured providers quarantined', async () => {
+    const adapter = {
+      name: 'mock-q',
+      isConfigured: () => true,
+      timeoutMs: 1000,
+      complete: async () => {
+        const e = new AiProviderHttpError('mock-q', 401, 'unauth');
+        throw e;
+      },
+    } as any;
+    const router = new AiProviderRouter({ adapters: [adapter], providerTimeoutMs: 1000, providerQuarantineMs: 60000 });
+    try {
+      await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' });
+    } catch (err: any) {
+      assert.ok(err.name === 'AiProvidersQuarantinedError' || err.constructor.name === 'AiProvidersQuarantinedError');
+      assert.ok(err.providers);
+    }
+  });
+
+  it('raises AiGlobalTimeoutError on global deadline', async () => {
+    const adapter = {
+      name: 'mock-slow',
+      isConfigured: () => true,
+      timeoutMs: 5000,
+      complete: async () => {
+        await new Promise((r) => setTimeout(r, 100));
+        return { content: 'ok' } as any;
+      },
+    } as any;
+    const router = new AiProviderRouter({ adapters: [adapter], globalTimeoutMs: 1, minAttemptMs: 0, providerTimeoutMs: 5000 });
+    let threw: any;
+    try {
+      await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' });
+    } catch (err) {
+      threw = err;
+    }
+    assert.ok(threw);
+    assert.equal(threw.name, 'AiGlobalTimeoutError');
+  });
+
+  it('skips provider when minAttemptMs exceeds remaining', async () => {
+    const a1 = {
+      name: 'a1',
+      isConfigured: () => true,
+      timeoutMs: 1000,
+      complete: async () => {
+        const e = new AiProviderHttpError('a1', 500, 'fail');
+        throw e;
+      },
+    } as any;
+    const a2 = {
+      name: 'a2',
+      isConfigured: () => true,
+      timeoutMs: 1000,
+      complete: async () => ({ content: 'ok' } as any),
+    } as any;
+    const router = new AiProviderRouter({ adapters: [a1, a2], globalTimeoutMs: 5, minAttemptMs: 10, providerTimeoutMs: 1000 });
+    let threw: any;
+    try {
+      await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' });
+    } catch (err) {
+      threw = err;
+    }
+    assert.ok(threw);
+    assert.equal(threw.name, 'AiGlobalTimeoutError');
   });
 
   it('quarantines a credential-faulted provider so later requests skip the dead round trip', async () => {

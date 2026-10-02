@@ -44,8 +44,6 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
     profileMode: HouseholdProfileMode,
     availableActionTypes: WispActionType[] = [],
   ): AiCompletionRequest {
-    // An empty or omitted set falls back to the built-ins so a feature prompted
-    // in isolation is never told it may emit no action type at all.
     const permittedActionTypes = availableActionTypes.length
       ? availableActionTypes
       : BUILT_IN_ACTION_TYPES;
