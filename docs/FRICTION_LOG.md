@@ -51,3 +51,15 @@
 - **Actual Behavior:** Node's native TypeScript strip-only loader throws `ERR_MODULE_NOT_FOUND` on extensionless imports, fails on non-type interface imports, and throws `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript parameter property is not supported in strip-only mode`.
 - **Workaround Implemented:** Configured `ai-engine/package.json` with `"type": "module"`, enabled `"allowImportingTsExtensions": true` in `ai-engine/tsconfig.json`, replaced constructor parameter properties with explicit class field declarations, and standardized on `import type` + `.ts` import specifiers across `ai-engine/src/**`.
 - **Actionable Recommendation:** Enable `"erasableSyntaxOnly": true` in shared TypeScript templates targeting Node 22/24 native execution so the IDE flags constructor parameter properties at authoring time.
+
+---
+
+### [FL-004] NestJS `nest build` Fails When Consuming Monorepo Packages With Explicit `.ts` Imports (TS5097)
+- **Date:** 2026-10-02
+- **Component / SDK:** NestJS CLI (`@nestjs/cli` + `tsc`) / TypeScript 5.7+ / Monorepo Workspace Imports
+- **Severity:** Medium
+- **Expected Behavior:** When `@wisp/backend` imports `@wisp/ai-engine` (which uses `.ts` extension specifiers for Node.js native execution per FL-003), NestJS compilation via `nest build` should compile seamlessly.
+- **Actual Behavior:** TypeScript compiler (`tsc`) aborted with 36 instances of `error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled`.
+- **Workaround Implemented:** Added `"allowImportingTsExtensions": true` and `"rewriteRelativeImportExtensions": true` to `backend/tsconfig.json`. This leverages TypeScript 5.7+'s ability to resolve `.ts` relative imports and automatically rewrite them during JavaScript emission.
+- **Actionable Recommendation:** Monorepo templates combining Node native TypeScript execution packages and NestJS application services should preconfigure `rewriteRelativeImportExtensions: true` in downstream consuming projects.
+
