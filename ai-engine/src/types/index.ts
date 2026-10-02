@@ -146,6 +146,8 @@ export interface AiCompletionRequest {
    */
   signal?: AbortSignal;
   timeoutMs?: number;
+  globalTimeoutMs?: number;
+  minAttemptMs?: number;
   quarantineMs?: number;
 }
 

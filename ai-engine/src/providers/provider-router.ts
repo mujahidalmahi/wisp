@@ -109,7 +109,8 @@ export class AiProviderRouter {
     }
 
     const startedAt = Date.now();
-    const globalTimeoutMs = request.timeoutMs ?? this.globalTimeoutMs;
+    const globalTimeoutMs = request.globalTimeoutMs ?? request.timeoutMs ?? this.globalTimeoutMs;
+    const minAttemptMs = request.minAttemptMs ?? this.minAttemptMs;
     const errors: string[] = [];
 
     for (const adapter of active) {
@@ -119,7 +120,7 @@ export class AiProviderRouter {
 
       const elapsed = Date.now() - startedAt;
       const remainingMs = globalTimeoutMs - elapsed;
-      if (remainingMs < this.minAttemptMs) {
+      if (remainingMs < minAttemptMs) {
         errors.push(`${adapter.name}: skipped, only ${Math.max(0, remainingMs)}ms left`);
         throw new AiGlobalTimeoutError(globalTimeoutMs, errors.map((e) => e.split(':')[0]));
       }
