@@ -738,6 +738,60 @@ describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', 
       assert.equal(validateQuizPayload('not an object').rejected, true);
     });
 
+    it('rejects a quiz whose explanation is missing, blank, or whitespace-only', () => {
+      // The prompt contract requires a non-empty explanation; an accepted blank
+      // one used to reach the client as an empty string on the answer card.
+      for (const payload of [
+        { question: 'Q?', options: ['A', 'B', 'C', 'D'], correctIndex: 0, explanation: '' },
+        { question: 'Q?', options: ['A', 'B', 'C', 'D'], correctIndex: 0, explanation: '   ' },
+        { question: 'Q?', options: ['A', 'B', 'C', 'D'], correctIndex: 0 },
+        { question: 'Q?', options: ['A', 'B', 'C', 'D'], correctIndex: 0, explanation: 42 },
+      ]) {
+        const result = validateQuizPayload(payload);
+        assert.equal(result.quizPayload, undefined, `must not emit a payload for ${JSON.stringify(payload)}`);
+        assert.equal(result.rejected, true, `blank explanation must be rejected: ${JSON.stringify(payload)}`);
+      }
+    });
+
+    it('rejects a non-string option instead of shifting correctIndex onto a different answer', () => {
+      // Dropping the malformed entry turned ['A', 123, 'C', 'D', 'E'] into
+      // ['A', 'C', 'D', 'E'], so correctIndex 1 silently repointed to 'C'.
+      const shifted = validateQuizPayload({
+        question: 'Q?',
+        options: ['A', 123, 'C', 'D', 'E'],
+        correctIndex: 1,
+        explanation: 'E',
+      });
+
+      assert.equal(shifted.quizPayload, undefined);
+      assert.equal(shifted.rejected, true);
+    });
+
+    it('rejects a blank option instead of re-indexing the remaining options', () => {
+      const reindexed = validateQuizPayload({
+        question: 'Q?',
+        options: ['A', 'B', '   ', 'C', 'D'],
+        correctIndex: 1,
+        explanation: 'E',
+      });
+
+      assert.equal(reindexed.quizPayload, undefined);
+      assert.equal(reindexed.rejected, true);
+    });
+
+    it('keeps correctIndex positional when options are valid but padded with extra entries', () => {
+      // Five well-formed options is a count violation, not a silent truncation.
+      assert.equal(
+        validateQuizPayload({
+          question: 'Q?',
+          options: ['A', 'B', 'C', 'D', 'E'],
+          correctIndex: 4,
+          explanation: 'E',
+        }).rejected,
+        true,
+      );
+    });
+
     it('treats an explicit null quizPayload as valid-and-absent, not a rejection', () => {
       const result = validateQuizPayload(null);
       assert.equal(result.quizPayload, undefined);

@@ -157,16 +157,35 @@ export function validateQuizPayload(raw: unknown): {
 
   const question = typeof raw.question === 'string' ? raw.question.trim() : '';
   const explanation = typeof raw.explanation === 'string' ? raw.explanation.trim() : '';
-  const options = Array.isArray(raw.options)
-    ? raw.options
-        .filter((option): option is string => typeof option === 'string')
-        .map((option) => option.trim())
-        .filter((option) => option.length > 0)
-    : [];
+  // Options are never dropped to reach the required count: dropping a malformed
+  // entry would shift every later position and silently repoint correctIndex at
+  // an answer the model did not mark. A malformed option invalidates the quiz so
+  // positional semantics stay 1:1 with what the model emitted.
+  const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+  const options: string[] = [];
+  let hasMalformedOption = false;
+
+  for (const option of rawOptions) {
+    if (typeof option !== 'string') {
+      hasMalformedOption = true;
+      break;
+    }
+
+    const trimmed = option.trim();
+    if (trimmed.length === 0) {
+      hasMalformedOption = true;
+      break;
+    }
+
+    options.push(trimmed);
+  }
+
   const correctIndex = typeof raw.correctIndex === 'number' ? raw.correctIndex : Number.NaN;
 
   const isValid =
     question.length > 0 &&
+    explanation.length > 0 &&
+    !hasMalformedOption &&
     options.length === REQUIRED_QUIZ_OPTIONS &&
     Number.isInteger(correctIndex) &&
     correctIndex >= 0 &&

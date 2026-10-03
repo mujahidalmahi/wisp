@@ -67,7 +67,7 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
       `HARD CONSTRAINTS - violating any of these makes the card invalid:`,
       `- "followUpChips" must contain between 2 and 4 entries. "actionType" must be exactly one of: ${permittedActionTypes.join(', ')}.`,
       `- Chip labels must be non-empty strings of at most 80 characters, and each "id" must be unique.`,
-      `- "quizPayload" must be null, or an object with a non-empty "question", exactly 4 non-empty "options", an "explanation", and an integer "correctIndex` + '` between 0 and 3 inclusive.',
+      `- "quizPayload" must be null, or an object with a non-empty "question", exactly 4 non-empty "options", a non-empty "explanation", and an integer "correctIndex` + '` between 0 and 3 inclusive.',
     ].join('\n');
 
     const userPrompt = JSON.stringify(
