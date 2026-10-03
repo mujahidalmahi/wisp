@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +19,23 @@ import {
 import type { IAiModelAdapter } from '../../ai-engine/src/types/index.ts';
 
 const episodeId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1';
+
+/**
+ * Keeps one referenced handle alive for this file so a test that is waiting on a
+ * provider deadline has something to wait *with*.
+ *
+ * The router unrefs its per-attempt budget timer (`unrefTimer` in errors.ts, see
+ * docs/FRICTION_LOG.md FL-005) so a pending provider attempt can never hold the
+ * process open, and the cooperative mock unrefs its own work timer for the same
+ * reason. Those timers are the only pending work while a timeout test waits, so
+ * in a bare `node --test` process the event loop drains and Node abandons the
+ * whole file with "Promise resolution is still pending but the event loop has
+ * already resolved" — reported as `cancelled`, not as a failure, which is why the
+ * suite looked green. In production the HTTP server handle covers this gap; here
+ * the guard stands in for it and is released in `after` so the runner can exit.
+ */
+const eventLoopGuard = setInterval(() => {}, 1 << 30);
+after(() => clearInterval(eventLoopGuard));
 
 class ScriptedSignalRecorder {
   readonly name: string;

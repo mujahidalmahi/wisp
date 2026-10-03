@@ -1,7 +1,9 @@
 import type { AiCompletionRequest, AiCompletionResult, IAiModelAdapter } from '../types/index.ts';
+import { AiProviderHttpError } from './errors.ts';
 
 export class GeminiModelAdapter implements IAiModelAdapter {
   readonly name = 'gemini';
+  readonly timeoutMs = 3000;
   private readonly apiKey?: string;
   private readonly model: string;
 
@@ -20,6 +22,7 @@ export class GeminiModelAdapter implements IAiModelAdapter {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: req.signal,
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: req.systemPrompt }] },
         contents: [{ role: 'user', parts: [{ text: req.userPrompt }] }],
@@ -32,7 +35,7 @@ export class GeminiModelAdapter implements IAiModelAdapter {
     });
 
     if (!response.ok) {
-      throw new Error(`Gemini HTTP ${response.status}: ${await response.text()}`);
+      throw new AiProviderHttpError('gemini', response.status, await response.text());
     }
 
     const data = (await response.json()) as any;
