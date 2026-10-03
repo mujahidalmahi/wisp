@@ -1,7 +1,9 @@
 import type { AiCompletionRequest, AiCompletionResult, IAiModelAdapter } from '../types/index.ts';
+import { AiProviderHttpError } from './errors.ts';
 
 export class OllamaModelAdapter implements IAiModelAdapter {
   readonly name = 'ollama';
+  readonly timeoutMs = 15000;
   private readonly baseUrl?: string;
   private readonly model: string;
 
@@ -20,6 +22,7 @@ export class OllamaModelAdapter implements IAiModelAdapter {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: req.signal,
       body: JSON.stringify({
         model: this.model,
         stream: false,
@@ -32,7 +35,7 @@ export class OllamaModelAdapter implements IAiModelAdapter {
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama HTTP ${response.status}: ${await response.text()}`);
+      throw new AiProviderHttpError('ollama', response.status, await response.text());
     }
 
     const data = (await response.json()) as any;

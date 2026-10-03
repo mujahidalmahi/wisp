@@ -1,7 +1,9 @@
 import type { AiCompletionRequest, AiCompletionResult, IAiModelAdapter } from '../types/index.ts';
+import { AiProviderHttpError } from './errors.ts';
 
 export class OpenRouterModelAdapter implements IAiModelAdapter {
   readonly name = 'openrouter';
+  readonly timeoutMs = 4000;
   private readonly apiKey?: string;
   private readonly model: string;
 
@@ -24,6 +26,7 @@ export class OpenRouterModelAdapter implements IAiModelAdapter {
         'HTTP-Referer': 'https://github.com/wisp-firetv',
         'X-Title': 'Wisp Fire TV Contextual Viewing',
       },
+      signal: req.signal,
       body: JSON.stringify({
         model: this.model,
         temperature: req.temperature ?? 0.3,
@@ -36,7 +39,7 @@ export class OpenRouterModelAdapter implements IAiModelAdapter {
     });
 
     if (!response.ok) {
-      throw new Error(`OpenRouter HTTP ${response.status}: ${await response.text()}`);
+      throw new AiProviderHttpError('openrouter', response.status, await response.text());
     }
 
     const data = (await response.json()) as any;

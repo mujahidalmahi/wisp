@@ -73,7 +73,16 @@ export class WispAiEngine {
       (await this.contextSource.getSpoilerSafeContext(input.episodeId, input.playbackPositionMs));
 
     const featureModule = this.features.resolve(input.actionType);
-    const completionRequest = featureModule.buildPrompts(input, context, profileMode);
+    // The registry is the single runtime source of truth for what the engine can
+    // resolve, so it supplies both the action types the model is told to use and
+    // the resolver that validates the model's answer.
+    const registeredActionTypes = this.features.listRegisteredActionTypes();
+    const completionRequest = featureModule.buildPrompts(
+      input,
+      context,
+      profileMode,
+      registeredActionTypes,
+    );
     const result = await this.router.completeWithFallback(completionRequest);
 
     const card = featureModule.formatResponseCard(
@@ -83,6 +92,7 @@ export class WispAiEngine {
       profileMode,
       result.providerName,
       result.latencyMs,
+      this.features.asActionTypeResolver(),
     );
 
     if (this.enableCache && !input.inlineContextOverride) {

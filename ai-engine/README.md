@@ -45,7 +45,14 @@ ai-engine/
 
 ## Adding a New AI Feature (Zero Backend/DB Changes Required)
 
-Implement `IAiFeatureModule` in `src/features/` and register it with `engine.registerFeature(myFeature)`:
+Implement `IAiFeatureModule` in `src/features/` and register it with `engine.registerFeature(myFeature)`.
+
+A registered feature is automatically advertised to the model. `WispAiEngine` reads the registry once per request and uses it for both directions of the action-type contract:
+
+* **Prompt:** `listRegisteredActionTypes()` is passed into `buildPrompts()`, so the `HARD CONSTRAINTS` line names every registered action type rather than only the five built-ins.
+* **Validation:** `asActionTypeResolver()` is passed into `formatResponseCard()`, so `validateChips()` keeps the custom action type instead of coercing it to `contextual_qa`.
+
+Features stay registry-independent — `BaseAiFeatureModule` only renders the list it is given, so it can still be unit tested in isolation without constructing an engine:
 
 ```ts
 import { WispAiEngine } from '@wisp/ai-engine';
