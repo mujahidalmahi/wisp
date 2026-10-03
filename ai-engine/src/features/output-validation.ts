@@ -1,8 +1,3 @@
-<<<<<<< HEAD
-import type { QuickActionChip, WispActionType } from '../types/index.ts';
-
-export const BUILT_IN_ACTION_TYPES = [
-=======
 import type {
   ActionTypeResolver,
   QuickActionChip,
@@ -16,163 +11,21 @@ export const MAX_CHIP_LABEL_LENGTH = 80;
 export const SAFE_FALLBACK_ACTION: WispActionType = 'contextual_qa';
 
 export const BUILT_IN_ACTION_TYPES: WispActionType[] = [
->>>>>>> 324233b (fix(testing): resolve event loop promise leaks and update schema test paths)
   'contextual_qa',
   'entity_explain',
   'scene_explain',
   'episode_recap',
   'post_watch_quiz',
-<<<<<<< HEAD
-] as const;
-
-export const MIN_CHIPS = 2;
-export const MAX_CHIPS = 4;
-
-const MAX_CHIP_LABEL_LENGTH = 160;
-
-type QuizPayload = {
-  question: string;
-  options: string[];
-  correctIndex: number;
-  explanation: string;
-};
-
-function normalizeActionType(actionType: unknown): WispActionType {
-  return BUILT_IN_ACTION_TYPES.includes(actionType as (typeof BUILT_IN_ACTION_TYPES)[number])
-    ? (actionType as WispActionType)
-    : 'contextual_qa';
-}
-
-function normalizeChip(raw: unknown, index: number): QuickActionChip | undefined {
-  if (!raw || typeof raw !== 'object') {
-    return undefined;
-  }
-
-  const value = raw as Partial<QuickActionChip>;
-  const label = typeof value.label === 'string' ? value.label.trim() : '';
-  if (!label || label.length > MAX_CHIP_LABEL_LENGTH) {
-    return undefined;
-  }
-
-  const id = typeof value.id === 'string' && value.id.trim().length > 0 ? value.id.trim() : `wisp-chip-${index + 1}`;
-
-  return {
-    id,
-    label,
-    actionType: normalizeActionType(value.actionType),
-  };
-}
-
-export function validateChips(
-  rawChips: unknown,
-  fallbackChips: QuickActionChip[],
-): {
-  chips: QuickActionChip[];
-  usedFallback: boolean;
-  droppedChips: number;
-  truncatedChips: number;
-  coercedActionTypes: number;
-} {
-  const list = Array.isArray(rawChips) ? rawChips : [];
-  const normalized = list.map((chip, index) => normalizeChip(chip, index));
-  const chips = normalized.filter((chip): chip is QuickActionChip => Boolean(chip));
-  const uniqueById = new Map<string, QuickActionChip>();
-  for (const chip of chips) {
-    if (!uniqueById.has(chip.id)) {
-      uniqueById.set(chip.id, chip);
-    }
-  }
-
-  const base = [...uniqueById.values()];
-  const droppedChips = list.length - base.length;
-  const truncatedChips = Math.max(0, base.length - MAX_CHIPS);
-  const primary = base.slice(0, MAX_CHIPS);
-  const coercedActionTypes = primary.filter((chip, index) => {
-    const raw = list[index] as { actionType?: unknown } | undefined;
-    return !BUILT_IN_ACTION_TYPES.includes(raw?.actionType as (typeof BUILT_IN_ACTION_TYPES)[number]);
-  }).length;
-
-  if (primary.length >= MIN_CHIPS) {
-    return {
-      chips: primary,
-      usedFallback: false,
-      droppedChips,
-      truncatedChips,
-      coercedActionTypes,
-    };
-  }
-
-  const fallback = Array.isArray(fallbackChips)
-    ? fallbackChips
-        .map((chip, index) => normalizeChip(chip, index))
-        .filter((chip): chip is QuickActionChip => Boolean(chip))
-        .slice(0, MAX_CHIPS)
-    : [];
-
-  const merged = [...primary];
-  for (const chip of fallback) {
-    if (merged.length >= MAX_CHIPS) break;
-    if (!merged.some((x) => x.id === chip.id)) merged.push(chip);
-  }
-
-  while (merged.length < MIN_CHIPS) {
-    merged.push({
-      id: `wisp-fallback-${merged.length + 1}`,
-      label: merged.length % 2 === 0 ? 'Explain this scene' : 'Catch me up so far',
-      actionType: merged.length % 2 === 0 ? 'scene_explain' : 'episode_recap',
-    });
-  }
-
-  return {
-    chips: merged,
-    usedFallback: true,
-    droppedChips,
-    truncatedChips,
-    coercedActionTypes,
-  };
-}
-
-export function validateQuizPayload(raw: unknown): { quizPayload?: QuizPayload; rejected: boolean } {
-  if (raw == null) {
-    return { quizPayload: undefined, rejected: false };
-  }
-
-  if (!raw || typeof raw !== 'object') {
-    return { quizPayload: undefined, rejected: true };
-  }
-
-  const value = raw as Partial<QuizPayload>;
-  const question = typeof value.question === 'string' ? value.question.trim() : '';
-  const explanation = typeof value.explanation === 'string' ? value.explanation.trim() : '';
-
-  if (!question || !explanation || !Array.isArray(value.options) || value.options.length !== 4) {
-    return { quizPayload: undefined, rejected: true };
-  }
-
-  const options = value.options.map((option) => (typeof option === 'string' ? option.trim() : ''));
-  if (options.some((option) => option.length === 0)) {
-    return { quizPayload: undefined, rejected: true };
-  }
-
-  if (!Number.isInteger(value.correctIndex) || (value.correctIndex as number) < 0 || (value.correctIndex as number) > 3) {
-=======
 ];
 
 export const isBuiltInActionType: ActionTypeResolver = (actionType) =>
   BUILT_IN_ACTION_TYPES.includes(actionType as WispActionType);
 
-/**
- * Last-resort chips used only when neither the model output nor the curated
- * scene chips can satisfy the minimum-chip contract. These are navigation
- * actions, never content: they route the viewer's D-pad selection into a real
- * registered feature rather than asserting an answer.
- */
 const ENGINE_FALLBACK_CHIPS: ReadonlyArray<QuickActionChip> = [
   { id: 'wisp-fallback-scene', label: 'What is happening right now?', actionType: 'scene_explain' },
   { id: 'wisp-fallback-context', label: 'Ask about this scene', actionType: 'contextual_qa' },
 ];
 
-/** Navigation label for any built-in action type that can top up a thin card. */
 const FALLBACK_ACTION_LABELS: Readonly<Record<string, string>> = {
   entity_explain: 'Who are these people?',
   episode_recap: 'Catch me up so far',
@@ -197,24 +50,9 @@ export interface ChipValidationResult {
 
 export interface ChipValidationOptions {
   maxLabelLength?: number;
-  /**
-   * Predicate deciding whether an actionType can actually be dispatched. Defaults
-   * to the built-in set; the AiFeatureRegistry supplies its own so dynamically
-   * registered features are accepted without coercion.
-   */
   canResolveActionType?: ActionTypeResolver;
 }
 
-/**
- * Enforces the AGENTS.md rule 4 contract: every AI card offers 2-4 D-pad
- * selectable chips whose actionTypes the engine can actually dispatch.
- *
- * Escalation is staged so curated scene chips are always preferred over the
- * engine-level fallback. Chips with unusable labels are dropped, duplicate ids
- * collapse, and unresolvable actionTypes are coerced to `contextual_qa` to match
- * AiFeatureRegistry.resolve()'s existing behaviour — made explicit and counted
- * rather than silently rerouting the viewer's selection.
- */
 export function validateChips(
   rawChips: unknown,
   fallbackChips: QuickActionChip[],
@@ -222,8 +60,6 @@ export function validateChips(
 ): ChipValidationResult {
   const maxLabelLength = options.maxLabelLength ?? MAX_CHIP_LABEL_LENGTH;
   const canResolve = options.canResolveActionType ?? isBuiltInActionType;
-  // Coercion must not emit an action type the engine cannot dispatch either, so
-  // the safe target is resolved against the same predicate as the candidate.
   const coercionTarget = canResolve(SAFE_FALLBACK_ACTION)
     ? SAFE_FALLBACK_ACTION
     : BUILT_IN_ACTION_TYPES.find(canResolve) ?? SAFE_FALLBACK_ACTION;
@@ -261,27 +97,16 @@ export function validateChips(
     return { chips: accepted, coercedActionTypes, droppedChips, truncatedChips, usedFallback };
   }
 
-  const curated = collectCuratedChips(
-    fallbackChips,
-    canResolve,
-    seenIds,
-    maxLabelLength,
-    coercionTarget,
-  );
+  const curated = collectCuratedChips(fallbackChips, canResolve, seenIds, maxLabelLength, coercionTarget);
   coercedActionTypes += curated.coercedActionTypes;
 
-  const chips =
-    curated.chips.length < MIN_CHIPS
-      ? completeWithEngineFallback(curated.chips, canResolve)
-      : curated.chips;
+  const chips = curated.chips.length < MIN_CHIPS
+    ? completeWithEngineFallback(curated.chips, canResolve)
+    : curated.chips;
 
   return { chips, coercedActionTypes, droppedChips, truncatedChips, usedFallback };
 }
 
-/**
- * Validates the 4-option quiz contract. Returns undefined when the payload is
- * unusable so a malformed quiz is dropped rather than rendered half-correct.
- */
 export function validateQuizPayload(raw: unknown): {
   quizPayload?: {
     question: string;
@@ -297,10 +122,6 @@ export function validateQuizPayload(raw: unknown): {
 
   const question = typeof raw.question === 'string' ? raw.question.trim() : '';
   const explanation = typeof raw.explanation === 'string' ? raw.explanation.trim() : '';
-  // Options are never dropped to reach the required count: dropping a malformed
-  // entry would shift every later position and silently repoint correctIndex at
-  // an answer the model did not mark. A malformed option invalidates the quiz so
-  // positional semantics stay 1:1 with what the model emitted.
   const rawOptions = Array.isArray(raw.options) ? raw.options : [];
   const options: string[] = [];
   let hasMalformedOption = false;
@@ -321,7 +142,6 @@ export function validateQuizPayload(raw: unknown): {
   }
 
   const correctIndex = typeof raw.correctIndex === 'number' ? raw.correctIndex : Number.NaN;
-
   const isValid =
     question.length > 0 &&
     explanation.length > 0 &&
@@ -332,22 +152,10 @@ export function validateQuizPayload(raw: unknown): {
     correctIndex < options.length;
 
   if (!isValid) {
->>>>>>> 324233b (fix(testing): resolve event loop promise leaks and update schema test paths)
     return { quizPayload: undefined, rejected: true };
   }
 
   return {
-<<<<<<< HEAD
-    quizPayload: {
-      question,
-      options,
-      correctIndex: value.correctIndex as number,
-      explanation,
-    },
-    rejected: false,
-  };
-}
-=======
     quizPayload: { question, options, correctIndex, explanation },
     rejected: false,
   };
@@ -387,12 +195,6 @@ function normalizeChip(
   };
 }
 
-/**
- * Curated scene chips are also repaired, so a chip whose action type is not
- * resolvable is coerced to the same safe target as a model chip. The count is
- * returned rather than accumulated through module state so each repair is
- * attributed to exactly one source and nothing is double counted.
- */
 function collectCuratedChips(
   fallbackChips: QuickActionChip[],
   canResolve: ActionTypeResolver,
@@ -425,18 +227,6 @@ function collectCuratedChips(
   return { chips, coercedActionTypes };
 }
 
-/**
- * Guarantees the minimum-chip contract even when the curated scene data is
- * missing or malformed. Only action types the resolver accepts are used, so the
- * guarantee cannot emit an undispatchable chip.
- *
- * The resolver may permit far fewer action types than the contract needs (a
- * registry exposing a single feature, for instance). Chips are therefore filled
- * from every resolvable action type and, if that still leaves the card short,
- * from uniquely identified variants of the permitted ones. Every emitted chip
- * keeps a non-empty label and a distinct id, so the viewer always has at least
- * two things to press.
- */
 function completeWithEngineFallback(
   chips: QuickActionChip[],
   canResolve: ActionTypeResolver,
@@ -460,16 +250,11 @@ function completeWithEngineFallback(
     return completed;
   }
 
-  // The resolver permits fewer action types than the contract needs, which can
-  // happen at either end: no curated chips survived, or the resolver itself only
-  // accepts a narrow set. Widening to every permitted built-in comes first.
   const resolvableBuiltIns = BUILT_IN_ACTION_TYPES.filter(canResolve);
   for (const actionType of resolvableBuiltIns) {
     add(`wisp-fallback-${actionType}`, fallbackLabelFor(actionType, 0), actionType);
   }
 
-  // A resolver exposing a single action type still has to yield two selectable
-  // chips. Repeating it is safe because ids and labels stay distinct.
   for (let variant = 1; variant < MIN_CHIPS && completed.length < MIN_CHIPS; variant++) {
     for (const actionType of resolvableBuiltIns) {
       add(`wisp-fallback-${actionType}-v${variant + 1}`, fallbackLabelFor(actionType, variant), actionType);
@@ -482,4 +267,3 @@ function completeWithEngineFallback(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
->>>>>>> 324233b (fix(testing): resolve event loop promise leaks and update schema test paths)
