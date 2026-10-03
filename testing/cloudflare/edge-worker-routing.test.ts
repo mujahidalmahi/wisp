@@ -2,9 +2,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 describe('Cloudflare Edge: Worker KV Cache Key Bucketing & R2 Media Streaming', () => {
-  const workerSource = fs.readFileSync(path.resolve('cloudflare/src/index.ts'), 'utf8');
+  const workerSource = fs.readFileSync(path.resolve(repositoryRoot, 'cloudflare/src/index.ts'), 'utf8');
 
   it('exposes /edge-health and /media/* R2 byte-range streaming routes', () => {
     assert.ok(workerSource.includes("url.pathname === '/edge-health'"));

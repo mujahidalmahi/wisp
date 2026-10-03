@@ -2,18 +2,21 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 describe('Backend: DTO Contracts, NestJS Modules & Endpoint Definitions', () => {
   const dtoSource = fs.readFileSync(
-    path.resolve('backend/src/common/dto/wisp-query.dto.ts'),
+    path.resolve(repositoryRoot, 'backend/src/common/dto/wisp-query.dto.ts'),
     'utf8',
   );
   const aiControllerSource = fs.readFileSync(
-    path.resolve('backend/src/modules/ai-gateway/ai-gateway.controller.ts'),
+    path.resolve(repositoryRoot, 'backend/src/modules/ai-gateway/ai-gateway.controller.ts'),
     'utf8',
   );
   const contextControllerSource = fs.readFileSync(
-    path.resolve('backend/src/modules/context/context.controller.ts'),
+    path.resolve(repositoryRoot, 'backend/src/modules/context/context.controller.ts'),
     'utf8',
   );
 

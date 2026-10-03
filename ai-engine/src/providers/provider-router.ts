@@ -25,6 +25,20 @@ const DEFAULT_GLOBAL_TIMEOUT_MS = 15000;
 const DEFAULT_MIN_ATTEMPT_MS = 3000;
 const DEFAULT_PROVIDER_QUARANTINE_MS = 300000;
 
+function requirePositiveFinite(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a finite number greater than zero`);
+  }
+  return value;
+}
+
+function requireNonNegativeFinite(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a finite non-negative number`);
+  }
+  return value;
+}
+
 export class AiProviderRouter {
   private readonly adapters: IAiModelAdapter[] = [];
   private readonly defaultTimeoutMs: number;
@@ -34,10 +48,22 @@ export class AiProviderRouter {
   private readonly quarantinedUntil = new Map<string, number>();
 
   constructor(config: WispAiEngineConfig = {}) {
-    this.defaultTimeoutMs = config.providerTimeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
-    this.globalTimeoutMs = config.globalTimeoutMs ?? DEFAULT_GLOBAL_TIMEOUT_MS;
-    this.minAttemptMs = config.minAttemptMs ?? DEFAULT_MIN_ATTEMPT_MS;
-    this.quarantineMs = config.providerQuarantineMs ?? DEFAULT_PROVIDER_QUARANTINE_MS;
+    this.defaultTimeoutMs = requirePositiveFinite(
+      config.providerTimeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS,
+      'providerTimeoutMs',
+    );
+    this.globalTimeoutMs = requirePositiveFinite(
+      config.globalTimeoutMs ?? DEFAULT_GLOBAL_TIMEOUT_MS,
+      'globalTimeoutMs',
+    );
+    this.minAttemptMs = requirePositiveFinite(config.minAttemptMs ?? DEFAULT_MIN_ATTEMPT_MS, 'minAttemptMs');
+    this.quarantineMs = requireNonNegativeFinite(
+      config.providerQuarantineMs ?? DEFAULT_PROVIDER_QUARANTINE_MS,
+      'quarantineMs',
+    );
+    if (this.globalTimeoutMs < this.minAttemptMs) {
+      throw new Error('globalTimeoutMs must be greater than or equal to minAttemptMs');
+    }
 
     if (Array.isArray(config.adapters) && config.adapters.length > 0) {
       this.adapters = [...config.adapters];
@@ -115,6 +141,13 @@ export class AiProviderRouter {
     const startedAt = Date.now();
     const globalTimeoutMs = request.globalTimeoutMs ?? request.timeoutMs ?? this.globalTimeoutMs;
     const minAttemptMs = request.minAttemptMs ?? this.minAttemptMs;
+    const quarantineMs = request.quarantineMs ?? this.quarantineMs;
+    requirePositiveFinite(globalTimeoutMs, 'globalTimeoutMs');
+    requirePositiveFinite(minAttemptMs, 'minAttemptMs');
+    requireNonNegativeFinite(quarantineMs, 'quarantineMs');
+    if (globalTimeoutMs < minAttemptMs) {
+      throw new Error('globalTimeoutMs must be greater than or equal to minAttemptMs');
+    }
     const errors: string[] = [];
     // Recorded when an attempt begins rather than recovered from the formatted
     // failure strings, so a provider name that itself contains ':' survives.
@@ -131,7 +164,10 @@ export class AiProviderRouter {
         throw new AiGlobalTimeoutError(globalTimeoutMs, attemptedProviders, errors);
       }
 
-      const adapterBudget = adapter.timeoutMs ?? this.defaultTimeoutMs;
+      const adapterBudget = requirePositiveFinite(
+        adapter.timeoutMs ?? this.defaultTimeoutMs,
+        `${adapter.name} timeoutMs`,
+      );
       const budgetMs = Math.min(adapterBudget, remainingMs);
       attemptedProviders.push(adapter.name);
       try {
@@ -141,7 +177,7 @@ export class AiProviderRouter {
           throw err;
         }
         if (err instanceof AiProviderHttpError && err.isConfigFault()) {
-          this.quarantine(adapter, request.quarantineMs ?? undefined);
+          this.quarantine(adapter, quarantineMs);
         }
         errors.push(this.describeFailure(adapter, budgetMs, err));
         const remainingAfterMs = globalTimeoutMs - (Date.now() - startedAt);
@@ -178,19 +214,20 @@ export class AiProviderRouter {
 
     const controller = new AbortController();
     const abortForBudget = () => controller.abort(timeoutError);
-    const budgetTimer = unrefTimer(setTimeout(abortForBudget, budgetMs));
     const onCallerAbort = () => controller.abort(callerSignal?.reason);
-    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
-
     const signal = composeAbortSignal(controller.signal, callerSignal);
+    const rejectOnAbort = () => deadlineReject(controller.signal.reason ?? timeoutError);
+    let deadlineReject: (reason: unknown) => void = () => undefined;
     const deadline = new Promise<never>((_, reject) => {
-      const rejectOnAbort = () => reject(controller.signal.reason ?? timeoutError);
+      deadlineReject = reject;
       if (signal.aborted) {
         rejectOnAbort();
         return;
       }
       signal.addEventListener('abort', rejectOnAbort, { once: true });
     });
+    const budgetTimer = unrefTimer(setTimeout(abortForBudget, budgetMs));
+    callerSignal?.addEventListener('abort', onCallerAbort, { once: true });
 
     try {
       return await Promise.race([adapter.complete({ ...request, signal }), deadline]);
@@ -214,6 +251,8 @@ export class AiProviderRouter {
     } finally {
       clearTimeout(budgetTimer);
       callerSignal?.removeEventListener('abort', onCallerAbort);
+      signal.removeEventListener('abort', rejectOnAbort);
+      deadlineReject = () => undefined;
     }
   }
 

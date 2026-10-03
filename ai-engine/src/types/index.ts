@@ -141,8 +141,10 @@ export interface AiCompletionRequest {
   temperature?: number;
   /**
    * Abort signal injected by {@link AiProviderRouter} to bound a single provider
-   * attempt. Adapters must forward this to `fetch` so the underlying socket is
-   * released, not merely abandoned.
+    * attempt. Cooperative adapters should forward this to `fetch` so the
+    * underlying socket is released. Adapters that ignore the signal cannot be
+    * forcibly stopped by the router: the router bounds how long it waits, but
+    * abandoned adapter work may continue consuming resources in the background.
    */
   signal?: AbortSignal;
   timeoutMs?: number;

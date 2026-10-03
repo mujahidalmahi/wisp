@@ -164,5 +164,9 @@ function stripJsonFences(rawText: string): string {
  * still JSON-escaped and must be decoded before they are rendered on the card.
  */
 function unescapeJsonString(value: string): string {
-  return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  try {
+    return JSON.parse(`"${value}"`) as string;
+  } catch {
+    return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
 }

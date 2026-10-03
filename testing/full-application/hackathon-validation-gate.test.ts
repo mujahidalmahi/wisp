@@ -2,6 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 describe('Full Application: Hackathon Submission Readiness & 7-Step Validation Gate', () => {
   it('verifies all required hackathon submission documents and friction logs exist and are non-empty', () => {
@@ -26,7 +29,7 @@ describe('Full Application: Hackathon Submission Readiness & 7-Step Validation G
     ];
 
     for (const docPath of requiredDocs) {
-      const fullPath = path.resolve(docPath);
+      const fullPath = path.resolve(repositoryRoot, docPath);
       assert.ok(fs.existsSync(fullPath), `Missing required document: ${docPath}`);
       const stat = fs.statSync(fullPath);
       assert.ok(stat.size > 100, `Document ${docPath} appears empty or incomplete`);
@@ -41,7 +44,7 @@ describe('Full Application: Hackathon Submission Readiness & 7-Step Validation G
     ];
 
     for (const file of frontendFiles) {
-      const content = fs.readFileSync(path.resolve(file), 'utf8');
+      const content = fs.readFileSync(path.resolve(repositoryRoot, file), 'utf8');
       assert.ok(!content.includes('gsk_'), `Groq key prefix leaked in ${file}`);
       assert.ok(!content.includes('sk-or-v1-'), `OpenRouter key prefix leaked in ${file}`);
       assert.ok(

@@ -2,6 +2,7 @@ import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WispAiEngine } from '../../ai-engine/src/engine.ts';
 import {
   DeterministicTestAiAdapter,
@@ -19,6 +20,8 @@ import {
 import type { IAiModelAdapter } from '../../ai-engine/src/types/index.ts';
 
 const episodeId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1';
+const testDirectory = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(testDirectory, '../..');
 
 /**
  * Keeps one referenced handle alive for this file so a test that is waiting on a
@@ -145,7 +148,7 @@ function scriptedAdapter(
   return { adapter, state };
 }
 
-describe.skip('AI Integration: Provider Request Timeouts & Failure Classification', () => {
+describe('AI Integration: Provider Request Timeouts & Failure Classification', () => {
 
   const baseInput = {
     episodeId,
@@ -153,6 +156,87 @@ describe.skip('AI Integration: Provider Request Timeouts & Failure Classificatio
     actionType: 'scene_explain' as const,
     prompt: 'Why are they arguing?',
   };
+
+  it('rejects invalid timeout configuration before starting provider work', () => {
+    for (const [key, value] of [
+      ['providerTimeoutMs', 0],
+      ['providerTimeoutMs', -1],
+      ['providerTimeoutMs', Number.NaN],
+      ['providerTimeoutMs', Number.POSITIVE_INFINITY],
+      ['globalTimeoutMs', 0],
+      ['minAttemptMs', 0],
+      ['providerQuarantineMs', -1],
+      ['providerQuarantineMs', Number.NaN],
+    ] as const) {
+      assert.throws(
+        () => new AiProviderRouter({ [key]: value }),
+        new RegExp(`${key === 'providerQuarantineMs' ? 'quarantineMs' : key}`),
+      );
+    }
+
+    assert.throws(
+      () => new AiProviderRouter({ globalTimeoutMs: 10, minAttemptMs: 11 }),
+      /globalTimeoutMs must be greater than or equal to minAttemptMs/,
+    );
+  });
+
+  it('rejects invalid per-request timeout overrides without invoking an adapter', async () => {
+    const recorder = scriptedAdapter('config-guard');
+    const router = new AiProviderRouter({ adapters: [recorder.adapter] });
+
+    for (const request of [
+      { globalTimeoutMs: 0 },
+      { minAttemptMs: Number.NaN },
+      { quarantineMs: -1 },
+      { timeoutMs: 10, minAttemptMs: 11 },
+    ]) {
+      await assert.rejects(
+        () => router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u', ...request }),
+        /must be|greater than or equal/,
+      );
+    }
+    assert.equal(recorder.state.calls, 0);
+  });
+
+  it('cleans listeners after success and does not let a later abort affect another request', async () => {
+    const seenSignals: Array<AbortSignal | undefined> = [];
+    const adapter = new ScriptedSignalRecorder('cleanup-recorder', seenSignals);
+    const controller = new AbortController();
+    const router = new AiProviderRouter({ adapters: [adapter] });
+
+    const first = await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u', signal: controller.signal });
+    assert.equal(first.providerName, 'cleanup-recorder');
+    controller.abort(new Error('aborted after success'));
+    assert.equal(controller.signal.aborted, true);
+
+    const second = await router.completeWithFallback({ systemPrompt: 's', userPrompt: 'u' });
+    assert.equal(second.providerName, 'cleanup-recorder');
+    assert.equal(seenSignals.length, 2);
+  });
+
+  it('classifies a caller abort racing provider completion deterministically without aborting the caller', async () => {
+    const controller = new AbortController();
+    const adapter: IAiModelAdapter = {
+      name: 'race-recorder',
+      isConfigured: () => true,
+      async complete() {
+        controller.abort(new Error('viewer cancelled at completion'));
+        return { providerName: 'race-recorder', rawText: '{}', latencyMs: 5 };
+      },
+    };
+    const router = new AiProviderRouter({ adapters: [adapter] });
+
+    const result = await router
+      .completeWithFallback({ systemPrompt: 's', userPrompt: 'u', signal: controller.signal })
+      .catch((error: unknown) => error);
+    assert.ok(
+      result instanceof AiProviderCallerAbortError ||
+        (typeof result === 'object' && result !== null && 'providerName' in result &&
+          result.providerName === 'race-recorder'),
+      'a completion/cancellation race must settle as either caller cancellation or provider completion',
+    );
+    assert.equal(controller.signal.aborted, true, 'only the caller may abort its signal');
+  });
 
   it('aborts a hung primary at its per-provider budget and fails over to the backup', async () => {
     const engine = WispAiEngine.createStandalone({ enableCache: false });
@@ -526,7 +610,7 @@ describe.skip('AI Integration: Provider Request Timeouts & Failure Classificatio
     // delete the providers after it. This pins the coupling the shipped
     // defaults have to satisfy; see docs/FRICTION_LOG.md FL-006.
     const readSource = (relative: string) =>
-      fs.readFileSync(path.resolve(relative), 'utf8');
+      fs.readFileSync(path.resolve(repositoryRoot, relative), 'utf8');
 
     const routerSource = readSource('ai-engine/src/providers/provider-router.ts');
     const globalTimeoutMs = Number(

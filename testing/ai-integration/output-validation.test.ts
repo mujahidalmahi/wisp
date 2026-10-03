@@ -88,7 +88,7 @@ async function renderCard(raw: string) {
   return { card, adapter };
 }
 
-describe.skip('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', () => {
+describe('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contracts)', () => {
   describe('QuickActionChip contracts (AGENTS.md rule 4: 2-4 selectable chips)', () => {
     it('keeps a well-formed 2-chip model response untouched', () => {
       const result = validateChips(
@@ -906,6 +906,15 @@ describe.skip('AI Integration: LLM Output Validation (Zero-Fake-AI Card Contract
 
       assert.equal(card.headline, 'Who said "Tony"?');
       assert.equal(card.body, 'Only "Tony" answered, and nobody else did.');
+    });
+
+    it('decodes newline, tab, and Unicode escapes before rendering', async () => {
+      const { card } = await renderCard(
+        '{"headline":"Line\\nTwo \\u2605","body":"First\\tcolumn\\r\\nSecond",}',
+      );
+
+      assert.equal(card.headline, 'Line\nTwo ★');
+      assert.equal(card.body, 'First\tcolumn\r\nSecond');
     });
 
     it('converts an escaped backslash sequence into a single backslash', async () => {

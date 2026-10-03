@@ -2,6 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
  * Resolves a SQL asset that has lived under two different roots across branches.
@@ -11,17 +14,15 @@ import path from 'node:path';
  * failing on a path that no longer exists.
  */
 function readSqlAsset(...candidates: string[]): string {
-  const rootDir = process.cwd();
-
   for (const candidate of candidates) {
-    const resolved = path.resolve(rootDir, candidate);
+    const resolved = path.resolve(repositoryRoot, candidate);
     if (fs.existsSync(resolved)) {
       return fs.readFileSync(resolved, 'utf8');
     }
   }
 
   throw new Error(
-    `Could not locate a SQL asset; tried: ${candidates.join(', ')} (cwd: ${rootDir})`,
+    `Could not locate a SQL asset; tried: ${candidates.join(', ')} (root: ${repositoryRoot})`,
   );
 }
 
