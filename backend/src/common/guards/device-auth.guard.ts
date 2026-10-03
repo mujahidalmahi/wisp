@@ -18,13 +18,19 @@ export class DeviceAuthGuard implements CanActivate {
         : undefined);
 
     const headerDeviceId =
-      typeof rawHeaderDeviceId === 'string' ? rawHeaderDeviceId.trim() : undefined;
+      typeof rawHeaderDeviceId === 'string' && rawHeaderDeviceId.trim().length > 0
+        ? rawHeaderDeviceId.trim()
+        : undefined;
     const bodyDeviceId =
-      request.body && typeof request.body.deviceId === 'string'
+      request.body &&
+      typeof request.body.deviceId === 'string' &&
+      request.body.deviceId.trim().length > 0
         ? request.body.deviceId.trim()
         : undefined;
     const queryDeviceId =
-      request.query && typeof request.query.deviceId === 'string'
+      request.query &&
+      typeof request.query.deviceId === 'string' &&
+      request.query.deviceId.trim().length > 0
         ? request.query.deviceId.trim()
         : undefined;
 

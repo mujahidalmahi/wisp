@@ -54,6 +54,10 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
         status = HttpStatus.BAD_REQUEST;
         errorName = 'BadRequestException';
         message = 'Foreign key reference violation.';
+      } else if (err.code === '22P02') {
+        status = HttpStatus.BAD_REQUEST;
+        errorName = 'BadRequestException';
+        message = 'Invalid identifier or syntax provided in query parameters.';
       } else if (err.code === 'PGRST116') {
         status = HttpStatus.NOT_FOUND;
         errorName = 'NotFoundException';

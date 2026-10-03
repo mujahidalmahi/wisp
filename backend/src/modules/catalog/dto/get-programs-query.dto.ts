@@ -31,6 +31,7 @@ export class GetProgramsQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(256)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   cursor?: string;
 

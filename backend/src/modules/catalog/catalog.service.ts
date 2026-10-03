@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -201,12 +202,29 @@ export class CatalogService {
 
   private decodeCursor(cursor: string): { title: string; id: string } | null {
     try {
+      if (typeof cursor !== 'string' || cursor.length === 0 || cursor.length > 512) {
+        return null;
+      }
       const decoded = Buffer.from(cursor, 'base64url').toString('utf-8');
       const parsed = JSON.parse(decoded);
-      if (parsed && typeof parsed.title === 'string' && typeof parsed.id === 'string') {
-        return parsed;
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (
+        !parsed ||
+        typeof parsed.title !== 'string' ||
+        typeof parsed.id !== 'string' ||
+        !uuidRegex.test(parsed.id)
+      ) {
+        return null;
       }
-      return null;
+      // Strict token validation: Disallow any PostgREST grammar delimiters or injection characters
+      if (/["(),;\\\[\]<>{}]/.test(parsed.title)) {
+        return null;
+      }
+      const safeTitle = parsed.title.trim();
+      if (safeTitle.length === 0 || safeTitle.length > 200) {
+        return null;
+      }
+      return { title: safeTitle, id: parsed.id };
     } catch {
       return null;
     }
@@ -217,6 +235,17 @@ export class CatalogService {
     const ascending = query.order !== 'desc';
     const isConfigured = this.supabaseService.isConfigured();
     const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+
+    // Validate cursor if provided and reject invalid cursors with 400 Bad Request
+    let cursorData: { title: string; id: string } | null = null;
+    if (query.cursor) {
+      cursorData = this.decodeCursor(query.cursor);
+      if (!cursorData) {
+        throw new BadRequestException(
+          'Invalid pagination cursor: cursor must be a valid base64url token with valid title and UUID',
+        );
+      }
+    }
 
     // 1. Production Database Path (when Supabase is configured)
     if (isConfigured) {
@@ -232,19 +261,16 @@ export class CatalogService {
             .order('title', { ascending })
             .order('id', { ascending });
 
-          // Stable cursor filtering
-          if (query.cursor) {
-            const cursorData = this.decodeCursor(query.cursor);
-            if (cursorData) {
-              if (ascending) {
-                qb = qb.or(
-                  `title.gt."${cursorData.title}",and(title.eq."${cursorData.title}",id.gt."${cursorData.id}")`,
-                );
-              } else {
-                qb = qb.or(
-                  `title.lt."${cursorData.title}",and(title.eq."${cursorData.title}",id.lt."${cursorData.id}")`,
-                );
-              }
+          // Stable cursor filtering using validated, sanitized cursorData
+          if (cursorData) {
+            if (ascending) {
+              qb = qb.or(
+                `title.gt."${cursorData.title}",and(title.eq."${cursorData.title}",id.gt."${cursorData.id}")`,
+              );
+            } else {
+              qb = qb.or(
+                `title.lt."${cursorData.title}",and(title.eq."${cursorData.title}",id.lt."${cursorData.id}")`,
+              );
             }
           }
 
@@ -323,13 +349,10 @@ export class CatalogService {
     );
 
     // Apply cursor in fallback
-    if (query.cursor) {
-      const cursorData = this.decodeCursor(query.cursor);
-      if (cursorData) {
-        const idx = filtered.findIndex((p) => p.id === cursorData.id);
-        if (idx >= 0) {
-          filtered = filtered.slice(idx + 1);
-        }
+    if (cursorData) {
+      const idx = filtered.findIndex((p) => p.id === cursorData!.id);
+      if (idx >= 0) {
+        filtered = filtered.slice(idx + 1);
       }
     } else if (query.offset && query.offset > 0) {
       filtered = filtered.slice(query.offset);
@@ -376,9 +399,15 @@ export class CatalogService {
             .single(),
         );
 
-        if (progError && progError.code === 'PGRST116') {
-          // Explicit Not Found in production database (Item 5)
-          throw new NotFoundException(`Program with slug '${cleanSlug}' not found`);
+        if (progError) {
+          if (progError.code === 'PGRST116') {
+            // Explicit Not Found in production database (Item 5)
+            throw new NotFoundException(`Program with slug '${cleanSlug}' not found`);
+          }
+          this.logger.error(`Database query for slug ${cleanSlug} failed: ${progError.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database catalog unavailable: ${progError.message}`);
+          }
         }
 
         if (program && !progError) {
@@ -394,8 +423,13 @@ export class CatalogService {
               .order('episode_number', { ascending: true }),
           );
 
-          if (!epError) {
-            const epList = (episodes || []) as EpisodeDetails[];
+          if (epError) {
+            this.logger.error(`Failed to fetch episodes for program ${program.id}: ${epError.message}`);
+            if (!allowDemoFallback) {
+              throw new ServiceUnavailableException(`Database catalog unavailable: ${epError.message}`);
+            }
+          } else if (episodes) {
+            const epList = episodes as EpisodeDetails[];
             const enriched = epList.map((ep, idx) => ({
               ...ep,
               program_title: program.title,
@@ -412,7 +446,7 @@ export class CatalogService {
           }
         }
       } catch (err: any) {
-        if (err instanceof NotFoundException) throw err;
+        if (err instanceof NotFoundException || err instanceof ServiceUnavailableException) throw err;
         this.logger.error(`Database query for slug ${cleanSlug} failed: ${err?.message}`);
         if (!allowDemoFallback) {
           throw new ServiceUnavailableException('Database catalog unavailable');
@@ -450,9 +484,15 @@ export class CatalogService {
             .single(),
         );
 
-        if (error && error.code === 'PGRST116') {
-          // Explicit Not Found in production database (Item 5)
-          throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+        if (error) {
+          if (error.code === 'PGRST116') {
+            // Explicit Not Found in production database (Item 5)
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
+          this.logger.error(`Database episode query failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database catalog unavailable: ${error.message}`);
+          }
         }
 
         if (data && !error) {
@@ -489,7 +529,7 @@ export class CatalogService {
           };
         }
       } catch (err: any) {
-        if (err instanceof NotFoundException) throw err;
+        if (err instanceof NotFoundException || err instanceof ServiceUnavailableException) throw err;
         this.logger.error(`Database episode query failed: ${err?.message}`);
         if (!allowDemoFallback) {
           throw new ServiceUnavailableException('Database catalog unavailable');

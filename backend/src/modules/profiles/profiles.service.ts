@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateProfileDto } from './dto/create-profile.dto';
@@ -59,11 +60,15 @@ export class ProfilesService {
 
   constructor(private readonly supabaseService: SupabaseService) {}
 
+  private readonly deletionLocks = new Map<string, Promise<any>>();
+
   async getProfilesByDeviceId(deviceId: string): Promise<ViewingProfile[]> {
     const cleanDeviceId = deviceId.trim();
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-    if (client) {
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client
@@ -73,14 +78,23 @@ export class ProfilesService {
             .order('last_active_at', { ascending: false }),
         );
 
-        if (!error && data) {
+        if (error) {
+          this.logger.error(`Database profiles query error: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database profiles query failed: ${error.message}`);
+          }
+        } else if (data) {
           return data as ViewingProfile[];
         }
-        if (error) {
-          this.logger.warn(`Failed to fetch profiles from database: ${error.message}. Using in-memory fallback.`);
-        }
       } catch (err: any) {
-        this.logger.warn(`Database profiles query error: ${err?.message}. Using in-memory fallback.`);
+        if (err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Database profiles query error: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database profiles query failed');
+        }
+      }
+      if (!allowDemoFallback) {
+        return [];
       }
     }
 
@@ -96,9 +110,11 @@ export class ProfilesService {
   }
 
   async getProfileById(profileId: string): Promise<ViewingProfile | null> {
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-    if (client) {
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client
@@ -108,11 +124,26 @@ export class ProfilesService {
             .single(),
         );
 
-        if (!error && data) {
+        if (error) {
+          if (error.code === 'PGRST116') {
+            return null;
+          }
+          this.logger.error(`Database getProfileById error: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database error: ${error.message}`);
+          }
+        } else if (data) {
           return data as ViewingProfile;
         }
-      } catch {
-        // Fall through to memory
+      } catch (err: any) {
+        if (err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Database getProfileById error: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database error fetching profile');
+        }
+      }
+      if (!allowDemoFallback) {
+        return null;
       }
     }
 
@@ -132,9 +163,11 @@ export class ProfilesService {
     const spoilerStrictness = dto.spoilerStrictness || 'strict';
     const voiceTtsEnabled = dto.voiceTtsEnabled ?? false;
     const avatarColor = dto.avatarColor || '#6366f1';
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-    if (client) {
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client
@@ -155,14 +188,20 @@ export class ProfilesService {
             .single(),
         );
 
-        if (!error && data) {
+        if (error) {
+          this.logger.error(`Database profile upsert failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database profile creation failed: ${error.message}`);
+          }
+        } else if (data) {
           return data as ViewingProfile;
         }
-        if (error) {
-          this.logger.warn(`Failed to upsert profile in database: ${error.message}. Using in-memory fallback.`);
-        }
       } catch (err: any) {
-        this.logger.warn(`Database profile upsert error: ${err?.message}. Using in-memory fallback.`);
+        if (err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Database profile upsert error: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database profile upsert failed');
+        }
       }
     }
 
@@ -198,9 +237,11 @@ export class ProfilesService {
     updates: UpdateProfileDto,
     authenticatedDeviceId?: string,
   ): Promise<ViewingProfile> {
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-    if (client) {
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       // 1. Verify existence and device ownership
       const { data: existing, error: findError } = await this.supabaseService.executeWithRetry(async () =>
         client
@@ -210,38 +251,50 @@ export class ProfilesService {
           .single(),
       );
 
-      if (findError || !existing) {
+      if (findError) {
+        if (findError.code === 'PGRST116') {
+          throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+        }
+        this.logger.error(`Database find profile error: ${findError.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException(`Database error: ${findError.message}`);
+        }
+      } else if (!existing) {
         throw new NotFoundException(`Profile with ID '${profileId}' not found`);
       }
 
-      if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
-        throw new ForbiddenException('Profile does not belong to the authenticated device');
-      }
+      if (existing) {
+        if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
+          throw new ForbiddenException('Profile does not belong to the authenticated device');
+        }
 
-      const patchData: Record<string, any> = {
-        updated_at: new Date().toISOString(),
-      };
-      if (updates.displayName !== undefined) patchData.display_name = updates.displayName.trim();
-      if (updates.mode !== undefined) patchData.mode = updates.mode;
-      if (updates.spoilerStrictness !== undefined) patchData.spoiler_strictness = updates.spoilerStrictness;
-      if (updates.voiceTtsEnabled !== undefined) patchData.voice_tts_enabled = updates.voiceTtsEnabled;
-      if (updates.avatarColor !== undefined) patchData.avatar_color = updates.avatarColor;
+        const patchData: Record<string, any> = {
+          updated_at: new Date().toISOString(),
+        };
+        if (updates.displayName !== undefined) patchData.display_name = updates.displayName.trim();
+        if (updates.mode !== undefined) patchData.mode = updates.mode;
+        if (updates.spoilerStrictness !== undefined) patchData.spoiler_strictness = updates.spoilerStrictness;
+        if (updates.voiceTtsEnabled !== undefined) patchData.voice_tts_enabled = updates.voiceTtsEnabled;
+        if (updates.avatarColor !== undefined) patchData.avatar_color = updates.avatarColor;
 
-      const { data, error } = await this.supabaseService.executeWithRetry(async () =>
-        client
-          .from('profiles')
-          .update(patchData)
-          .eq('id', profileId)
-          .eq('device_id', existing.device_id)
-          .select()
-          .single(),
-      );
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client
+            .from('profiles')
+            .update(patchData)
+            .eq('id', profileId)
+            .eq('device_id', existing.device_id)
+            .select()
+            .single(),
+        );
 
-      if (!error && data) {
-        return data as ViewingProfile;
-      }
-      if (error) {
-        this.logger.warn(`Database updateProfile error: ${error.message}. Using in-memory fallback.`);
+        if (error) {
+          this.logger.error(`Database updateProfile error: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database update failed: ${error.message}`);
+          }
+        } else if (data) {
+          return data as ViewingProfile;
+        }
       }
     }
 
@@ -269,10 +322,12 @@ export class ProfilesService {
   }
 
   async touchProfile(profileId: string, authenticatedDeviceId?: string): Promise<ViewingProfile> {
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
     const nowIso = new Date().toISOString();
 
-    if (client) {
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       // 1. Verify existence and device ownership
       const { data: existing, error: findError } = await this.supabaseService.executeWithRetry(async () =>
         client
@@ -282,26 +337,41 @@ export class ProfilesService {
           .single(),
       );
 
-      if (findError || !existing) {
+      if (findError) {
+        if (findError.code === 'PGRST116') {
+          throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+        }
+        this.logger.error(`Database find profile error: ${findError.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException(`Database error: ${findError.message}`);
+        }
+      } else if (!existing) {
         throw new NotFoundException(`Profile with ID '${profileId}' not found`);
       }
 
-      if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
-        throw new ForbiddenException('Profile does not belong to the authenticated device');
-      }
+      if (existing) {
+        if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
+          throw new ForbiddenException('Profile does not belong to the authenticated device');
+        }
 
-      const { data, error } = await this.supabaseService.executeWithRetry(async () =>
-        client
-          .from('profiles')
-          .update({ last_active_at: nowIso, updated_at: nowIso })
-          .eq('id', profileId)
-          .eq('device_id', existing.device_id)
-          .select()
-          .single(),
-      );
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client
+            .from('profiles')
+            .update({ last_active_at: nowIso, updated_at: nowIso })
+            .eq('id', profileId)
+            .eq('device_id', existing.device_id)
+            .select()
+            .single(),
+        );
 
-      if (!error && data) {
-        return data as ViewingProfile;
+        if (error) {
+          this.logger.error(`Database touchProfile error: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database touch failed: ${error.message}`);
+          }
+        } else if (data) {
+          return data as ViewingProfile;
+        }
       }
     }
 
@@ -327,74 +397,153 @@ export class ProfilesService {
     profileId: string,
     authenticatedDeviceId?: string,
   ): Promise<{ success: boolean; message: string }> {
-    const client = this.supabaseService.getClient();
+    const lockKey = authenticatedDeviceId || profileId;
+    const currentLock = this.deletionLocks.get(lockKey) || Promise.resolve();
 
-    if (client) {
-      // 1. Check profile exists and device ownership
-      const { data: target, error: targetError } = await this.supabaseService.executeWithRetry(async () =>
-        client
-          .from('profiles')
-          .select('id, device_id')
-          .eq('id', profileId)
-          .single(),
-      );
+    const executeDeletion = async () => {
+      const isConfigured = this.supabaseService.isConfigured();
+      const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-      if (targetError || !target) {
+      if (isConfigured) {
+        const client = this.supabaseService.getClient()!;
+        try {
+          // 1. Primary: Execute transactional delete RPC with row-level locking (FOR UPDATE)
+          const { data: rpcData, error: rpcError } = await this.supabaseService.executeWithRetry(async () =>
+            client.rpc('delete_viewing_profile', {
+              p_profile_id: profileId,
+              p_device_id: authenticatedDeviceId || '',
+            }),
+          );
+
+          if (!rpcError && rpcData) {
+            return rpcData;
+          }
+
+          if (rpcError) {
+            const msg = (rpcError.message || '').toLowerCase();
+            if (rpcError.code === 'P0002' || msg.includes('profile_not_found') || rpcError.code === 'PGRST116') {
+              throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+            }
+            if (rpcError.code === '42501' || msg.includes('forbidden_device_mismatch')) {
+              throw new ForbiddenException('Profile does not belong to the authenticated device');
+            }
+            if (rpcError.code === '23514' || msg.includes('cannot_delete_sole_profile')) {
+              throw new BadRequestException('Cannot delete the sole viewing profile on this device');
+            }
+            // If the RPC is not defined in mock or un-migrated DBs (42883), fallback to direct query check
+            if (rpcError.code !== '42883') {
+              this.logger.error(`Database delete_viewing_profile RPC error: ${rpcError.message}`);
+              if (!allowDemoFallback) {
+                throw new ServiceUnavailableException(`Database delete failed: ${rpcError.message}`);
+              }
+            }
+          }
+
+          // 2. Direct query fallback for DB mocks or environments where the RPC is not yet registered
+          const { data: target, error: targetError } = await this.supabaseService.executeWithRetry(async () =>
+            client
+              .from('profiles')
+              .select('id, device_id')
+              .eq('id', profileId)
+              .single(),
+          );
+
+          if (targetError) {
+            if (targetError.code === 'PGRST116') {
+              throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+            }
+            this.logger.error(`Database find profile for deletion failed: ${targetError.message}`);
+            if (!allowDemoFallback) {
+              throw new ServiceUnavailableException(`Database error: ${targetError.message}`);
+            }
+          } else if (!target) {
+            throw new NotFoundException(`Profile with ID '${profileId}' not found`);
+          }
+
+          if (target) {
+            if (authenticatedDeviceId && target.device_id !== authenticatedDeviceId) {
+              throw new ForbiddenException('Profile does not belong to the authenticated device');
+            }
+
+            const { count, error: countError } = await this.supabaseService.executeWithRetry(async () =>
+              client
+                .from('profiles')
+                .select('id', { count: 'exact', head: true })
+                .eq('device_id', target.device_id),
+            );
+
+            if (countError) {
+              this.logger.error(`Database count error during deletion: ${countError.message}`);
+              if (!allowDemoFallback) {
+                throw new ServiceUnavailableException(`Database error: ${countError.message}`);
+              }
+            }
+
+            if (count !== null && count !== undefined && count <= 1) {
+              throw new BadRequestException('Cannot delete the sole viewing profile on this device');
+            }
+
+            const { error: deleteError } = await this.supabaseService.executeWithRetry(async () =>
+              client
+                .from('profiles')
+                .delete()
+                .eq('id', profileId)
+                .eq('device_id', target.device_id),
+            );
+
+            if (deleteError) {
+              this.logger.error(`Database delete profile error: ${deleteError.message}`);
+              if (!allowDemoFallback) {
+                throw new ServiceUnavailableException(`Database delete failed: ${deleteError.message}`);
+              }
+            } else {
+              return { success: true, message: `Profile '${profileId}' deleted successfully` };
+            }
+          }
+        } catch (err: any) {
+          if (
+            err instanceof NotFoundException ||
+            err instanceof ForbiddenException ||
+            err instanceof BadRequestException ||
+            err instanceof ServiceUnavailableException
+          ) {
+            throw err;
+          }
+          this.logger.error(`Database profile deletion error: ${err?.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException('Database profile deletion failed');
+          }
+        }
+      }
+
+      // In-memory fallback
+      const existing = IN_MEMORY_PROFILES.get(profileId);
+      if (!existing) {
         throw new NotFoundException(`Profile with ID '${profileId}' not found`);
       }
 
-      if (authenticatedDeviceId && target.device_id !== authenticatedDeviceId) {
+      if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
         throw new ForbiddenException('Profile does not belong to the authenticated device');
       }
 
-      // 2. Atomic sole-profile check: Ensure device has more than 1 profile
-      const { count, error: countError } = await this.supabaseService.executeWithRetry(async () =>
-        client
-          .from('profiles')
-          .select('id', { count: 'exact', head: true })
-          .eq('device_id', target.device_id),
+      const deviceProfiles = Array.from(IN_MEMORY_PROFILES.values()).filter(
+        (p) => p.device_id === existing.device_id,
       );
-
-      if (countError) {
-        throw countError;
-      }
-
-      if (count !== null && count !== undefined && count <= 1) {
+      if (deviceProfiles.length <= 1) {
         throw new BadRequestException('Cannot delete the sole viewing profile on this device');
       }
 
-      const { error: deleteError } = await this.supabaseService.executeWithRetry(async () =>
-        client
-          .from('profiles')
-          .delete()
-          .eq('id', profileId)
-          .eq('device_id', target.device_id),
-      );
+      IN_MEMORY_PROFILES.delete(profileId);
+      return { success: true, message: `Profile '${profileId}' deleted successfully` };
+    };
 
-      if (!deleteError) {
-        return { success: true, message: `Profile '${profileId}' deleted successfully` };
+    const nextLock = currentLock.then(executeDeletion, executeDeletion).finally(() => {
+      if (this.deletionLocks.get(lockKey) === nextLock) {
+        this.deletionLocks.delete(lockKey);
       }
-      throw deleteError;
-    }
+    });
 
-    // In-memory fallback
-    const existing = IN_MEMORY_PROFILES.get(profileId);
-    if (!existing) {
-      throw new NotFoundException(`Profile with ID '${profileId}' not found`);
-    }
-
-    if (authenticatedDeviceId && existing.device_id !== authenticatedDeviceId) {
-      throw new ForbiddenException('Profile does not belong to the authenticated device');
-    }
-
-    const deviceProfiles = Array.from(IN_MEMORY_PROFILES.values()).filter(
-      (p) => p.device_id === existing.device_id,
-    );
-    if (deviceProfiles.length <= 1) {
-      throw new BadRequestException('Cannot delete the sole viewing profile on this device');
-    }
-
-    IN_MEMORY_PROFILES.delete(profileId);
-    return { success: true, message: `Profile '${profileId}' deleted successfully` };
+    this.deletionLocks.set(lockKey, nextLock);
+    return nextLock;
   }
 }

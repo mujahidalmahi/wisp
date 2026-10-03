@@ -10,10 +10,10 @@ import {
 } from 'class-validator';
 
 export class GetBootstrapQueryDto {
-  @IsNotEmpty({ message: 'deviceId is required' })
+  @IsOptional()
   @IsString()
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  deviceId: string;
+  deviceId?: string;
 
   @IsOptional()
   @Type(() => Number)

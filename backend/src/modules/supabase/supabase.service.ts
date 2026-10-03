@@ -191,6 +191,9 @@ export class SupabaseService {
       }
 
       const jitter = Math.random() * 50;
+      this.logger.warn(
+        `Transient database error on attempt ${attempt + 1}/${maxRetries + 1}: ${lastError?.message || lastError}. Retrying in ${Math.round(delay + jitter)}ms...`,
+      );
       await new Promise((resolve) => setTimeout(resolve, delay + jitter));
       delay *= backoffFactor;
     }
@@ -235,6 +238,8 @@ export class SupabaseService {
   isTransientError(error: any): boolean {
     if (!error) return false;
     const msg = (error.message || '').toLowerCase();
+    const causeMsg = (error.cause?.message || '').toLowerCase();
+    const fullMsg = `${msg} ${causeMsg}`;
     const code = error.code || '';
     const status = error.status || error.statusCode || 0;
 
@@ -255,12 +260,12 @@ export class SupabaseService {
     }
 
     return (
-      msg.includes('network') ||
-      msg.includes('timeout') ||
-      msg.includes('fetch failed') ||
-      msg.includes('connection reset') ||
-      msg.includes('econnrefused') ||
-      msg.includes('econnreset') ||
+      fullMsg.includes('network') ||
+      fullMsg.includes('timeout') ||
+      fullMsg.includes('fetch failed') ||
+      fullMsg.includes('connection reset') ||
+      fullMsg.includes('econnrefused') ||
+      fullMsg.includes('econnreset') ||
       status === 429 ||
       status === 502 ||
       status === 503 ||

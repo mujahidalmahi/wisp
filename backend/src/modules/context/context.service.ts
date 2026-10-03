@@ -2,6 +2,8 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   HybridContextSource,
@@ -98,7 +100,42 @@ export class ContextService {
     lookbackMs = 120000,
   ): Promise<TemporalProgramContext> {
     const safeMs = Math.max(0, playbackPositionMs);
-    // Propagate lookbackMs through to the ContextSource implementation (Item 6)
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+
+    // Strict Production Database Path: Verify episode exists and do not fall back to demo fixtures on misses (Item 5)
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
+      try {
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client.rpc('get_spoiler_safe_context', {
+            p_episode_id: episodeId,
+            p_playback_ms: safeMs,
+            p_lookback_ms: lookbackMs,
+          }),
+        );
+
+        if (error) {
+          this.logger.error(`Database RPC get_spoiler_safe_context failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database context query failed: ${error.message}`);
+          }
+        } else if (data) {
+          return data as TemporalProgramContext;
+        } else {
+          // Explicit Not Found when database returns null for unknown episode (Item 5)
+          throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+        }
+      } catch (err: any) {
+        if (err instanceof NotFoundException || err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Error querying database context: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database context query failed');
+        }
+      }
+    }
+
+    // Standalone fallback path with lookbackMs propagation
     return this.contextSource.getSpoilerSafeContext(episodeId, safeMs, lookbackMs);
   }
 
@@ -115,12 +152,14 @@ export class ContextService {
     const cleanDeviceId = deviceId.trim();
     const cleanProfileId = profileId ? profileId.trim() : undefined;
     const safeMs = Math.max(0, playbackPositionMs);
-    const client = this.supabaseService.getClient();
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
 
-    // 1. Verify profile-to-device ownership before proceeding (Item 2)
+    // 1. Verify profile-to-device ownership and existence (fail fast on not-found or mismatch)
     if (cleanProfileId) {
-      if (client) {
-        const { data: profileCheck } = await this.supabaseService.executeWithRetry(async () =>
+      if (isConfigured) {
+        const client = this.supabaseService.getClient()!;
+        const { data: profileCheck, error: checkError } = await this.supabaseService.executeWithRetry(async () =>
           client
             .from('profiles')
             .select('id, device_id')
@@ -128,14 +167,23 @@ export class ContextService {
             .single(),
         );
 
+        if (checkError?.code === 'PGRST116' || (!checkError && !profileCheck)) {
+          throw new NotFoundException(`Profile '${cleanProfileId}' not found`);
+        }
         if (profileCheck && profileCheck.device_id !== cleanDeviceId) {
           throw new ForbiddenException(
             `Profile '${cleanProfileId}' does not belong to device '${cleanDeviceId}'`,
           );
         }
+        if (checkError && !allowDemoFallback) {
+          throw new ServiceUnavailableException(`Database error verifying profile: ${checkError.message}`);
+        }
       } else {
         const profile = await this.profilesService.getProfileById(cleanProfileId);
-        if (profile && profile.device_id !== cleanDeviceId) {
+        if (!profile) {
+          throw new NotFoundException(`Profile '${cleanProfileId}' not found`);
+        }
+        if (profile.device_id !== cleanDeviceId) {
           throw new ForbiddenException(
             `Profile '${cleanProfileId}' does not belong to device '${cleanDeviceId}'`,
           );
@@ -143,7 +191,9 @@ export class ContextService {
       }
     }
 
-    if (client) {
+    // 2. Production Database Path via get_firetv_stage1_bootstrap RPC
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
       try {
         const params: Record<string, any> = {
           p_episode_id: episodeId,
@@ -161,7 +211,10 @@ export class ContextService {
         );
 
         if (!error && data) {
-          const payload = data as Stage1BootstrapResponse;
+          const payload = data as any;
+          if (payload.found === false) {
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
           // Ensure zero-typing quick action chips invariant (Rule #4)
           if (
             payload.active_scene &&
@@ -170,45 +223,59 @@ export class ContextService {
           ) {
             payload.active_scene.quick_action_chips = this.getDefaultQuickActionChips();
           }
-          return payload;
+          return payload as Stage1BootstrapResponse;
         }
+
         if (error) {
-          this.logger.warn(
-            `get_firetv_stage1_bootstrap RPC failed: ${error.message}. Using resilient fallback.`,
-          );
+          if (error.code === 'PGRST116' || error.code === 'P0002') {
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
+          this.logger.error(`get_firetv_stage1_bootstrap RPC failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database bootstrap unavailable: ${error.message}`);
+          }
         }
       } catch (err: any) {
-        if (err instanceof ForbiddenException) throw err;
-        this.logger.warn(`Error calling get_firetv_stage1_bootstrap: ${err?.message}. Using resilient fallback.`);
+        if (
+          err instanceof NotFoundException ||
+          err instanceof ForbiddenException ||
+          err instanceof ServiceUnavailableException
+        ) {
+          throw err;
+        }
+        this.logger.error(`Error calling get_firetv_stage1_bootstrap: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database bootstrap unavailable');
+        }
       }
     }
 
-    // 2. High-performance fallback without fabricating unverified profile/session state (Item 7)
+    // 3. Resilient In-Memory Fallback Path (only for standalone / unconfigured mode)
+    const ep = await this.catalogService.getEpisodeById(episodeId);
+    const episodeDurationMs = ep?.duration_ms ?? 0;
+
     const context = await this.inMemoryFallback.getSpoilerSafeContext(episodeId, safeMs);
     const activeScene = context.active_scene;
-
-    // Resolve episode duration from catalog data instead of fixed constant
-    let episodeDurationMs = 0;
-    try {
-      const ep = await this.catalogService.getEpisodeById(episodeId);
-      episodeDurationMs = ep?.duration_ms ?? 0;
-    } catch {
-      episodeDurationMs = 0;
-    }
 
     // Resolve profile from storage if profileId provided; otherwise return null
     let resolvedProfile: Stage1BootstrapResponse['profile'] = null;
     if (cleanProfileId) {
       const p = await this.profilesService.getProfileById(cleanProfileId);
-      if (p && p.device_id === cleanDeviceId) {
-        resolvedProfile = {
-          id: p.id,
-          display_name: p.display_name,
-          mode: p.mode,
-          spoiler_strictness: p.spoiler_strictness,
-          voice_tts_enabled: p.voice_tts_enabled,
-        };
+      if (!p) {
+        throw new NotFoundException(`Profile '${cleanProfileId}' not found`);
       }
+      if (p.device_id !== cleanDeviceId) {
+        throw new ForbiddenException(
+          `Profile '${cleanProfileId}' does not belong to device '${cleanDeviceId}'`,
+        );
+      }
+      resolvedProfile = {
+        id: p.id,
+        display_name: p.display_name,
+        mode: p.mode,
+        spoiler_strictness: p.spoiler_strictness,
+        voice_tts_enabled: p.voice_tts_enabled,
+      };
     }
 
     const chips: QuickActionChipItem[] =

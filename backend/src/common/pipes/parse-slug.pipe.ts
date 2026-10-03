@@ -10,6 +10,9 @@ export class ParseSlugPipe implements PipeTransform<string, string> {
     }
 
     const trimmed = value.trim().toLowerCase();
+    if (trimmed.length > 100) {
+      throw new BadRequestException('Slug parameter cannot exceed 100 characters');
+    }
     if (!this.slugRegex.test(trimmed)) {
       throw new BadRequestException(
         `Invalid slug format '${value}': must be lower-case alphanumeric with hyphens (e.g. 'tears-of-steel')`,

@@ -8,10 +8,13 @@ import { ConfigService } from '@nestjs/config';
 import { CatalogService } from '../dist/modules/catalog/catalog.service.js';
 import { ProfilesService } from '../dist/modules/profiles/profiles.service.js';
 import { ContextService } from '../dist/modules/context/context.service.js';
+import { ContextController } from '../dist/modules/context/context.controller.js';
+import { ProfilesController } from '../dist/modules/profiles/profiles.controller.js';
 import { SupabaseService } from '../dist/modules/supabase/supabase.service.js';
 import { HealthController } from '../dist/modules/health/health.controller.js';
 import { ParseSlugPipe } from '../dist/common/pipes/parse-slug.pipe.js';
 import { DeviceAuthGuard } from '../dist/common/guards/device-auth.guard.js';
+import { GlobalHttpExceptionFilter } from '../dist/common/filters/http-exception.filter.js';
 
 import { GetProgramsQueryDto } from '../dist/modules/catalog/dto/get-programs-query.dto.js';
 import { CreateProfileDto } from '../dist/modules/profiles/dto/create-profile.dto.js';
@@ -463,11 +466,16 @@ describe('Phase 1 Basic Backend: Temporal Context & Stage-1 Bootstrap', () => {
     const mockSupabase = createMockSupabaseService({
       from: () => ({
         select: () => ({
-          eq: () => ({
-            single: async () => ({
-              data: { id: 'prof-db-1', device_id: 'authorized-device-abc' },
-              error: null,
-            }),
+          eq: (_col: string, val: string) => ({
+            single: async () => {
+              if (val === 'non-existent-profile-uuid') {
+                return { data: null, error: { code: 'PGRST116', message: '0 rows' } };
+              }
+              return {
+                data: { id: 'prof-db-1', device_id: 'authorized-device-abc' },
+                error: null,
+              };
+            },
           }),
         }),
       }),
@@ -502,6 +510,18 @@ describe('Phase 1 Basic Backend: Temporal Context & Stage-1 Bootstrap', () => {
     );
     assert.ok(boot);
     assert.equal(boot.profile?.id, 'prof-db-1');
+
+    // Non-existent profileId fails fast with NotFoundException (404)
+    await assert.rejects(
+      async () =>
+        dbContext.getFireTvBootstrap(
+          'ep-1',
+          'authorized-device-abc',
+          10000,
+          'non-existent-profile-uuid',
+        ),
+      { name: 'NotFoundException' },
+    );
   });
 });
 
@@ -564,11 +584,21 @@ describe('Phase 1 Basic Backend: Health Endpoint Separation (Item 16)', () => {
     assert.equal((liveness as any).database, undefined);
   });
 
-  it('returns diagnostic readiness with database metrics', async () => {
-    const readiness = await health.getReadiness();
-    assert.ok(readiness.status === 'ok' || readiness.status === 'degraded');
-    assert.ok(readiness.database);
-    assert.equal(readiness.database.configured, false);
+  it('returns sanitized readiness for public callers and diagnostic metrics for operators', async () => {
+    const res: any = { status: () => res };
+
+    // 1. Anonymous request: database details are sanitized without operational metrics
+    const anonReadiness = await health.getReadiness(res);
+    assert.ok(anonReadiness.status === 'ok' || anonReadiness.status === 'unhealthy');
+    assert.equal(typeof anonReadiness.database, 'string');
+    assert.equal((anonReadiness.database as any).metrics, undefined);
+
+    // 2. Operator request: full diagnostic metrics provided
+    const operatorReadiness = await health.getReadiness(res, 'wisp-internal-operator-key');
+    assert.ok(operatorReadiness.status === 'ok' || operatorReadiness.status === 'unhealthy');
+    assert.equal(typeof operatorReadiness.database, 'object');
+    assert.equal(operatorReadiness.database.configured, false);
+    assert.ok(operatorReadiness.database.metrics);
   });
 });
 
@@ -721,6 +751,14 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
       process.env.NODE_ENV = origEnv;
     }
   });
+
+  it('enforces DeviceAuthGuard at class level on ContextController and ProfilesController', () => {
+    const contextGuards = Reflect.getMetadata('__guards__', ContextController) || [];
+    assert.ok(contextGuards.includes(DeviceAuthGuard), 'ContextController must have DeviceAuthGuard');
+
+    const profileGuards = Reflect.getMetadata('__guards__', ProfilesController) || [];
+    assert.ok(profileGuards.includes(DeviceAuthGuard), 'ProfilesController must have DeviceAuthGuard');
+  });
 });
 
 describe('Phase 1 Basic Backend: Production Credential Enforcement (Item 17)', () => {
@@ -856,4 +894,343 @@ describe('Phase 1 Basic Backend: Database Profiles Mutation & Ownership Verifica
     assert.ok(touched.last_active_at);
   });
 });
+
+describe('Phase 1 Basic Backend: GlobalHttpExceptionFilter Postgres Error Mapping (Item 3 & 14)', () => {
+  const filter = new GlobalHttpExceptionFilter();
+
+  function createMockHost(exception: any): { getResponse: () => any; getRequest: () => any; host: any } {
+    let statusCode = 200;
+    let jsonBody: any = null;
+    const headers: Record<string, string> = {};
+
+    const res: any = {
+      status: (code: number) => {
+        statusCode = code;
+        return res;
+      },
+      json: (body: any) => {
+        jsonBody = body;
+        return res;
+      },
+      setHeader: (name: string, val: string) => {
+        headers[name] = val;
+      },
+    };
+
+    const req: any = {
+      url: '/test-route',
+      headers: { 'x-request-id': 'test-corr-id' },
+    };
+
+    const host: any = {
+      switchToHttp: () => ({
+        getResponse: () => res,
+        getRequest: () => req,
+      }),
+    };
+
+    filter.catch(exception, host);
+    return {
+      getResponse: () => ({ statusCode, jsonBody, headers }),
+      getRequest: () => req,
+      host,
+    };
+  }
+
+  it('maps Postgres 22P02 invalid input syntax to 400 BadRequestException', () => {
+    const err: any = new Error('invalid input syntax for type uuid');
+    err.code = '22P02';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.jsonBody.error, 'BadRequestException');
+  });
+
+  it('maps Postgres 23505 unique violation to 409 ConflictException', () => {
+    const err: any = new Error('duplicate key value violates unique constraint');
+    err.code = '23505';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.jsonBody.error, 'ConflictException');
+  });
+
+  it('maps Postgres 23503 foreign key violation to 400 BadRequestException', () => {
+    const err: any = new Error('violates foreign key constraint');
+    err.code = '23503';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.jsonBody.error, 'BadRequestException');
+  });
+
+  it('maps PostgREST PGRST116 no rows returned to 404 NotFoundException', () => {
+    const err: any = new Error('0 rows returned');
+    err.code = 'PGRST116';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.jsonBody.error, 'NotFoundException');
+  });
+});
+
+describe('Phase 1 Basic Backend: Cursor Validation & PostgREST Sanitization (Item 3 & 8)', () => {
+  it('rejects invalid cursor payloads with 400 BadRequestException', async () => {
+    const config = new ConfigService({});
+    const supabase = new SupabaseService(config);
+    const catalog = new CatalogService(supabase);
+
+    // 1. Malicious cursor token with SQL injection payload in id
+    const malformedCursor = Buffer.from(
+      JSON.stringify({ title: 'Tears', id: "123' OR 1=1--" }),
+    ).toString('base64url');
+
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: malformedCursor, limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+
+    // 2. Non-base64 cursor
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: 'invalid!cursor!', limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+
+    // 3. Cursor with injection / delimiter characters in title
+    const injectedTitleCursor = Buffer.from(
+      JSON.stringify({ title: 'Tears",id.gt."bad', id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' }),
+    ).toString('base64url');
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: injectedTitleCursor, limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+  });
+
+  it('throws ServiceUnavailableException on database error in getProgramBySlug when fallback is disabled', async () => {
+    const origEnv = process.env.ENABLE_DEMO_FALLBACK;
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    try {
+      const mockSupabase = createMockSupabaseService({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: async () => ({
+                  data: null,
+                  error: { code: '500', message: 'connection failure' },
+                }),
+              }),
+            }),
+          }),
+        }),
+      });
+      const catalog = new CatalogService(mockSupabase);
+      await assert.rejects(
+        async () => catalog.getProgramBySlug('tears-of-steel'),
+        { name: 'ServiceUnavailableException' },
+      );
+    } finally {
+      if (origEnv !== undefined) process.env.ENABLE_DEMO_FALLBACK = origEnv;
+    }
+  });
+
+  it('throws ServiceUnavailableException on database error in getEpisodeById when fallback is disabled', async () => {
+    const origEnv = process.env.ENABLE_DEMO_FALLBACK;
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    try {
+      const mockSupabase = createMockSupabaseService({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: async () => ({
+                  data: null,
+                  error: { code: '500', message: 'network timeout' },
+                }),
+              }),
+            }),
+          }),
+        }),
+      });
+      const catalog = new CatalogService(mockSupabase);
+      await assert.rejects(
+        async () => catalog.getEpisodeById('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1'),
+        { name: 'ServiceUnavailableException' },
+      );
+    } finally {
+      if (origEnv !== undefined) process.env.ENABLE_DEMO_FALLBACK = origEnv;
+    }
+  });
+});
+
+describe('Phase 1 Basic Backend: Profiles Concurrency & Database Outage Safeguards (Item 5 & 11)', () => {
+  it('throws ServiceUnavailableException on database error in getProfilesByDeviceId when fallback is disabled', async () => {
+    const origEnv = process.env.ENABLE_DEMO_FALLBACK;
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    try {
+      const mockSupabase = createMockSupabaseService({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              order: async () => ({
+                data: null,
+                error: { message: 'Database connection failed' },
+              }),
+            }),
+          }),
+        }),
+      });
+      const profiles = new ProfilesService(mockSupabase);
+      await assert.rejects(
+        async () => profiles.getProfilesByDeviceId('firetv-demo-device-01'),
+        { name: 'ServiceUnavailableException' },
+      );
+    } finally {
+      if (origEnv !== undefined) process.env.ENABLE_DEMO_FALLBACK = origEnv;
+    }
+  });
+
+  it('serializes concurrent profile deletions for the same device to prevent sole-profile race conditions', async () => {
+    const config = new ConfigService({});
+    const supabase = new SupabaseService(config);
+    const profiles = new ProfilesService(supabase);
+
+    // Create 2 profiles on a test device
+    const p1 = await profiles.createProfile(
+      { deviceId: 'firetv-race-dev', displayName: 'Profile 1' },
+      'firetv-race-dev',
+    );
+    const p2 = await profiles.createProfile(
+      { deviceId: 'firetv-race-dev', displayName: 'Profile 2' },
+      'firetv-race-dev',
+    );
+
+    // Concurrently attempt to delete both profiles
+    const results = await Promise.allSettled([
+      profiles.deleteProfile(p1.id, 'firetv-race-dev'),
+      profiles.deleteProfile(p2.id, 'firetv-race-dev'),
+    ]);
+
+    // One must succeed and one must be rejected with BadRequestException
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+
+    assert.equal(fulfilled.length, 1, 'Exactly one concurrent deletion must succeed');
+    assert.equal(rejected.length, 1, 'The other concurrent deletion must be rejected');
+    assert.equal((rejected[0] as PromiseRejectedResult).reason.name, 'BadRequestException');
+
+    // Confirm that exactly 1 profile remains
+    const remaining = await profiles.getProfilesByDeviceId('firetv-race-dev');
+    assert.equal(remaining.length, 1);
+  });
+
+  it('delegates to atomic delete_viewing_profile RPC with row-locking and maps Postgres error codes', async () => {
+    let capturedRpc: { name: string; params: any } | null = null;
+    const mockSupabase = createMockSupabaseService({
+      rpc: async (name, params) => {
+        capturedRpc = { name, params };
+        if (params.p_profile_id === 'sole-profile') {
+          return { data: null, error: { code: '23514', message: 'CANNOT_DELETE_SOLE_PROFILE' } };
+        }
+        if (params.p_profile_id === 'missing-profile') {
+          return { data: null, error: { code: 'P0002', message: 'PROFILE_NOT_FOUND' } };
+        }
+        if (params.p_profile_id === 'alien-device-profile') {
+          return { data: null, error: { code: '42501', message: 'FORBIDDEN_DEVICE_MISMATCH' } };
+        }
+        return { data: { success: true, message: 'Deleted' }, error: null };
+      },
+    });
+
+    const profiles = new ProfilesService(mockSupabase);
+
+    // Sole profile deletion rejected atomically with BadRequestException
+    await assert.rejects(
+      async () => profiles.deleteProfile('sole-profile', 'dev-1'),
+      { name: 'BadRequestException' },
+    );
+    assert.equal(capturedRpc?.name, 'delete_viewing_profile');
+
+    // Missing profile rejected with NotFoundException
+    await assert.rejects(
+      async () => profiles.deleteProfile('missing-profile', 'dev-1'),
+      { name: 'NotFoundException' },
+    );
+
+    // Mismatched device rejected with ForbiddenException
+    await assert.rejects(
+      async () => profiles.deleteProfile('alien-device-profile', 'dev-1'),
+      { name: 'ForbiddenException' },
+    );
+
+    // Valid deletion succeeds
+    const res = await profiles.deleteProfile('valid-profile', 'dev-1');
+    assert.equal(res.success, true);
+  });
+
+  it('preserves strict DB boundary: does NOT fall back to in-memory fixtures on misses or empty results', async () => {
+    const origEnv = process.env.ENABLE_DEMO_FALLBACK;
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    try {
+      const mockSupabase = createMockSupabaseService({
+        from: (table: string) => ({
+          select: () => ({
+            eq: () => ({
+              order: async () => ({ data: [], error: null }),
+              single: async () => ({ data: null, error: { code: 'PGRST116', message: '0 rows' } }),
+            }),
+          }),
+        }),
+        rpc: async () => ({ data: null, error: null }),
+      });
+
+      const profiles = new ProfilesService(mockSupabase);
+      const catalog = new CatalogService(mockSupabase);
+      const context = new ContextService(mockSupabase, catalog, profiles);
+
+      // 1. getProfilesByDeviceId returns [] on empty DB result without falling back to demo profiles
+      const devProfiles = await profiles.getProfilesByDeviceId('firetv-demo-device-01');
+      assert.deepEqual(devProfiles, []);
+
+      // 2. getProfileById returns null on PGRST116 without falling back to demo profiles
+      const singleProfile = await profiles.getProfileById('11111111-1111-1111-1111-111111111111');
+      assert.equal(singleProfile, null);
+
+      // 3. getSpoilerSafeContext throws NotFoundException when DB returns null
+      await assert.rejects(
+        async () => context.getSpoilerSafeContext('non-existent-ep', 10000),
+        { name: 'NotFoundException' },
+      );
+    } finally {
+      if (origEnv !== undefined) process.env.ENABLE_DEMO_FALLBACK = origEnv;
+    }
+  });
+});
+
+describe('Phase 1 Basic Backend: Production Readiness Probe Strict Failure (Item 17)', () => {
+  it('returns HTTP 503 and status unhealthy in production when Supabase is unconfigured', async () => {
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const config = new ConfigService({});
+      const supabase = new SupabaseService(config);
+      const health = new HealthController(supabase);
+
+      let statusCode = 200;
+      const res: any = {
+        status: (code: number) => {
+          statusCode = code;
+          return res;
+        },
+      };
+
+      const readiness = await health.getReadiness(res);
+      assert.equal(statusCode, 503);
+      assert.equal(readiness.status, 'unhealthy');
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+});
+
 

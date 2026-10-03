@@ -5,13 +5,17 @@ import {
   ParseUUIDPipe,
   Query,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ContextService } from './context.service';
 import { GetContextQueryDto } from './dto/get-context-query.dto';
 import { GetBootstrapQueryDto } from './dto/get-bootstrap-query.dto';
+import { DeviceAuthGuard } from '../../common/guards/device-auth.guard';
+import { CurrentDevice } from '../../common/decorators/current-device.decorator';
 
 @Controller('context')
+@UseGuards(DeviceAuthGuard)
 export class ContextController {
   constructor(private readonly contextService: ContextService) {}
 
@@ -23,6 +27,7 @@ export class ContextController {
   async getInstantSceneContext(
     @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
     @Query() query: GetContextQueryDto,
+    @CurrentDevice() _authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,
   ) {
     const playbackMs = query.playbackMs ?? 0;
@@ -43,6 +48,7 @@ export class ContextController {
   async getFireTvBootstrap(
     @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
     @Query() query: GetBootstrapQueryDto,
+    @CurrentDevice() authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,
   ) {
     const playbackMs = query.playbackMs ?? 0;
@@ -52,7 +58,7 @@ export class ContextController {
 
     return this.contextService.getFireTvBootstrap(
       episodeId,
-      query.deviceId,
+      authenticatedDeviceId,
       playbackMs,
       query.profileId,
     );
