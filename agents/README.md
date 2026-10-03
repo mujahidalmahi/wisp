@@ -7,5 +7,5 @@ This directory houses two categories of agent artifacts:
    - [`fire-tv-ui-agent.md`](./playbooks/fire-tv-ui-agent.md) — `client` branch (`frontend/`)
    - [`backend-ai-gateway-agent.md`](./playbooks/backend-ai-gateway-agent.md) — `server` branch (`backend/`, `database/`, `cloudflare/`)
    - [`testing-qa-agent.md`](./playbooks/testing-qa-agent.md) — `testing` branch (`testing/`)
-   - [`content-curation-agent.md`](./playbooks/content-curation-agent.md) — `server` & `ai-integration` branches (`database/seeds/`, `ai-engine/src/context/`)
+   - [`content-curation-agent.md`](./playbooks/content-curation-agent.md) — `server` & `ai-integration` branches (`supabase/seed.sql`, `ai-engine/src/context/`)
 2. **`prompts/`**: Versioned system prompt specifications implemented by the feature modules inside [`ai-engine/src/features/`](../ai-engine/src/features/).

@@ -34,7 +34,7 @@ Wisp treats the **television program, current playback position, and 5-way D-pad
 | Capability | How Wisp Implements It |
 | :--- | :--- |
 | **Zero-Typing 10-Foot UX** | Invoking Wisp with the Fire TV remote opens a `<100ms` Stage-1 drawer displaying the active scene header and **3–4 D-pad selectable Quick Action Chips**, plus dynamic follow-up pills on every AI card—eliminating tedious on-screen keyboard typing. |
-| **Deterministic Spoiler Safety** | Spoiler protection is enforced mathematically at the data boundary (`end_time_ms <= playback_position_ms` and `reveal_time_ms <= playback_position_ms`) in both PostgreSQL ([`0002_temporal_context_functions.sql`](./database/migrations/0002_temporal_context_functions.sql)) and the standalone [`temporal-filter.ts`](./ai-engine/src/context/temporal-filter.ts). |
+| **Deterministic Spoiler Safety** | Spoiler protection is enforced mathematically at the data boundary (`end_time_ms <= playback_position_ms` and `reveal_time_ms <= playback_position_ms`) in both PostgreSQL ([`0002_temporal_context_functions.sql`](./supabase/migrations/0002_temporal_context_functions.sql)) and the standalone [`temporal-filter.ts`](./ai-engine/src/context/temporal-filter.ts). |
 | **Modular AI Engine (`@wisp/ai-engine`)** | All AI feature pipelines (*Contextual Q&A*, *Entity Explainer*, *Scene Explainer*, *Episode Recap*, *Interactive Quiz*), prompt builders, and model adapters live in a framework-agnostic package ([`ai-engine/`](./ai-engine/README.md)) that can be developed and tested standalone without backend or database dependencies. |
 | **Household Viewing Modes** | One-click D-pad profile selector (`Quick Glance`, `Deep Lore`, `Family Mode`) dynamically tailors explanation length, tone, and vocabulary to who is watching in the living room. |
 | **Resilient Multi-Provider AI Gateway** | Server-side provider abstraction routing requests through **Groq** (`llama-3.3-70b-versatile` for sub-second TV card latency) → **Google Gemini Flash** → **OpenRouter** → **Ollama** (local development fallback), fronted by **Cloudflare Workers KV** 15-second timestamp bucket caching. |
@@ -48,7 +48,8 @@ wisp/
 ├── ai-engine/              # Modular AI Integration & Feature Engine (@wisp/ai-engine — zero backend/DB lock-in)
 ├── frontend/               # Amazon Fire TV Client (React Native / react-native-tvos + TypeScript 10-foot UI)
 ├── backend/                # NestJS + TypeScript Application API, Security Boundary & AI Gateway
-├── database/               # Supabase PostgreSQL Schema Migrations, Anti-Spoiler RPCs & 3-Genre Demo Seeds
+├── supabase/               # Supabase PostgreSQL Schema Migrations, Anti-Spoiler RPCs & 3-Genre Demo Seeds
+├── database/               # Destructive 8-part database integration & invariant test suite
 ├── cloudflare/             # Cloudflare Worker Edge Gateway (Workers KV 15s Bucket Cache & R2 Video Streamer)
 ├── testing/                # Comprehensive Test Suites (AI, Backend, Frontend, Database, Cloudflare, E2E)
 ├── docs/                   # Proposal, Architecture, API Spec, UX Guide, Branch Guides, Friction Log & Feedback

@@ -84,7 +84,7 @@ export abstract class BaseAiFeatureModule implements IAiFeatureModule {
       systemPrompt,
       userPrompt,
       temperature: 0.3,
-      maxTokens: 450,
+      maxTokens: 800,
     };
   }
 

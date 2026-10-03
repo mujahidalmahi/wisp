@@ -96,3 +96,12 @@
 - **Workaround Implemented:** Verified the quiz-validation change by running `node --test testing/ai-integration/output-validation.test.ts` directly (`tests 67 / pass 67 / fail 0 / cancelled 0`) instead of trusting the aggregate `fail 0`, and confirmed the 28 cancellations are pre-existing and unrelated by running `provider-timeouts.test.ts` in isolation with no import of the module under test. Type changes were verified at runtime through Node's type stripping rather than by `tsc`.
 - **Actionable Recommendation:** Make the timeout tests drive a fake clock instead of real timers so the event loop always drains, and add a CI guard that fails the build when any suite reports `cancelled > 0` — `fail 0` alone currently conceals a fully non-executing test file. Separately, commit a lockfile so `npm ci` restores `typescript` and `typecheck` becomes a real gate.
 
+### [FL-008] NestJS `nest build` Fails When Consuming Monorepo Packages With Explicit `.ts` Imports (TS5097)
+- **Date:** 2026-10-02
+- **Component / SDK:** NestJS CLI (`@nestjs/cli` + `tsc`) / TypeScript 5.7+ / Monorepo Workspace Imports
+- **Severity:** Medium
+- **Expected Behavior:** When `@wisp/backend` imports `@wisp/ai-engine` (which uses `.ts` extension specifiers for Node.js native execution per FL-003), NestJS compilation via `nest build` should compile seamlessly.
+- **Actual Behavior:** TypeScript compiler (`tsc`) aborted with 36 instances of `error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled`.
+- **Workaround Implemented:** Added `"allowImportingTsExtensions": true` and `"rewriteRelativeImportExtensions": true` to `backend/tsconfig.json`. This leverages TypeScript 5.7+'s ability to resolve `.ts` relative imports and automatically rewrite them during JavaScript emission.
+- **Actionable Recommendation:** Monorepo templates combining Node native TypeScript execution packages and NestJS application services should preconfigure `rewriteRelativeImportExtensions: true` in downstream consuming projects.
+
