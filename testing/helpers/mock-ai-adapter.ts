@@ -3,11 +3,175 @@ import type {
   AiCompletionResult,
   IAiModelAdapter,
 } from '../../ai-engine/src/types/index.ts';
+import { AiProviderHttpError } from '../../ai-engine/src/providers/errors.ts';
 
 /**
  * Deterministic AI Model Adapter for fast, repeatable automated tests.
  * Inspects the grounded prompt payload and returns schema-compliant JSON cards.
  */
+/**
+ * Simulates a provider that accepts the request but never responds in time.
+ * `respectSignal: false` models an adapter that ignores the injected
+ * AbortSignal, proving the router's own deadline still bounds the attempt.
+ */
+function abortErrorFor(reason: unknown): Error {
+  return reason instanceof Error
+    ? reason
+    : Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+}
+
+export class HangingTestAiAdapter implements IAiModelAdapter {
+  readonly name: string;
+  readonly timeoutMs?: number;
+  public callCount = 0;
+  public sawSignal = false;
+  public observedAbort = false;
+  /** True while the simulated request is still running; a cooperative adapter
+   * clears this the moment it observes the abort. */
+  public workInFlight = false;
+  private readonly hangForMs: number;
+  private readonly respectSignal: boolean;
+
+  constructor(options?: {
+    name?: string;
+    timeoutMs?: number;
+    hangForMs?: number;
+    respectSignal?: boolean;
+  }) {
+    this.name = options?.name || 'hanging-test-ai';
+    this.timeoutMs = options?.timeoutMs;
+    this.hangForMs = options?.hangForMs || 30000;
+    this.respectSignal = options?.respectSignal ?? true;
+  }
+
+  isConfigured(): boolean {
+    return true;
+  }
+
+  async complete(req: AiCompletionRequest): Promise<AiCompletionResult> {
+    this.callCount += 1;
+    this.workInFlight = true;
+
+    try {
+      if (req.signal) {
+        this.sawSignal = true;
+        if (this.respectSignal) {
+          req.signal.addEventListener(
+            'abort',
+            () => {
+              this.observedAbort = true;
+            },
+            { once: true },
+          );
+          await this.simulateWorkUntilAborted(req.signal);
+          throw abortErrorFor(req.signal.reason);
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, this.hangForMs));
+
+      return {
+        providerName: this.name,
+        latencyMs: this.hangForMs,
+        rawText: JSON.stringify({
+          headline: 'unreachable',
+          body: '',
+          bulletPoints: [],
+          followUpChips: [],
+        }),
+      };
+    } finally {
+      this.workInFlight = false;
+    }
+  }
+
+  private simulateWorkUntilAborted(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+
+      const timer = setTimeout(resolve, this.hangForMs);
+      timer.unref?.();
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(signal.reason);
+        },
+        { once: true },
+      );
+    });
+  }
+}
+
+/**
+ * Fails with a credential fault for the first `failCalls` attempts, then succeeds.
+ * Models a key that is rotated or re-provisioned after an initial 401.
+ */
+export class RecoveringAuthTestAiAdapter implements IAiModelAdapter {
+  readonly name: string;
+  public callCount = 0;
+  private readonly failStatus: number;
+  private readonly failCalls: number;
+
+  constructor(options?: { name?: string; failStatus?: number; failCalls?: number }) {
+    this.name = options?.name || 'recovering-auth-test-ai';
+    this.failStatus = options?.failStatus || 401;
+    this.failCalls = options?.failCalls ?? 1;
+  }
+
+  isConfigured(): boolean {
+    return true;
+  }
+
+  async complete(): Promise<AiCompletionResult> {
+    this.callCount += 1;
+    if (this.callCount <= this.failCalls) {
+      throw new AiProviderHttpError(this.name, this.failStatus, '{"detail":"expired or invalid key"}');
+    }
+    return {
+      providerName: this.name,
+      latencyMs: 9,
+      rawText: JSON.stringify({
+        headline: 'Recovered Card',
+        body: 'The provider answered after its credentials were fixed.',
+        bulletPoints: [],
+        followUpChips: [
+          { id: 'f1', label: 'Follow up one?', actionType: 'contextual_qa' },
+          { id: 'f2', label: 'Follow up two?', actionType: 'entity_explain' },
+        ],
+      }),
+    };
+  }
+}
+
+/**
+ * Always throws the given HTTP status, for exercising router failure classification.
+ */
+export class FailingHttpTestAiAdapter implements IAiModelAdapter {
+  readonly name: string;
+  readonly timeoutMs?: number;
+  public callCount = 0;
+  private readonly status: number;
+
+  constructor(options?: { name?: string; status?: number; timeoutMs?: number }) {
+    this.name = options?.name || 'failing-http-test-ai';
+    this.status = options?.status || 500;
+    this.timeoutMs = options?.timeoutMs;
+  }
+
+  isConfigured(): boolean {
+    return true;
+  }
+
+  async complete(): Promise<AiCompletionResult> {
+    this.callCount += 1;
+    throw new AiProviderHttpError(this.name, this.status, '{"detail":"simulated upstream failure"}');
+  }
+}
+
 export class DeterministicTestAiAdapter implements IAiModelAdapter {
   readonly name: string;
   private readonly shouldFail: boolean;
