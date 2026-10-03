@@ -8,6 +8,7 @@ import { CatalogModule } from './modules/catalog/catalog.module';
 import { ProfilesModule } from './modules/profiles/profiles.module';
 import { ContextModule } from './modules/context/context.module';
 import { AiGatewayModule } from './modules/ai-gateway/ai-gateway.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { GlobalHttpExceptionFilter } from './common/filters/http-exception.filter';
 import { RequestCorrelationInterceptor } from './common/interceptors/correlation.interceptor';
 
@@ -23,6 +24,7 @@ import { RequestCorrelationInterceptor } from './common/interceptors/correlation
         limit: 45,
       },
     ]),
+    AuthModule,
     SupabaseModule,
     HealthModule,
     CatalogModule,

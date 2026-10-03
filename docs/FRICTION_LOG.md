@@ -63,3 +63,16 @@
 - **Workaround Implemented:** Added `"allowImportingTsExtensions": true` and `"rewriteRelativeImportExtensions": true` to `backend/tsconfig.json`. This leverages TypeScript 5.7+'s ability to resolve `.ts` relative imports and automatically rewrite them during JavaScript emission.
 - **Actionable Recommendation:** Monorepo templates combining Node native TypeScript execution packages and NestJS application services should preconfigure `rewriteRelativeImportExtensions: true` in downstream consuming projects.
 
+---
+
+### [FL-005] Node.js Native Test Runner (`node --test`) Hangs When Importing NestJS Main File Due to Eager `bootstrap()` Execution
+- **Date:** 2026-10-04
+- **Component / SDK:** Node.js v24 Test Runner (`node --test`) / NestJS Entrypoint (`backend/src/main.ts`)
+- **Severity:** Medium
+- **Expected Behavior:** Importing helper functions (such as environment validators or configuration loaders) from `main.ts` or compiled `dist/main.js` into test suites should not start background HTTP listeners or hang the test runner.
+- **Actual Behavior:** Node.js top-level execution in `main.ts` invoked `bootstrap()` upon being imported by the test file. NestJS started listening on port 3000, leaving an active TCP server handle in the libuv event loop and preventing `node --test` from terminating.
+- **Workaround Implemented:** Decoupled `validateEnvironment` into a dedicated `common/config/environment.validator.ts` module and guarded `main.ts` with a CLI entrypoint check (`require.main === module` or `process.argv[1]` matching `main.js`/`main.ts`) before running `bootstrap()`.
+- **Actionable Recommendation:** Always decouple environment validation, configuration factories, and standalone startup hooks from the NestJS application entrypoint to guarantee that test runners can inspect configuration logic without triggering HTTP listener side-effects.
+
+
+

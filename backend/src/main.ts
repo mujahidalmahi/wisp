@@ -1,8 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { AppModule } from './app.module';
+import { validateEnvironment } from './common/config/environment.validator';
+
+export { validateEnvironment };
 
 async function bootstrap() {
+  validateEnvironment();
+
   const logger = new Logger('WispBootstrap');
   const app = await NestFactory.create(AppModule);
 
@@ -20,8 +25,10 @@ async function bootstrap() {
       'Content-Type',
       'Authorization',
       'X-Device-Id',
+      'X-Device-Token',
       'X-Profile-Id',
       'X-Request-Id',
+      'X-Operator-Token',
       'Accept',
     ],
     credentials: true,
@@ -42,4 +49,12 @@ async function bootstrap() {
   logger.log(`Wisp API & AI Gateway listening on http://0.0.0.0:${port}/api/v1`);
 }
 
-bootstrap();
+// Only invoke bootstrap() when executed as direct entry point, never when imported by tests
+const isMainScript =
+  typeof process.argv[1] === 'string' &&
+  (process.argv[1].replace(/\\/g, '/').endsWith('/main.js') ||
+    process.argv[1].replace(/\\/g, '/').endsWith('/main.ts'));
+
+if (isMainScript) {
+  bootstrap();
+}

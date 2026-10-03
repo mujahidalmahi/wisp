@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'fs';
+import path from 'path';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { ConfigService } from '@nestjs/config';
@@ -14,6 +16,9 @@ import { SupabaseService } from '../dist/modules/supabase/supabase.service.js';
 import { HealthController } from '../dist/modules/health/health.controller.js';
 import { ParseSlugPipe } from '../dist/common/pipes/parse-slug.pipe.js';
 import { DeviceAuthGuard } from '../dist/common/guards/device-auth.guard.js';
+import { DeviceTokenService } from '../dist/common/auth/device-token.service.js';
+import { AuthController } from '../dist/modules/auth/auth.controller.js';
+import { validateEnvironment } from '../dist/common/config/environment.validator.js';
 import { GlobalHttpExceptionFilter } from '../dist/common/filters/http-exception.filter.js';
 
 import { GetProgramsQueryDto } from '../dist/modules/catalog/dto/get-programs-query.dto.js';
@@ -584,21 +589,63 @@ describe('Phase 1 Basic Backend: Health Endpoint Separation (Item 16)', () => {
     assert.equal((liveness as any).database, undefined);
   });
 
-  it('returns sanitized readiness for public callers and diagnostic metrics for operators', async () => {
+  it('returns sanitized readiness for public callers without leaking database diagnostics', async () => {
     const res: any = { status: () => res };
-
-    // 1. Anonymous request: database details are sanitized without operational metrics
     const anonReadiness = await health.getReadiness(res);
     assert.ok(anonReadiness.status === 'ok' || anonReadiness.status === 'unhealthy');
     assert.equal(typeof anonReadiness.database, 'string');
     assert.equal((anonReadiness.database as any).metrics, undefined);
+    assert.equal((anonReadiness.database as any).configured, undefined);
+  });
 
-    // 2. Operator request: full diagnostic metrics provided
-    const operatorReadiness = await health.getReadiness(res, 'wisp-internal-operator-key');
-    assert.ok(operatorReadiness.status === 'ok' || operatorReadiness.status === 'unhealthy');
-    assert.equal(typeof operatorReadiness.database, 'object');
-    assert.equal(operatorReadiness.database.configured, false);
-    assert.ok(operatorReadiness.database.metrics);
+  it('provides diagnostic metrics when authorized with INTERNAL_OPERATOR_TOKEN via header', async () => {
+    const origToken = process.env.INTERNAL_OPERATOR_TOKEN;
+    process.env.INTERNAL_OPERATOR_TOKEN = 'secret-test-operator-key-999';
+    try {
+      const res: any = { status: () => res };
+      const operatorReadiness = await health.getReadiness(res, 'secret-test-operator-key-999');
+      assert.ok(operatorReadiness.status === 'ok' || operatorReadiness.status === 'unhealthy');
+      assert.equal(typeof operatorReadiness.database, 'object');
+      assert.equal(operatorReadiness.database.configured, false);
+      assert.ok(operatorReadiness.database.metrics);
+
+      // Bearer scheme in Authorization header also accepted
+      const bearerReadiness = await health.getReadiness(res, undefined, 'Bearer secret-test-operator-key-999');
+      assert.equal(typeof bearerReadiness.database, 'object');
+    } finally {
+      process.env.INTERNAL_OPERATOR_TOKEN = origToken;
+    }
+  });
+
+  it('fails closed: rejects operator header with 503 when operator token is unconfigured on server', async () => {
+    const origInternal = process.env.INTERNAL_OPERATOR_TOKEN;
+    const origOperator = process.env.OPERATOR_TOKEN;
+    delete process.env.INTERNAL_OPERATOR_TOKEN;
+    delete process.env.OPERATOR_TOKEN;
+    try {
+      const res: any = { status: () => res };
+      await assert.rejects(
+        async () => health.getReadiness(res, 'some-attempted-token'),
+        { name: 'ServiceUnavailableException' },
+      );
+    } finally {
+      process.env.INTERNAL_OPERATOR_TOKEN = origInternal;
+      process.env.OPERATOR_TOKEN = origOperator;
+    }
+  });
+
+  it('rejects invalid operator credentials with 401 UnauthorizedException', async () => {
+    const origToken = process.env.INTERNAL_OPERATOR_TOKEN;
+    process.env.INTERNAL_OPERATOR_TOKEN = 'secret-test-operator-key-999';
+    try {
+      const res: any = { status: () => res };
+      await assert.rejects(
+        async () => health.getReadiness(res, 'wrong-operator-key'),
+        { name: 'UnauthorizedException' },
+      );
+    } finally {
+      process.env.INTERNAL_OPERATOR_TOKEN = origToken;
+    }
   });
 });
 
@@ -666,7 +713,8 @@ describe('Phase 1 Basic Backend: DTO Validation Guards (Item 14)', () => {
 });
 
 describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 1)', () => {
-  const guard = new DeviceAuthGuard();
+  const tokenService = new DeviceTokenService();
+  const guard = new DeviceAuthGuard(tokenService);
 
   function createMockContext(req: any) {
     return {
@@ -676,20 +724,23 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     } as any;
   }
 
-  it('authenticates via X-Device-Id header and attaches deviceId to request', () => {
+  it('authenticates via verifiable signed token in Authorization Bearer header', () => {
+    const validToken = tokenService.signDeviceToken('firetv-4k-living-room');
     const req: any = {
-      headers: { 'x-device-id': 'firetv-4k-living-room' },
+      headers: { authorization: `Bearer ${validToken}` },
       query: {},
       body: {},
     };
     const res = guard.canActivate(createMockContext(req));
     assert.equal(res, true);
     assert.equal(req.deviceId, 'firetv-4k-living-room');
+    assert.equal(req.devicePayload.deviceId, 'firetv-4k-living-room');
   });
 
-  it('authenticates via Authorization: Device header scheme', () => {
+  it('authenticates via verifiable signed token in Authorization Device header scheme', () => {
+    const validToken = tokenService.signDeviceToken('firetv-bedroom');
     const req: any = {
-      headers: { authorization: 'Device firetv-bedroom' },
+      headers: { authorization: `Device ${validToken}` },
       query: {},
       body: {},
     };
@@ -698,7 +749,59 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     assert.equal(req.deviceId, 'firetv-bedroom');
   });
 
-  it('rejects requests with no device identification in header or parameters', () => {
+  it('authenticates via verifiable signed token in X-Device-Token header', () => {
+    const validToken = tokenService.signDeviceToken('firetv-guestroom');
+    const req: any = {
+      headers: { 'x-device-token': validToken },
+      query: {},
+      body: {},
+    };
+    const res = guard.canActivate(createMockContext(req));
+    assert.equal(res, true);
+    assert.equal(req.deviceId, 'firetv-guestroom');
+  });
+
+  it('rejects requests with forged or invalid cryptographic token signatures', () => {
+    const validToken = tokenService.signDeviceToken('firetv-bedroom');
+    const forgedToken = validToken.slice(0, -6) + 'badbad';
+    const req: any = {
+      headers: { authorization: `Bearer ${forgedToken}` },
+      query: {},
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('rejects requests with expired device tokens', () => {
+    // Generate token that expired 10 seconds ago
+    const expiredToken = tokenService.signDeviceToken('firetv-expired', -10);
+    const req: any = {
+      headers: { authorization: `Bearer ${expiredToken}` },
+      query: {},
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('rejects requests with malformed token structure', () => {
+    const req: any = {
+      headers: { authorization: 'Bearer invalid.token' },
+      query: {},
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('rejects requests with no device identification credential in headers', () => {
     const req: any = {
       headers: {},
       query: {},
@@ -710,9 +813,22 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     );
   });
 
-  it('rejects requests where query deviceId conflicts with authenticated header deviceId', () => {
+  it('strictly rejects using query deviceId or body deviceId as authentication identity', () => {
     const req: any = {
-      headers: { 'x-device-id': 'dev-real' },
+      headers: {},
+      query: { deviceId: 'spoofed-query-dev' },
+      body: { deviceId: 'spoofed-body-dev' },
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('rejects requests where query deviceId conflicts with authenticated token deviceId', () => {
+    const validToken = tokenService.signDeviceToken('dev-real');
+    const req: any = {
+      headers: { authorization: `Bearer ${validToken}` },
       query: { deviceId: 'dev-spoofed' },
       body: {},
     };
@@ -722,9 +838,10 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     );
   });
 
-  it('rejects requests where body deviceId conflicts with authenticated header deviceId', () => {
+  it('rejects requests where body deviceId conflicts with authenticated token deviceId', () => {
+    const validToken = tokenService.signDeviceToken('dev-real');
     const req: any = {
-      headers: { 'x-device-id': 'dev-real' },
+      headers: { authorization: `Bearer ${validToken}` },
       query: {},
       body: { deviceId: 'dev-spoofed' },
     };
@@ -734,13 +851,33 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     );
   });
 
-  it('strictly requires X-Device-Id header in production mode', () => {
+  it('allows unverified x-device-id ONLY when ALLOW_INSECURE_DEV_DEVICE_HEADERS is explicitly enabled in non-production', () => {
+    const origFlag = process.env.ALLOW_INSECURE_DEV_DEVICE_HEADERS;
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'development';
+    process.env.ALLOW_INSECURE_DEV_DEVICE_HEADERS = 'true';
+    try {
+      const req: any = {
+        headers: { 'x-device-id': 'dev-legacy-test' },
+        query: {},
+        body: {},
+      };
+      const res = guard.canActivate(createMockContext(req));
+      assert.equal(res, true);
+      assert.equal(req.deviceId, 'dev-legacy-test');
+    } finally {
+      process.env.ALLOW_INSECURE_DEV_DEVICE_HEADERS = origFlag;
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+
+  it('strictly requires verifiable token in production even if dev headers are sent', () => {
     const origEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     try {
       const req: any = {
-        headers: {},
-        query: { deviceId: 'dev-param-only' },
+        headers: { 'x-device-id': 'dev-unverified-in-prod' },
+        query: {},
         body: {},
       };
       assert.throws(
@@ -750,6 +887,24 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     } finally {
       process.env.NODE_ENV = origEnv;
     }
+  });
+
+  it('issues verifiable device token via AuthController.issueDeviceToken', () => {
+    const authController = new AuthController(tokenService);
+    const result = authController.issueDeviceToken({ deviceId: 'firetv-device-test-01' });
+    assert.equal(result.deviceId, 'firetv-device-test-01');
+    assert.ok(result.token);
+    assert.equal(result.token_type, 'Bearer');
+
+    // Token must authenticate with guard
+    const req: any = {
+      headers: { authorization: `Bearer ${result.token}` },
+      query: {},
+      body: {},
+    };
+    const passed = guard.canActivate(createMockContext(req));
+    assert.equal(passed, true);
+    assert.equal(req.deviceId, 'firetv-device-test-01');
   });
 
   it('enforces DeviceAuthGuard at class level on ContextController and ProfilesController', () => {
@@ -980,13 +1135,12 @@ describe('Phase 1 Basic Backend: Cursor Validation & PostgREST Sanitization (Ite
     const supabase = new SupabaseService(config);
     const catalog = new CatalogService(supabase);
 
-    // 1. Malicious cursor token with SQL injection payload in id
-    const malformedCursor = Buffer.from(
-      JSON.stringify({ title: 'Tears', id: "123' OR 1=1--" }),
-    ).toString('base64url');
+    const makeCursor = (title: string, id = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1') =>
+      Buffer.from(JSON.stringify({ title, id })).toString('base64url');
 
+    // 1. Malicious cursor token with SQL injection payload in id
     await assert.rejects(
-      async () => catalog.listPrograms({ cursor: malformedCursor, limit: 2 }),
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears', "123' OR 1=1--"), limit: 2 }),
       { name: 'BadRequestException' },
     );
 
@@ -996,14 +1150,101 @@ describe('Phase 1 Basic Backend: Cursor Validation & PostgREST Sanitization (Ite
       { name: 'BadRequestException' },
     );
 
-    // 3. Cursor with injection / delimiter characters in title
-    const injectedTitleCursor = Buffer.from(
-      JSON.stringify({ title: 'Tears",id.gt."bad', id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' }),
-    ).toString('base64url');
+    // 3. Cursor with PostgREST injection / delimiter characters in title
     await assert.rejects(
-      async () => catalog.listPrograms({ cursor: injectedTitleCursor, limit: 2 }),
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears",id.gt."bad'), limit: 2 }),
       { name: 'BadRequestException' },
     );
+
+    // 4. Backslashes in title
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears\\Escape'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+
+    // 5. Newlines (\n and \r) in title
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears\nNewline'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears\rReturn'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+
+    // 6. Tabs in title
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears\tTab'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+
+    // 7. Control characters (\x00, \x1B, \x7F) in title
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears\x00Null'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears\x1BEscape'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+
+    // 8. Grammar brackets and delimiters (;, {}, [], <>)
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears;drop table'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears{filter}'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears[array]'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+    await assert.rejects(
+      async () => catalog.listPrograms({ cursor: makeCursor('Tears<tag>'), limit: 2 }),
+      { name: 'BadRequestException' },
+    );
+  });
+
+  it('delegates cursor pagination to typed database RPC get_paginated_programs when Supabase is configured', async () => {
+    let capturedRpc: { name: string; params: any } | null = null;
+    const mockSupabase = createMockSupabaseService({
+      rpc: async (name, params) => {
+        capturedRpc = { name, params };
+        return {
+          data: [
+            {
+              id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+              slug: 'tears-of-steel',
+              title: 'Tears of Steel',
+              genre: 'Sci-Fi',
+              synopsis: 'Test synopsis',
+              release_year: 2012,
+              rating: 'TV-14',
+              poster_url: 'https://img.com/p.jpg',
+              backdrop_url: 'https://img.com/b.jpg',
+              license_info: 'CC-BY',
+              is_active: true,
+            },
+          ],
+          error: null,
+        };
+      },
+    });
+
+    const catalog = new CatalogService(mockSupabase);
+    const validCursor = Buffer.from(
+      JSON.stringify({ title: 'Cosmic', id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2' }),
+    ).toString('base64url');
+
+    const result = await catalog.listPrograms({ cursor: validCursor, limit: 1, genre: 'Sci-Fi' });
+    assert.equal(capturedRpc?.name, 'get_paginated_programs');
+    assert.equal(capturedRpc?.params.p_cursor_title, 'Cosmic');
+    assert.equal(capturedRpc?.params.p_cursor_id, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2');
+    assert.equal(capturedRpc?.params.p_ascending, true);
+    assert.equal(capturedRpc?.params.p_genre, 'Sci-Fi');
+    assert.equal(result.items.length, 1);
   });
 
   it('throws ServiceUnavailableException on database error in getProgramBySlug when fallback is disabled', async () => {
@@ -1232,5 +1473,119 @@ describe('Phase 1 Basic Backend: Production Readiness Probe Strict Failure (Item
     }
   });
 });
+
+describe('Phase 1 Basic Backend: Production Demo Fallback Quarantine & Startup Gate', () => {
+  it('validateEnvironment throws fatal error on startup when ENABLE_DEMO_FALLBACK is enabled under NODE_ENV=production', () => {
+    const origEnv = process.env.NODE_ENV;
+    const origFallback = process.env.ENABLE_DEMO_FALLBACK;
+    process.env.NODE_ENV = 'production';
+    process.env.ENABLE_DEMO_FALLBACK = 'true';
+    try {
+      assert.throws(
+        () => validateEnvironment(),
+        /Fatal configuration error: ENABLE_DEMO_FALLBACK cannot be enabled in a production environment/,
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      process.env.ENABLE_DEMO_FALLBACK = origFallback;
+    }
+  });
+
+  it('guarantees that under NODE_ENV=production, services reject demo fallback even if ENABLE_DEMO_FALLBACK=true', async () => {
+    const origEnv = process.env.NODE_ENV;
+    const origFallback = process.env.ENABLE_DEMO_FALLBACK;
+    process.env.NODE_ENV = 'production';
+    process.env.ENABLE_DEMO_FALLBACK = 'true';
+    try {
+      const mockSupabase = createMockSupabaseService({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: async () => ({
+                  data: null,
+                  error: { code: '500', message: 'connection failed' },
+                }),
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const catalog = new CatalogService(mockSupabase);
+      await assert.rejects(
+        async () => catalog.getProgramBySlug('tears-of-steel'),
+        { name: 'ServiceUnavailableException' },
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      process.env.ENABLE_DEMO_FALLBACK = origFallback;
+    }
+  });
+});
+
+describe('Phase 1 Basic Backend: PostgreSQL Migration Invariants & RPC Security', () => {
+  it('0006_atomic_profile_deletion.sql enforces advisory locking, row-level locks, and service-role execution', () => {
+    const sql = fs.readFileSync(
+      path.resolve('supabase/migrations/0006_atomic_profile_deletion.sql'),
+      'utf8',
+    );
+
+    // Advisory transaction lock
+    assert.ok(
+      sql.includes('pg_advisory_xact_lock(hashtext(v_clean_device_id))'),
+      '0006 must acquire transaction advisory lock on device ID',
+    );
+
+    // Row-level lock on all device profiles
+    assert.ok(
+      sql.includes('for update'),
+      '0006 must acquire row locks on device profiles before counting',
+    );
+
+    // Service role caller gate
+    assert.ok(
+      sql.includes('public.is_service_role_caller()'),
+      '0006 must verify caller is service_role inside the function',
+    );
+
+    // Revocation from anon/authenticated
+    assert.ok(
+      sql.includes('revoke all on function public.delete_viewing_profile(uuid, text) from anon, authenticated;'),
+      '0006 must revoke execute from anon and authenticated',
+    );
+
+    // Grant execute strictly to service_role
+    assert.ok(
+      sql.includes('grant execute on function public.delete_viewing_profile(uuid, text) to service_role;'),
+      '0006 must grant execute strictly to service_role',
+    );
+  });
+
+  it('0007_typed_catalog_pagination.sql provides parameterized cursor RPC without raw string filter interpolation', () => {
+    const sql = fs.readFileSync(
+      path.resolve('supabase/migrations/0007_typed_catalog_pagination.sql'),
+      'utf8',
+    );
+
+    assert.ok(
+      sql.includes('create or replace function public.get_paginated_programs'),
+      '0007 must define get_paginated_programs RPC',
+    );
+    assert.ok(
+      sql.includes('p_cursor_title text'),
+      '0007 must accept typed p_cursor_title',
+    );
+    assert.ok(
+      sql.includes('p_cursor_id uuid'),
+      '0007 must accept typed p_cursor_id',
+    );
+    assert.ok(
+      sql.includes('grant execute on function public.get_paginated_programs'),
+      '0007 must grant execution to anon, authenticated, and service_role',
+    );
+  });
+});
+
 
 

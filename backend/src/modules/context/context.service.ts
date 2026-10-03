@@ -94,6 +94,11 @@ export class ContextService {
     return this.contextSource;
   }
 
+  private allowDemoFallback(isConfigured: boolean): boolean {
+    const isProduction = process.env.NODE_ENV === 'production';
+    return !isConfigured || (!isProduction && process.env.ENABLE_DEMO_FALLBACK === 'true');
+  }
+
   async getSpoilerSafeContext(
     episodeId: string,
     playbackPositionMs: number,
@@ -101,7 +106,7 @@ export class ContextService {
   ): Promise<TemporalProgramContext> {
     const safeMs = Math.max(0, playbackPositionMs);
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
     // Strict Production Database Path: Verify episode exists and do not fall back to demo fixtures on misses (Item 5)
     if (isConfigured) {
@@ -153,7 +158,7 @@ export class ContextService {
     const cleanProfileId = profileId ? profileId.trim() : undefined;
     const safeMs = Math.max(0, playbackPositionMs);
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
     // 1. Verify profile-to-device ownership and existence (fail fast on not-found or mismatch)
     if (cleanProfileId) {

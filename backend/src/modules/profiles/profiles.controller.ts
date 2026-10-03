@@ -26,10 +26,10 @@ export class ProfilesController {
 
   @Get()
   async getProfiles(
-    @Query() query: GetProfilesQueryDto,
+    @Query() _query: GetProfilesQueryDto,
     @CurrentDevice() deviceId: string,
   ) {
-    return this.profilesService.getProfilesByDeviceId(deviceId || query.deviceId);
+    return this.profilesService.getProfilesByDeviceId(deviceId);
   }
 
   @Post()

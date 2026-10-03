@@ -216,8 +216,8 @@ export class CatalogService {
       ) {
         return null;
       }
-      // Strict token validation: Disallow any PostgREST grammar delimiters or injection characters
-      if (/["(),;\\\[\]<>{}]/.test(parsed.title)) {
+      // Strict token validation: Disallow any PostgREST grammar delimiters, injection characters, backslashes, newlines, or control characters
+      if (/["(),;\\\[\]<>{}\r\n\t\x00-\x1F\x7F]/.test(parsed.title)) {
         return null;
       }
       const safeTitle = parsed.title.trim();
@@ -234,7 +234,8 @@ export class CatalogService {
     const limit = query.limit ?? 20;
     const ascending = query.order !== 'desc';
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const isProduction = process.env.NODE_ENV === 'production';
+    const allowDemoFallback = !isConfigured || (!isProduction && process.env.ENABLE_DEMO_FALLBACK === 'true');
 
     // Validate cursor if provided and reject invalid cursors with 400 Bad Request
     let cursorData: { title: string; id: string } | null = null;
@@ -252,6 +253,25 @@ export class CatalogService {
       const client = this.supabaseService.getClient()!;
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () => {
+          // Attempt typed database RPC first if implemented and available
+          if (typeof client.rpc === 'function') {
+            try {
+              const rpcRes = await client.rpc('get_paginated_programs', {
+                p_limit: limit + 1,
+                p_cursor_title: cursorData ? cursorData.title : null,
+                p_cursor_id: cursorData ? cursorData.id : null,
+                p_ascending: ascending,
+                p_genre: query.genre?.trim() || null,
+                p_query: query.q?.trim() || null,
+              });
+              if (rpcRes && rpcRes.data !== null && !rpcRes.error) {
+                return rpcRes;
+              }
+            } catch {
+              // Fall back to query builder below
+            }
+          }
+
           let qb = client
             .from('programs')
             .select(
@@ -298,8 +318,8 @@ export class CatalogService {
           if (!allowDemoFallback) {
             throw new ServiceUnavailableException(`Database catalog unavailable: ${error.message}`);
           }
-        } else if (data) {
-          const rawItems = data as ProgramSummary[];
+        } else {
+          const rawItems = (data || []) as ProgramSummary[];
           const hasMore = rawItems.length > limit;
           const items = hasMore ? rawItems.slice(0, limit) : rawItems;
           const nextCursor =
@@ -383,7 +403,8 @@ export class CatalogService {
   async getProgramBySlug(slug: string): Promise<ProgramWithEpisodes> {
     const cleanSlug = slug.trim().toLowerCase();
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const isProduction = process.env.NODE_ENV === 'production';
+    const allowDemoFallback = !isConfigured || (!isProduction && process.env.ENABLE_DEMO_FALLBACK === 'true');
 
     if (isConfigured) {
       const client = this.supabaseService.getClient()!;
@@ -467,7 +488,8 @@ export class CatalogService {
 
   async getEpisodeById(episodeId: string): Promise<EpisodeDetails> {
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const isProduction = process.env.NODE_ENV === 'production';
+    const allowDemoFallback = !isConfigured || (!isProduction && process.env.ENABLE_DEMO_FALLBACK === 'true');
 
     if (isConfigured) {
       const client = this.supabaseService.getClient()!;

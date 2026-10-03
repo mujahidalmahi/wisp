@@ -62,10 +62,15 @@ export class ProfilesService {
 
   private readonly deletionLocks = new Map<string, Promise<any>>();
 
+  private allowDemoFallback(isConfigured: boolean): boolean {
+    const isProduction = process.env.NODE_ENV === 'production';
+    return !isConfigured || (!isProduction && process.env.ENABLE_DEMO_FALLBACK === 'true');
+  }
+
   async getProfilesByDeviceId(deviceId: string): Promise<ViewingProfile[]> {
     const cleanDeviceId = deviceId.trim();
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
     if (isConfigured) {
       const client = this.supabaseService.getClient()!;
@@ -111,7 +116,7 @@ export class ProfilesService {
 
   async getProfileById(profileId: string): Promise<ViewingProfile | null> {
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
     if (isConfigured) {
       const client = this.supabaseService.getClient()!;
@@ -164,7 +169,7 @@ export class ProfilesService {
     const voiceTtsEnabled = dto.voiceTtsEnabled ?? false;
     const avatarColor = dto.avatarColor || '#6366f1';
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
     if (isConfigured) {
       const client = this.supabaseService.getClient()!;
@@ -238,7 +243,7 @@ export class ProfilesService {
     authenticatedDeviceId?: string,
   ): Promise<ViewingProfile> {
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
     if (isConfigured) {
       const client = this.supabaseService.getClient()!;
@@ -323,7 +328,7 @@ export class ProfilesService {
 
   async touchProfile(profileId: string, authenticatedDeviceId?: string): Promise<ViewingProfile> {
     const isConfigured = this.supabaseService.isConfigured();
-    const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
     const nowIso = new Date().toISOString();
 
     if (isConfigured) {
@@ -402,7 +407,7 @@ export class ProfilesService {
 
     const executeDeletion = async () => {
       const isConfigured = this.supabaseService.isConfigured();
-      const allowDemoFallback = !isConfigured || process.env.ENABLE_DEMO_FALLBACK === 'true';
+      const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
       if (isConfigured) {
         const client = this.supabaseService.getClient()!;
