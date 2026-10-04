@@ -18,8 +18,11 @@ async function bootstrap() {
     ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim())
     : ['http://localhost:3000', 'http://10.0.2.2:3000', 'http://127.0.0.1:3000', 'http://localhost:8081'];
 
+  const hasWildcardOrigin = allowedOrigins.includes('*');
+  const enableCredentials = !hasWildcardOrigin;
+
   app.enableCors({
-    origin: allowedOrigins.includes('*') ? '*' : allowedOrigins,
+    origin: hasWildcardOrigin ? '*' : allowedOrigins,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
       'Content-Type',
@@ -29,9 +32,11 @@ async function bootstrap() {
       'X-Profile-Id',
       'X-Request-Id',
       'X-Operator-Token',
+      'X-Enrollment-Key',
+      'X-Device-Secret',
       'Accept',
     ],
-    credentials: true,
+    credentials: enableCredentials,
   });
 
   app.useGlobalPipes(

@@ -2,15 +2,20 @@ import {
   Injectable,
   Logger,
   OnModuleInit,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
+import * as jwt from 'jsonwebtoken';
 
 export interface DeviceTokenPayload {
   deviceId: string;
+  sub: string;
+  typ: string;
   iat: number;
-  exp?: number;
-  iss?: string;
+  exp: number;
+  iss: string;
+  aud: string;
   [key: string]: any;
 }
 
@@ -19,13 +24,29 @@ export interface VerifiedDeviceIdentity {
   payload: DeviceTokenPayload;
 }
 
+export interface DeviceEnrollmentResult {
+  deviceId: string;
+  deviceSecret: string;
+  token: string;
+  expires_in: number;
+  token_type: string;
+}
+
 @Injectable()
 export class DeviceTokenService implements OnModuleInit {
   private readonly logger = new Logger(DeviceTokenService.name);
   private secretKey: string;
+  private previousSecretKey?: string;
+  private enrollmentSecret?: string;
+  private readonly issuer: string;
+  private readonly audience: string;
 
   constructor() {
     this.secretKey = this.resolveSecretKey();
+    this.previousSecretKey = this.resolvePreviousSecretKey();
+    this.enrollmentSecret = this.resolveEnrollmentSecret();
+    this.issuer = process.env.JWT_ISSUER?.trim() || 'wisp-device-auth';
+    this.audience = process.env.JWT_AUDIENCE?.trim() || 'wisp-firetv-client';
   }
 
   onModuleInit() {
@@ -45,8 +66,8 @@ export class DeviceTokenService implements OnModuleInit {
   private resolveSecretKey(): string {
     const configured =
       process.env.DEVICE_AUTH_SECRET ||
-      process.env.SUPABASE_JWT_SECRET ||
-      process.env.JWT_SECRET;
+      process.env.JWT_SECRET ||
+      process.env.SUPABASE_JWT_SECRET;
     if (configured && configured.trim().length > 0) {
       return configured.trim();
     }
@@ -54,8 +75,113 @@ export class DeviceTokenService implements OnModuleInit {
     return 'wisp-dev-device-token-secret-2026';
   }
 
+  private resolvePreviousSecretKey(): string | undefined {
+    const configured =
+      process.env.DEVICE_AUTH_PREVIOUS_SECRET ||
+      process.env.JWT_PREVIOUS_SECRET;
+    return configured && configured.trim().length > 0 ? configured.trim() : undefined;
+  }
+
+  private resolveEnrollmentSecret(): string | undefined {
+    const configured =
+      process.env.DEVICE_ENROLLMENT_SECRET ||
+      process.env.FIRE_TV_PROVISIONING_SECRET;
+    if (configured && configured.trim().length > 0) {
+      return configured.trim();
+    }
+    // Deterministic enrollment secret for non-production / test environments
+    const isProduction = process.env.NODE_ENV === 'production';
+    return isProduction ? undefined : 'wisp-dev-device-enrollment-secret-2026';
+  }
+
   /**
-   * Cryptographically signs a verifiable device token with HMAC-SHA256
+   * Deterministically derives a high-entropy device secret for a given deviceId
+   * using HMAC-SHA256 with the master server secret. Unforgeable without server secret.
+   */
+  deriveDeviceSecret(deviceId: string): string {
+    const cleanId = (deviceId || '').trim();
+    if (!cleanId || cleanId.length < 3) {
+      throw new Error('deviceId must be a non-empty string with at least 3 characters');
+    }
+    return crypto
+      .createHmac('sha256', this.secretKey)
+      .update(`wisp-device-secret:${cleanId}`)
+      .digest('hex');
+  }
+
+  /**
+   * Performs constant-time verification of a candidate device secret for deviceId.
+   */
+  verifyDeviceSecret(deviceId: string, candidateSecret: string): boolean {
+    if (!candidateSecret || typeof candidateSecret !== 'string') return false;
+    const expected = this.deriveDeviceSecret(deviceId);
+    const candBuf = Buffer.from(candidateSecret.trim());
+    const expBuf = Buffer.from(expected);
+    if (candBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(candBuf, expBuf);
+  }
+
+  /**
+   * Performs constant-time verification of a candidate fleet enrollment key.
+   */
+  verifyEnrollmentKey(candidateKey?: string): boolean {
+    if (!candidateKey || typeof candidateKey !== 'string') return false;
+    if (!this.enrollmentSecret) return false;
+    const candBuf = Buffer.from(candidateKey.trim());
+    const expBuf = Buffer.from(this.enrollmentSecret);
+    if (candBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(candBuf, expBuf);
+  }
+
+  /**
+   * Authenticates device enrollment or token renewal:
+   * Requires either a valid fleet enrollment key (initial setup) OR a valid device secret (subsequent renewal).
+   * Prevents unauthenticated callers from minting tokens for arbitrary device IDs.
+   */
+  authenticateAndIssueToken(
+    deviceId: string,
+    credentials: {
+      deviceSecret?: string;
+      enrollmentKey?: string;
+    },
+    expiresInSeconds: number = 30 * 24 * 3600,
+  ): DeviceEnrollmentResult {
+    const cleanId = (deviceId || '').trim();
+    if (!cleanId || cleanId.length < 3) {
+      throw new UnauthorizedException('Invalid device identifier');
+    }
+
+    const isProduction = process.env.NODE_ENV === 'production';
+    if (isProduction && !this.enrollmentSecret && !this.secretKey) {
+      throw new ServiceUnavailableException('Device authentication service unconfigured');
+    }
+
+    const hasValidEnrollment = this.verifyEnrollmentKey(credentials.enrollmentKey);
+    const hasValidDeviceSecret = credentials.deviceSecret
+      ? this.verifyDeviceSecret(cleanId, credentials.deviceSecret)
+      : false;
+
+    if (!hasValidEnrollment && !hasValidDeviceSecret) {
+      throw new UnauthorizedException(
+        'Device authentication failed: valid enrollmentKey or deviceSecret required to issue token',
+      );
+    }
+
+    const persistentDeviceSecret = this.deriveDeviceSecret(cleanId);
+    const token = this.signDeviceToken(cleanId, expiresInSeconds);
+
+    return {
+      deviceId: cleanId,
+      deviceSecret: persistentDeviceSecret,
+      token,
+      expires_in: expiresInSeconds,
+      token_type: 'Bearer',
+    };
+  }
+
+  /**
+   * Cryptographically signs a verifiable device token using jsonwebtoken (HMAC-SHA256)
+   * with standard RFC 7519 claims: sub, deviceId, iss, aud, iat, exp.
    */
   signDeviceToken(
     deviceId: string,
@@ -66,28 +192,24 @@ export class DeviceTokenService implements OnModuleInit {
       throw new Error('deviceId must be a non-empty string with at least 3 characters');
     }
 
-    const nowSec = Math.floor(Date.now() / 1000);
-    const payload: DeviceTokenPayload = {
+    const payload = {
       deviceId: cleanDeviceId,
-      iat: nowSec,
-      exp: nowSec + expiresInSeconds,
-      iss: 'wisp-device-auth',
+      typ: 'device-token',
     };
 
-    const header = { alg: 'HS256', typ: 'JWT' };
-    const encodedHeader = Buffer.from(JSON.stringify(header)).toString('base64url');
-    const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    const signature = crypto
-      .createHmac('sha256', this.secretKey)
-      .update(`${encodedHeader}.${encodedPayload}`)
-      .digest('base64url');
-
-    return `${encodedHeader}.${encodedPayload}.${signature}`;
+    return jwt.sign(payload, this.secretKey, {
+      algorithm: 'HS256',
+      expiresIn: expiresInSeconds,
+      issuer: this.issuer,
+      audience: this.audience,
+      subject: cleanDeviceId,
+    });
   }
 
   /**
-   * Cryptographically verifies a signed device token or Supabase JWT token.
-   * Performs constant-time comparison against expected HMAC-SHA256 signature.
+   * Cryptographically verifies a signed device token using jsonwebtoken.
+   * Enforces algorithm HS256, issuer, audience, and expiration with 60s clock tolerance.
+   * Supports key rotation via previousSecretKey.
    */
   verifyDeviceToken(token: string): VerifiedDeviceIdentity {
     if (!token || typeof token !== 'string') {
@@ -97,66 +219,72 @@ export class DeviceTokenService implements OnModuleInit {
     const cleanToken = token.trim();
     const parts = cleanToken.split('.');
     if (parts.length !== 3) {
-      throw new UnauthorizedException('Malformed device token structure: token must have header.payload.signature format');
+      throw new UnauthorizedException(
+        'Malformed device token structure: token must have header.payload.signature format',
+      );
     }
 
-    const [headerB64, payloadB64, signatureB64] = parts;
+    const verifyOptions: jwt.VerifyOptions = {
+      algorithms: ['HS256'],
+      issuer: this.issuer,
+      audience: this.audience,
+      clockTolerance: 60,
+    };
 
-    // Verify cryptographic signature with constant-time comparison
-    const expectedSignature = crypto
-      .createHmac('sha256', this.secretKey)
-      .update(`${headerB64}.${payloadB64}`)
-      .digest('base64url');
-
-    const sigBuf = Buffer.from(signatureB64);
-    const expBuf = Buffer.from(expectedSignature);
-
-    let isValidSignature =
-      sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
-
-    // If primary secret failed and a secondary JWT secret is configured, attempt fallback
-    if (
-      !isValidSignature &&
-      process.env.SUPABASE_JWT_SECRET &&
-      process.env.SUPABASE_JWT_SECRET.trim() !== this.secretKey
-    ) {
-      const fallbackSig = crypto
-        .createHmac('sha256', process.env.SUPABASE_JWT_SECRET.trim())
-        .update(`${headerB64}.${payloadB64}`)
-        .digest('base64url');
-      const fallBuf = Buffer.from(fallbackSig);
-      if (sigBuf.length === fallBuf.length && crypto.timingSafeEqual(sigBuf, fallBuf)) {
-        isValidSignature = true;
-      }
-    }
-
-    if (!isValidSignature) {
-      throw new UnauthorizedException('Invalid device token cryptographic signature');
-    }
-
-    // Parse payload
-    let payload: DeviceTokenPayload;
+    let decoded: any;
     try {
-      payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
-    } catch {
-      throw new UnauthorizedException('Invalid device token payload encoding');
-    }
-
-    // Expiration verification
-    if (payload.exp && typeof payload.exp === 'number') {
-      const nowSec = Math.floor(Date.now() / 1000);
-      if (nowSec > payload.exp) {
+      decoded = jwt.verify(cleanToken, this.secretKey, verifyOptions);
+    } catch (err: any) {
+      if (err instanceof jwt.TokenExpiredError) {
         throw new UnauthorizedException('Device token has expired');
       }
+
+      // Check key rotation with previousSecretKey if configured
+      if (this.previousSecretKey) {
+        try {
+          decoded = jwt.verify(cleanToken, this.previousSecretKey, verifyOptions);
+        } catch (prevErr: any) {
+          if (prevErr instanceof jwt.TokenExpiredError) {
+            throw new UnauthorizedException('Device token has expired');
+          }
+        }
+      }
+
+      // If Supabase JWT secret is configured as a secondary verifier, check with standard claims
+      if (
+        !decoded &&
+        process.env.SUPABASE_JWT_SECRET &&
+        process.env.SUPABASE_JWT_SECRET.trim() !== this.secretKey
+      ) {
+        try {
+          decoded = jwt.verify(
+            cleanToken,
+            process.env.SUPABASE_JWT_SECRET.trim(),
+            {
+              algorithms: ['HS256'],
+              clockTolerance: 60,
+            },
+          );
+        } catch {
+          // Fall through to unauthorized
+        }
+      }
+
+      if (!decoded) {
+        throw new UnauthorizedException('Invalid device token cryptographic signature');
+      }
     }
 
-    // Extract device identity from standard claim keys
-    const deviceId = (payload.deviceId || payload.device_id || payload.sub || '').toString().trim();
+    // Extract device identity from verified standard claims
+    const deviceId = (decoded.deviceId || decoded.sub || decoded.device_id || '').toString().trim();
     if (!deviceId || deviceId.length < 3) {
       throw new UnauthorizedException('Device token does not contain a valid device identity claim');
     }
 
-    return { deviceId, payload };
+    return {
+      deviceId,
+      payload: decoded as DeviceTokenPayload,
+    };
   }
 
   /**
@@ -190,9 +318,18 @@ export class DeviceTokenService implements OnModuleInit {
     if (!isProduction && allowInsecureDev && typeof request.headers['x-device-id'] === 'string') {
       const devId = request.headers['x-device-id'].trim();
       if (devId.length >= 3) {
+        const now = Math.floor(Date.now() / 1000);
         return {
           deviceId: devId,
-          payload: { deviceId: devId, iat: Math.floor(Date.now() / 1000) },
+          payload: {
+            deviceId: devId,
+            sub: devId,
+            typ: 'dev-token',
+            iat: now,
+            exp: now + 3600,
+            iss: this.issuer,
+            aud: this.audience,
+          },
         };
       }
     }

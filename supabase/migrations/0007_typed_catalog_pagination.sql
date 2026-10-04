@@ -70,10 +70,10 @@ begin
       )
     )
   order by
-    case when p_ascending then p.title end asc,
-    case when not p_ascending then p.title end desc,
-    case when p_ascending then p.id end asc,
-    case when not p_ascending then p.id end desc
+    case when p_ascending then p.title end asc nulls last,
+    case when not p_ascending then p.title end desc nulls last,
+    case when p_ascending then p.id end asc nulls last,
+    case when not p_ascending then p.id end desc nulls last
   limit v_limit;
 end;
 $$;

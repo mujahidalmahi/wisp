@@ -14,15 +14,17 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@wisp/ai-engine": "*",
     "@nestjs/common": "^10.4.4",
     "@nestjs/config": "^3.2.3",
     "@nestjs/core": "^10.4.4",
     "@nestjs/platform-express": "^10.4.4",
     "@nestjs/throttler": "^6.0.0",
     "@supabase/supabase-js": "^2.45.4",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@wisp/ai-engine": "*",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "jsonwebtoken": "^9.0.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },

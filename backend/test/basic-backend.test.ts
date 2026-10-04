@@ -6,6 +6,8 @@ import path from 'path';
 import { validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { ConfigService } from '@nestjs/config';
+import * as jwtPkg from 'jsonwebtoken';
+const jwt: typeof import('jsonwebtoken') = (jwtPkg as any).default || jwtPkg;
 
 import { CatalogService } from '../dist/modules/catalog/catalog.service.js';
 import { ProfilesService } from '../dist/modules/profiles/profiles.service.js';
@@ -776,8 +778,8 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
   });
 
   it('rejects requests with expired device tokens', () => {
-    // Generate token that expired 10 seconds ago
-    const expiredToken = tokenService.signDeviceToken('firetv-expired', -10);
+    // Generate token that expired 120 seconds ago (exceeds 60s clock tolerance)
+    const expiredToken = tokenService.signDeviceToken('firetv-expired', -120);
     const req: any = {
       headers: { authorization: `Bearer ${expiredToken}` },
       query: {},
@@ -889,11 +891,23 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     }
   });
 
-  it('issues verifiable device token via AuthController.issueDeviceToken', () => {
+  it('rejects unauthenticated arbitrary-device token issuance requests', () => {
     const authController = new AuthController(tokenService);
-    const result = authController.issueDeviceToken({ deviceId: 'firetv-device-test-01' });
+    assert.throws(
+      () => authController.issueDeviceToken({ deviceId: 'victim-device-id' }),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('enrolls device with fleet enrollment key and issues persistent deviceSecret and token', () => {
+    const authController = new AuthController(tokenService);
+    const result = authController.enrollDevice({
+      deviceId: 'firetv-device-test-01',
+      enrollmentKey: 'wisp-dev-device-enrollment-secret-2026',
+    });
     assert.equal(result.deviceId, 'firetv-device-test-01');
     assert.ok(result.token);
+    assert.ok(result.deviceSecret);
     assert.equal(result.token_type, 'Bearer');
 
     // Token must authenticate with guard
@@ -905,6 +919,57 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     const passed = guard.canActivate(createMockContext(req));
     assert.equal(passed, true);
     assert.equal(req.deviceId, 'firetv-device-test-01');
+  });
+
+  it('allows token renewal using enrolled deviceSecret without re-sending enrollmentKey', () => {
+    const authController = new AuthController(tokenService);
+    const enrollment = authController.enrollDevice({
+      deviceId: 'firetv-renewal-test',
+      enrollmentKey: 'wisp-dev-device-enrollment-secret-2026',
+    });
+
+    const renewal = authController.issueDeviceToken({
+      deviceId: 'firetv-renewal-test',
+      deviceSecret: enrollment.deviceSecret,
+    });
+    assert.equal(renewal.deviceId, 'firetv-renewal-test');
+    assert.ok(renewal.token);
+
+    const req: any = {
+      headers: { authorization: `Bearer ${renewal.token}` },
+      query: {},
+      body: {},
+    };
+    assert.equal(guard.canActivate(createMockContext(req)), true);
+  });
+
+  it('strictly rejects cross-device impersonation attacks using another device secret or wrong key', () => {
+    const authController = new AuthController(tokenService);
+    const aliceEnrollment = authController.enrollDevice({
+      deviceId: 'alice-device-123',
+      enrollmentKey: 'wisp-dev-device-enrollment-secret-2026',
+    });
+
+    // Bob tries to mint token for Alice using Bob's secret
+    const bobSecret = tokenService.deriveDeviceSecret('bob-device-999');
+    assert.throws(
+      () =>
+        authController.issueDeviceToken({
+          deviceId: 'alice-device-123',
+          deviceSecret: bobSecret,
+        }),
+      { name: 'UnauthorizedException' },
+    );
+
+    // Attacker tries to mint token with invalid enrollment key
+    assert.throws(
+      () =>
+        authController.enrollDevice({
+          deviceId: 'alice-device-123',
+          enrollmentKey: 'forged-attacker-key',
+        }),
+      { name: 'UnauthorizedException' },
+    );
   });
 
   it('enforces DeviceAuthGuard at class level on ContextController and ProfilesController', () => {
@@ -1586,6 +1651,295 @@ describe('Phase 1 Basic Backend: PostgreSQL Migration Invariants & RPC Security'
     );
   });
 });
+
+describe('Phase 1 Basic Backend: End-to-End Device Enrollment, Token Issuance & Cross-Device Access Rejection', () => {
+  const tokenService = new DeviceTokenService();
+  const authController = new AuthController(tokenService);
+  const guard = new DeviceAuthGuard(tokenService);
+
+  function createMockContext(req: any) {
+    return {
+      switchToHttp: () => ({
+        getRequest: () => req,
+      }),
+    } as any;
+  }
+
+  it('proves unauthenticated callers cannot mint tokens for arbitrary devices', () => {
+    assert.throws(
+      () => authController.issueDeviceToken({ deviceId: 'victim-device-4k' }),
+      { name: 'UnauthorizedException' },
+    );
+
+    assert.throws(
+      () =>
+        authController.issueDeviceToken({
+          deviceId: 'victim-device-4k',
+          deviceSecret: 'invalid-secret-payload',
+        }),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('completes full lifecycle: enroll device, issue token, renew token, and access protected resources', async () => {
+    // 1. Initial Device Enrollment with fleet enrollment key
+    const enrollment = authController.enrollDevice({
+      deviceId: 'firetv-device-alice',
+      enrollmentKey: 'wisp-dev-device-enrollment-secret-2026',
+    });
+
+    assert.equal(enrollment.deviceId, 'firetv-device-alice');
+    assert.ok(enrollment.token);
+    assert.ok(enrollment.deviceSecret);
+    assert.equal(enrollment.token_type, 'Bearer');
+
+    // 2. Token Renewal using persistent device secret
+    const renewal = authController.issueDeviceToken({
+      deviceId: 'firetv-device-alice',
+      deviceSecret: enrollment.deviceSecret,
+    });
+    assert.equal(renewal.deviceId, 'firetv-device-alice');
+    assert.ok(renewal.token);
+
+    // 3. Authenticate against guard
+    const req: any = {
+      headers: { authorization: `Bearer ${renewal.token}` },
+      query: {},
+      body: {},
+    };
+    assert.equal(guard.canActivate(createMockContext(req)), true);
+    assert.equal(req.deviceId, 'firetv-device-alice');
+  });
+
+  it('rejects cross-device token minting attacks when attacker uses their own secret or forged secret', () => {
+    const bobEnrollment = authController.enrollDevice({
+      deviceId: 'firetv-bob-attacker',
+      enrollmentKey: 'wisp-dev-device-enrollment-secret-2026',
+    });
+
+    // Attacker Bob attempts to mint a token for Alice using Bob's device secret
+    assert.throws(
+      () =>
+        authController.issueDeviceToken({
+          deviceId: 'firetv-alice-real',
+          deviceSecret: bobEnrollment.deviceSecret,
+        }),
+      { name: 'UnauthorizedException' },
+    );
+
+    // Attacker Bob attempts to mint a token for Alice with no secret
+    assert.throws(
+      () =>
+        authController.issueDeviceToken({
+          deviceId: 'firetv-alice-real',
+        }),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('rejects cross-device resource access when attacker presents valid token for another device', async () => {
+    const bobEnrollment = authController.enrollDevice({
+      deviceId: 'firetv-bob-attacker',
+      enrollmentKey: 'wisp-dev-device-enrollment-secret-2026',
+    });
+
+    // 1. Bob attempts to spoof query deviceId=firetv-alice-real while authenticated as Bob
+    const spoofReq: any = {
+      headers: { authorization: `Bearer ${bobEnrollment.token}` },
+      query: { deviceId: 'firetv-alice-real' },
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(spoofReq)),
+      { name: 'ForbiddenException' },
+    );
+
+    // 2. Bob attempts to access Alice's profile on bootstrap
+    const mockSupabase = createMockSupabaseService({
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            single: async () => ({
+              data: { id: 'alice-profile-uuid', device_id: 'firetv-alice-real' },
+              error: null,
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const catalog = new CatalogService(mockSupabase);
+    const profiles = new ProfilesService(mockSupabase);
+    const contextService = new ContextService(mockSupabase, catalog, profiles);
+
+    // Bob presents his authenticated device ID but requests Alice's profile ID
+    await assert.rejects(
+      async () =>
+        contextService.getFireTvBootstrap('ep-1', 'firetv-bob-attacker', 5000, 'alice-profile-uuid'),
+      { name: 'ForbiddenException' },
+    );
+  });
+
+  it('rejects tokens with forged signatures, wrong issuer, or malformed payloads', () => {
+    const forgedToken = jwt.sign(
+      { sub: 'firetv-alice', deviceId: 'firetv-alice' },
+      'attacker-secret-key-that-does-not-match',
+      { algorithm: 'HS256', expiresIn: 3600, issuer: 'wisp-device-auth', audience: 'wisp-firetv-client' },
+    );
+    assert.throws(
+      () => tokenService.verifyDeviceToken(forgedToken),
+      { name: 'UnauthorizedException' },
+    );
+
+    const wrongIssuerToken = jwt.sign(
+      { sub: 'firetv-alice', deviceId: 'firetv-alice' },
+      'wisp-dev-device-token-secret-2026',
+      { algorithm: 'HS256', expiresIn: 3600, issuer: 'wrong-issuer', audience: 'wisp-firetv-client' },
+    );
+    assert.throws(
+      () => tokenService.verifyDeviceToken(wrongIssuerToken),
+      { name: 'UnauthorizedException' },
+    );
+
+    const wrongAudToken = jwt.sign(
+      { sub: 'firetv-alice', deviceId: 'firetv-alice' },
+      'wisp-dev-device-token-secret-2026',
+      { algorithm: 'HS256', expiresIn: 3600, issuer: 'wisp-device-auth', audience: 'wrong-audience' },
+    );
+    assert.throws(
+      () => tokenService.verifyDeviceToken(wrongAudToken),
+      { name: 'UnauthorizedException' },
+    );
+  });
+});
+
+describe('Phase 1 Basic Backend: Catalog Pagination Contract & Episode Shape Invariants', () => {
+  it('strictly rejects offset parameter and enforces cursor pagination contract', async () => {
+    const config = new ConfigService({});
+    const supabase = new SupabaseService(config);
+    const catalog = new CatalogService(supabase);
+
+    // Initial page without cursor
+    const page1 = await catalog.listPrograms({ limit: 1 });
+    assert.equal(page1.items.length, 1);
+    assert.ok(page1.pagination.next_cursor);
+    assert.equal(page1.pagination.has_more, true);
+
+    // Second page using continuation cursor
+    const page2 = await catalog.listPrograms({ limit: 1, cursor: page1.pagination.next_cursor! });
+    assert.equal(page2.items.length, 1);
+    assert.notEqual(page2.items[0].id, page1.items[0].id);
+
+    // Validation with whitelist / forbidNonWhitelisted rejects extraneous offset parameter
+    const dto = plainToInstance(GetProgramsQueryDto, { limit: 10, offset: 5 });
+    const errors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+    assert.ok(errors.some((e) => e.property === 'offset'));
+  });
+
+  it('preserves empty database results: returns [] without falling back to demo fixtures', async () => {
+    const mockSupabase = createMockSupabaseService({
+      rpc: async () => ({ data: [], error: null }),
+      from: () => ({
+        select: () => ({
+          eq: () => ({
+            order: () => ({
+              order: () => ({
+                limit: async () => ({ data: [], error: null }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const catalog = new CatalogService(mockSupabase);
+    const result = await catalog.listPrograms({ limit: 10 });
+    assert.deepEqual(result.items, []);
+    assert.equal(result.pagination.has_more, false);
+    assert.equal(result.pagination.next_cursor, null);
+  });
+
+  it('populates program_title and program_slug in database episode responses matching fallback shape', async () => {
+    const mockSupabase = createMockSupabaseService({
+      from: (tbl: string) => {
+        if (tbl === 'episodes') {
+          return {
+            select: () => ({
+              eq: (_col: string, val: any) => ({
+                eq: () => ({
+                  single: async () => ({
+                    data: {
+                      id: 'ep-uuid-1',
+                      program_id: 'prog-uuid-1',
+                      season_number: 1,
+                      episode_number: 1,
+                      title: 'Episode One',
+                      summary: 'Episode summary',
+                      duration_ms: 600000,
+                      video_stream_url: 'https://video.mp4',
+                      thumbnail_url: 'https://thumb.jpg',
+                      intro_end_ms: 10000,
+                      credits_start_ms: 580000,
+                      default_bucket_sec: 15,
+                      is_published: true,
+                      programs: {
+                        title: 'Joined Program Title',
+                        slug: 'joined-program-slug',
+                      },
+                    },
+                    error: null,
+                  }),
+                  order: () => ({
+                    order: async () => ({
+                      data: [{ id: 'ep-uuid-1', season_number: 1, episode_number: 1 }],
+                      error: null,
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        return {} as any;
+      },
+    });
+
+    const catalog = new CatalogService(mockSupabase);
+    const episode = await catalog.getEpisodeById('ep-uuid-1');
+    assert.equal(episode.program_title, 'Joined Program Title');
+    assert.equal(episode.program_slug, 'joined-program-slug');
+    assert.equal(episode.id, 'ep-uuid-1');
+  });
+
+  it('forwards lookbackMs through getSpoilerSafeContext to database RPC', async () => {
+    let capturedLookback: number | null = null;
+    const mockSupabase = createMockSupabaseService({
+      rpc: async (name: string, params: any) => {
+        if (name === 'get_spoiler_safe_context') {
+          capturedLookback = params.p_lookback_ms;
+        }
+        return {
+          data: {
+            metadata: { program_title: 'Prog', episode_title: 'Ep', season_number: 1, episode_number: 1, playback_position_ms: 5000 },
+            active_scene: { scene_index: 1, scene_title: 'S1', location_name: 'Loc', spoiler_safe_summary: 'Sum', quick_action_chips: [] },
+            prior_scenes: [],
+            recent_transcript: [],
+            unlocked_entities: [],
+          },
+          error: null,
+        };
+      },
+    });
+
+    const catalog = new CatalogService(mockSupabase);
+    const profiles = new ProfilesService(mockSupabase);
+    const contextService = new ContextService(mockSupabase, catalog, profiles);
+
+    await contextService.getSpoilerSafeContext('ep-uuid-1', 5000, 240000);
+    assert.equal(capturedLookback, 240000);
+  });
+});
+
 
 
 

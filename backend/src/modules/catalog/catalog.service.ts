@@ -364,18 +364,22 @@ export class CatalogService {
       }
     }
 
-    filtered.sort((a, b) =>
-      ascending ? a.title.localeCompare(b.title) : b.title.localeCompare(a.title),
-    );
+    filtered.sort((a, b) => {
+      const cmp = a.title.localeCompare(b.title);
+      if (cmp !== 0) return ascending ? cmp : -cmp;
+      return ascending ? a.id.localeCompare(b.id) : b.id.localeCompare(a.id);
+    });
 
-    // Apply cursor in fallback
+    // Stable cursor filtering in fallback
     if (cursorData) {
-      const idx = filtered.findIndex((p) => p.id === cursorData!.id);
-      if (idx >= 0) {
-        filtered = filtered.slice(idx + 1);
-      }
-    } else if (query.offset && query.offset > 0) {
-      filtered = filtered.slice(query.offset);
+      const idx = filtered.findIndex((p) =>
+        ascending
+          ? p.title.localeCompare(cursorData!.title) > 0 ||
+            (p.title === cursorData!.title && p.id > cursorData!.id)
+          : p.title.localeCompare(cursorData!.title) < 0 ||
+            (p.title === cursorData!.title && p.id < cursorData!.id),
+      );
+      filtered = idx >= 0 ? filtered.slice(idx) : [];
     }
 
     const hasMore = filtered.length > limit;
