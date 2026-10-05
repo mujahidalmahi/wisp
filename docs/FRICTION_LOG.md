@@ -63,3 +63,24 @@
 - **Workaround Implemented:** Added `"allowImportingTsExtensions": true` and `"rewriteRelativeImportExtensions": true` to `backend/tsconfig.json`. This leverages TypeScript 5.7+'s ability to resolve `.ts` relative imports and automatically rewrite them during JavaScript emission.
 - **Actionable Recommendation:** Monorepo templates combining Node native TypeScript execution packages and NestJS application services should preconfigure `rewriteRelativeImportExtensions: true` in downstream consuming projects.
 
+---
+
+### [FL-005] Node.js Native Test Runner (`node --test`) Hangs When Importing NestJS Main File Due to Eager `bootstrap()` Execution
+- **Date:** 2026-10-04
+- **Component / SDK:** Node.js v24 Test Runner (`node --test`) / NestJS Entrypoint (`backend/src/main.ts`)
+- **Severity:** Medium
+- **Expected Behavior:** Importing helper functions (such as environment validators or configuration loaders) from `main.ts` or compiled `dist/main.js` into test suites should not start background HTTP listeners or hang the test runner.
+- **Actual Behavior:** Node.js top-level execution in `main.ts` invoked `bootstrap()` upon being imported by the test file. NestJS started listening on port 3000, leaving an active TCP server handle in the libuv event loop and preventing `node --test` from terminating.
+- **Workaround Implemented:** Decoupled `validateEnvironment` into a dedicated `common/config/environment.validator.ts` module and guarded `main.ts` with a CLI entrypoint check (`require.main === module` or `process.argv[1]` matching `main.js`/`main.ts`) before running `bootstrap()`.
+- **Actionable Recommendation:** Always decouple environment validation, configuration factories, and standalone startup hooks from the NestJS application entrypoint to guarantee that test runners can inspect configuration logic without triggering HTTP listener side-effects.
+
+---
+
+### [FL-006] PostgreSQL 18 Schema Permissions and `SECURITY DEFINER` Caller Resolution in Embedded PGlite Integration Testing
+- **Date:** 2026-10-05
+- **Component / SDK:** PostgreSQL 18 / `@electric-sql/pglite` / Supabase Migrations (`0006`, `0007`)
+- **Severity:** Medium
+- **Expected Behavior:** Running Supabase migration scripts against embedded PostgreSQL instances with created roles (`anon`, `authenticated`, `service_role`) should evaluate role-based RPC checks (`public.is_service_role_caller()`) seamlessly.
+- **Actual Behavior:** In PostgreSQL 18, `SECURITY DEFINER` functions switch `current_user` to the function definer (`postgres`), causing naive checks like `current_user = 'service_role'` to fail. Furthermore, PostgreSQL 18 default schema ACLs deny non-owner roles table access unless explicit grants are executed.
+- **Workaround Implemented:** Replicated the production `is_service_role_caller()` logic from `0002_temporal_context_functions.sql` inspecting `session_user` and `current_setting('role')`, and added explicit schema/table privilege grants to `service_role` in the test setup.
+- **Actionable Recommendation:** When writing real PostgreSQL migration integration tests with `pglite`, emulate Supabase's full auth role context and default schema grants before running multi-role authorization assertions.
