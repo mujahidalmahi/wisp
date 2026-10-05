@@ -32,6 +32,7 @@ async function bootstrap() {
       'X-Profile-Id',
       'X-Request-Id',
       'X-Operator-Token',
+      'X-Enrollment-Code',
       'X-Enrollment-Key',
       'X-Device-Secret',
       'Accept',

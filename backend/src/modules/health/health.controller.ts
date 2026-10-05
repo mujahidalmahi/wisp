@@ -29,9 +29,8 @@ export class HealthController {
 
   /**
    * Readiness probe checking service operational state.
-   * Public / anonymous response: returns safe high-level status without leaking internal database metrics or error traces.
-   * Internal / operator response: returns full diagnostic telemetry when authorized via X-Operator-Token or Bearer token header.
-   * Credentials in query parameters are strictly forbidden. Default fallback tokens are prohibited.
+   * - Public / anonymous path: Returns lightweight status based on configuration without executing database roundtrips.
+   * - Internal / operator path: Authenticates credentials BEFORE running active database health check to prevent DB exhaustion.
    */
   @Get('readiness')
   async getReadiness(
@@ -39,14 +38,8 @@ export class HealthController {
     @Headers('x-operator-token') operatorToken?: string,
     @Headers('authorization') authHeader?: string,
   ) {
-    const dbHealth = await this.supabaseService.checkHealth();
     const isProduction = process.env.NODE_ENV === 'production';
-    const isReady =
-      dbHealth.status === 'ok' || (!isProduction && dbHealth.status === 'unconfigured');
-
-    if (!isReady) {
-      res.status(HttpStatus.SERVICE_UNAVAILABLE);
-    }
+    const isConfigured = this.supabaseService.isConfigured();
 
     const providedToken =
       (typeof operatorToken === 'string' && operatorToken.trim().length > 0
@@ -56,7 +49,7 @@ export class HealthController {
         ? authHeader.slice(7).trim()
         : undefined);
 
-    // If caller explicitly requests operator telemetry with an authorization header
+    // 1. Protected Operator Diagnostic Path: Authenticate BEFORE performing database work
     if (providedToken) {
       const expectedToken =
         process.env.INTERNAL_OPERATOR_TOKEN || process.env.OPERATOR_TOKEN;
@@ -78,7 +71,15 @@ export class HealthController {
         throw new UnauthorizedException('Invalid operator credentials');
       }
 
-      // Validated operator receives full diagnostic metrics
+      // Validated operator receives full diagnostic metrics after health probe
+      const dbHealth = await this.supabaseService.checkHealth();
+      const isReady =
+        dbHealth.status === 'ok' || (!isProduction && dbHealth.status === 'unconfigured');
+
+      if (!isReady) {
+        res.status(HttpStatus.SERVICE_UNAVAILABLE);
+      }
+
       return {
         status: isReady ? 'ok' : 'unhealthy',
         service: 'wisp-backend',
@@ -87,7 +88,13 @@ export class HealthController {
       };
     }
 
-    // Public / anonymous callers receive sanitized status without leaking latency or error strings
+    // 2. Public / Anonymous Path:
+    // Does NOT perform active database work per request to prevent Denial-of-Service.
+    const isReady = isConfigured || !isProduction;
+    if (!isReady) {
+      res.status(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
     return {
       status: isReady ? 'ok' : 'unhealthy',
       service: 'wisp-backend',

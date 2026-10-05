@@ -16,10 +16,16 @@ export class RequestCorrelationInterceptor implements NestInterceptor {
     const req = http.getRequest<Request & { correlationId?: string; startTimeHr?: bigint }>();
     const res = http.getResponse<Response>();
 
-    const correlationId =
+    const rawCorrelationId =
       (req.headers['x-request-id'] as string) ||
-      (req.headers['x-correlation-id'] as string) ||
-      randomUUID();
+      (req.headers['x-correlation-id'] as string);
+
+    // Sanitize correlationId: strictly alphanumeric, dash, underscore (max 64 chars) to prevent CRLF header injection
+    const correlationId =
+      typeof rawCorrelationId === 'string' &&
+      /^[a-zA-Z0-9_\-]{1,64}$/.test(rawCorrelationId.trim())
+        ? rawCorrelationId.trim()
+        : randomUUID();
 
     const startTimeHr = process.hrtime.bigint();
     req.correlationId = correlationId;

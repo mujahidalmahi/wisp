@@ -429,6 +429,10 @@ export class ProfilesService {
             if (rpcError.code === 'P0002' || msg.includes('profile_not_found') || rpcError.code === 'PGRST116') {
               throw new NotFoundException(`Profile with ID '${profileId}' not found`);
             }
+            if (msg.includes('service_role_required')) {
+              this.logger.error('Database delete_viewing_profile RPC rejected caller: service_role required');
+              throw new ServiceUnavailableException('Database authorization failure');
+            }
             if (rpcError.code === '42501' || msg.includes('forbidden_device_mismatch')) {
               throw new ForbiddenException('Profile does not belong to the authenticated device');
             }

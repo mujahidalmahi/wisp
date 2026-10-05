@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
-import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { HealthModule } from './modules/health/health.module';
 import { SupabaseModule } from './modules/supabase/supabase.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
@@ -40,6 +40,10 @@ import { RequestCorrelationInterceptor } from './common/interceptors/correlation
     {
       provide: APP_INTERCEPTOR,
       useClass: RequestCorrelationInterceptor,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
     },
   ],
 })

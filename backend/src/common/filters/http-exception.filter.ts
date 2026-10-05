@@ -58,10 +58,30 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
         status = HttpStatus.BAD_REQUEST;
         errorName = 'BadRequestException';
         message = 'Invalid identifier or syntax provided in query parameters.';
-      } else if (err.code === 'PGRST116') {
+      } else if (err.code === 'PGRST116' || err.code === 'P0002') {
         status = HttpStatus.NOT_FOUND;
         errorName = 'NotFoundException';
         message = 'Resource not found.';
+      } else if (err.code === '23514') {
+        status = HttpStatus.BAD_REQUEST;
+        errorName = 'BadRequestException';
+        message = err.message || 'Check constraint violation.';
+      } else if (err.code === '42501') {
+        status = HttpStatus.FORBIDDEN;
+        errorName = 'ForbiddenException';
+        message = err.message || 'Access denied for requested resource.';
+      } else if (
+        err.code === '08006' ||
+        err.code === '08001' ||
+        err.code === '57P01' ||
+        err.code === '53300' ||
+        err.code === 'ECONNREFUSED' ||
+        err.code === 'ECONNRESET' ||
+        err.message?.includes('fetch failed')
+      ) {
+        status = HttpStatus.SERVICE_UNAVAILABLE;
+        errorName = 'ServiceUnavailableException';
+        message = 'Database service temporarily unavailable.';
       } else {
         this.logger.error(
           `[${correlationId}] Unhandled System Error: ${exception.message}`,

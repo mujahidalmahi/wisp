@@ -853,6 +853,39 @@ describe('Phase 1 Basic Backend: DeviceAuthGuard Authorization Boundaries (Item 
     );
   });
 
+  it('rejects parameter pollution attacks when deviceId is provided as an array with conflicting values', () => {
+    const validToken = tokenService.signDeviceToken('dev-real');
+    const req: any = {
+      headers: { authorization: `Bearer ${validToken}` },
+      query: { deviceId: ['dev-real', 'dev-polluted-attacker'] },
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(req)),
+      { name: 'ForbiddenException' },
+    );
+
+    const bodyReq: any = {
+      headers: { authorization: `Bearer ${validToken}` },
+      query: {},
+      body: { deviceId: ['dev-polluted-attacker'] },
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(bodyReq)),
+      { name: 'ForbiddenException' },
+    );
+
+    const nonStringReq: any = {
+      headers: { authorization: `Bearer ${validToken}` },
+      query: { deviceId: { $ne: null } },
+      body: {},
+    };
+    assert.throws(
+      () => guard.canActivate(createMockContext(nonStringReq)),
+      { name: 'ForbiddenException' },
+    );
+  });
+
   it('allows unverified x-device-id ONLY when ALLOW_INSECURE_DEV_DEVICE_HEADERS is explicitly enabled in non-production', () => {
     const origFlag = process.env.ALLOW_INSECURE_DEV_DEVICE_HEADERS;
     const origEnv = process.env.NODE_ENV;
@@ -1191,6 +1224,43 @@ describe('Phase 1 Basic Backend: GlobalHttpExceptionFilter Postgres Error Mappin
     const res = getResponse();
     assert.equal(res.statusCode, 404);
     assert.equal(res.jsonBody.error, 'NotFoundException');
+  });
+
+  it('maps Postgres 23514 check constraint violation to 400 BadRequestException', () => {
+    const err: any = new Error('check constraint violated: CANNOT_DELETE_SOLE_PROFILE');
+    err.code = '23514';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 400);
+    assert.equal(res.jsonBody.error, 'BadRequestException');
+  });
+
+  it('maps Postgres 42501 permission denied to 403 ForbiddenException', () => {
+    const err: any = new Error('permission denied for table profiles');
+    err.code = '42501';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.jsonBody.error, 'ForbiddenException');
+  });
+
+  it('maps Postgres P0002 no data found to 404 NotFoundException', () => {
+    const err: any = new Error('no data found');
+    err.code = 'P0002';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.jsonBody.error, 'NotFoundException');
+  });
+
+  it('maps Postgres connection and server shutdown errors to 503 ServiceUnavailableException', () => {
+    const err: any = new Error('connection failed');
+    err.code = '08006';
+    const { getResponse } = createMockHost(err);
+    const res = getResponse();
+    assert.equal(res.statusCode, 503);
+    assert.equal(res.jsonBody.error, 'ServiceUnavailableException');
+    assert.equal(res.jsonBody.message, 'Database service temporarily unavailable.');
   });
 });
 
@@ -1589,10 +1659,21 @@ describe('Phase 1 Basic Backend: Production Demo Fallback Quarantine & Startup G
   });
 });
 
+function resolveMigrationFile(relPath: string): string {
+  const candidates = [
+    path.resolve(process.cwd(), relPath),
+    path.resolve(process.cwd(), '..', relPath),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return candidates[0];
+}
+
 describe('Phase 1 Basic Backend: PostgreSQL Migration Invariants & RPC Security', () => {
   it('0006_atomic_profile_deletion.sql enforces advisory locking, row-level locks, and service-role execution', () => {
     const sql = fs.readFileSync(
-      path.resolve('supabase/migrations/0006_atomic_profile_deletion.sql'),
+      resolveMigrationFile('supabase/migrations/0006_atomic_profile_deletion.sql'),
       'utf8',
     );
 
@@ -1629,7 +1710,7 @@ describe('Phase 1 Basic Backend: PostgreSQL Migration Invariants & RPC Security'
 
   it('0007_typed_catalog_pagination.sql provides parameterized cursor RPC without raw string filter interpolation', () => {
     const sql = fs.readFileSync(
-      path.resolve('supabase/migrations/0007_typed_catalog_pagination.sql'),
+      resolveMigrationFile('supabase/migrations/0007_typed_catalog_pagination.sql'),
       'utf8',
     );
 
@@ -1810,6 +1891,213 @@ describe('Phase 1 Basic Backend: End-to-End Device Enrollment, Token Issuance & 
       () => tokenService.verifyDeviceToken(wrongAudToken),
       { name: 'UnauthorizedException' },
     );
+  });
+
+  it('enforces secure device enrollment via single-use pairing codes and prevents attacker enrollment or code replay', () => {
+    // 1. Create one-time challenge code for charlie
+    const challenge = tokenService.createEnrollmentChallenge('firetv-charlie');
+    assert.equal(challenge.deviceId, 'firetv-charlie');
+    assert.ok(challenge.enrollmentCode);
+
+    // 2. Attacker Bob tries to use Charlie's pairing code to enroll Bob's device
+    assert.throws(
+      () =>
+        authController.enrollDevice({
+          deviceId: 'firetv-bob-attacker',
+          enrollmentCode: challenge.enrollmentCode,
+        }),
+      { name: 'UnauthorizedException' },
+    );
+
+    // 3. Attacker Bob tries to register an arbitrary device without an enrollment code or operator auth
+    assert.throws(
+      () =>
+        authController.enrollDevice({
+          deviceId: 'firetv-unauthorized-target',
+        }),
+      { name: 'UnauthorizedException' },
+    );
+
+    // 4. Legitimate device Charlie enrolls using the single-use pairing code
+    const charlieEnroll = authController.enrollDevice({
+      deviceId: 'firetv-charlie',
+      enrollmentCode: challenge.enrollmentCode,
+    });
+    assert.equal(charlieEnroll.deviceId, 'firetv-charlie');
+    assert.ok(charlieEnroll.token);
+    assert.ok(charlieEnroll.deviceSecret);
+
+    // 5. Code replay: Attacker Bob tries to reuse Charlie's already-consumed pairing code
+    assert.throws(
+      () =>
+        authController.enrollDevice({
+          deviceId: 'firetv-charlie',
+          enrollmentCode: challenge.enrollmentCode,
+        }),
+      { name: 'UnauthorizedException' },
+    );
+  });
+
+  it('strictly rejects shared fleet enrollment keys under production environment', () => {
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      assert.throws(
+        () =>
+          authController.enrollDevice({
+            deviceId: 'firetv-production-device',
+            enrollmentKey: 'wisp-dev-device-enrollment-secret-2026',
+          }),
+        (err: any) => {
+          return (
+            err.name === 'UnauthorizedException' &&
+            err.message.includes('Shared fleet enrollment keys are strictly forbidden in production')
+          );
+        },
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+
+  it('enforces strict RFC 7519 token claims and proves unsafe Supabase JWT fallback is removed', () => {
+    // Missing typ claim
+    const noTypToken = jwt.sign(
+      { sub: 'firetv-alice', deviceId: 'firetv-alice' },
+      'wisp-dev-device-token-secret-2026',
+      { algorithm: 'HS256', expiresIn: 3600, issuer: 'wisp-device-auth', audience: 'wisp-firetv-client' },
+    );
+    assert.throws(
+      () => tokenService.verifyDeviceToken(noTypToken),
+      (err: any) => err.message.includes('expected device-token'),
+    );
+
+    // Mismatched sub and deviceId
+    const mismatchedSubToken = jwt.sign(
+      { sub: 'firetv-victim', deviceId: 'firetv-attacker', typ: 'device-token' },
+      'wisp-dev-device-token-secret-2026',
+      { algorithm: 'HS256', expiresIn: 3600, issuer: 'wisp-device-auth', audience: 'wisp-firetv-client' },
+    );
+    assert.throws(
+      () => tokenService.verifyDeviceToken(mismatchedSubToken),
+      (err: any) => err.message.includes('Claim mismatch'),
+    );
+
+    // Unsafe Supabase JWT fallback test: Token signed with SUPABASE_JWT_SECRET
+    const origSupabaseSecret = process.env.SUPABASE_JWT_SECRET;
+    process.env.SUPABASE_JWT_SECRET = 'supabase-untrusted-signing-key-secret-123';
+    try {
+      const supabaseSignedToken = jwt.sign(
+        { sub: 'firetv-alice', deviceId: 'firetv-alice', typ: 'device-token' },
+        'supabase-untrusted-signing-key-secret-123',
+        { algorithm: 'HS256', expiresIn: 3600 },
+      );
+      // Must be rejected because the unsafe fallback was removed
+      assert.throws(
+        () => tokenService.verifyDeviceToken(supabaseSignedToken),
+        { name: 'UnauthorizedException' },
+      );
+    } finally {
+      process.env.SUPABASE_JWT_SECRET = origSupabaseSecret;
+    }
+  });
+
+  it('implements complete device credential lifecycle: revocation, rotation, and renewal', () => {
+    const devId = 'firetv-lifecycle-device';
+    const challenge = tokenService.createEnrollmentChallenge(devId);
+    const enrollment = authController.enrollDevice({
+      deviceId: devId,
+      enrollmentCode: challenge.enrollmentCode,
+    });
+
+    // 1. Initial valid token verifies cleanly
+    const verified = tokenService.verifyDeviceToken(enrollment.token);
+    assert.equal(verified.deviceId, devId);
+
+    // 2. Revoke device
+    tokenService.revokeDevice(devId, 'Compromised hardware reported');
+    assert.equal(tokenService.isDeviceRevoked(devId), true);
+
+    // Revoked device cannot verify active tokens
+    assert.throws(
+      () => tokenService.verifyDeviceToken(enrollment.token),
+      (err: any) => err.message.includes('has been revoked'),
+    );
+
+    // Revoked device cannot renew tokens
+    assert.throws(
+      () =>
+        authController.issueDeviceToken({
+          deviceId: devId,
+          deviceSecret: enrollment.deviceSecret,
+        }),
+      (err: any) => err.message.includes('has been revoked'),
+    );
+
+    // Revoked device cannot re-enroll
+    assert.throws(
+      () =>
+        tokenService.authenticateAndIssueToken(devId, {
+          deviceSecret: enrollment.deviceSecret,
+        }),
+      (err: any) => err.message.includes('has been revoked'),
+    );
+
+    // 3. Unrevoke and test secret rotation
+    tokenService.unrevokeDevice(devId);
+    assert.equal(tokenService.isDeviceRevoked(devId), false);
+
+    // Rotate secret epoch for this device
+    const nextEpoch = tokenService.rotateDeviceSecret(devId);
+    assert.equal(nextEpoch, 2);
+
+    // Old device secret is now invalid after rotation
+    assert.throws(
+      () =>
+        authController.issueDeviceToken({
+          deviceId: devId,
+          deviceSecret: enrollment.deviceSecret,
+        }),
+      { name: 'UnauthorizedException' },
+    );
+
+    // New device secret derives and renews successfully
+    const newSecret = tokenService.deriveDeviceSecret(devId);
+    assert.notEqual(newSecret, enrollment.deviceSecret);
+    const renewed = authController.issueDeviceToken({
+      deviceId: devId,
+      deviceSecret: newSecret,
+    });
+    assert.ok(renewed.token);
+  });
+
+  it('clamps fallback playback position to episode duration and returns active_scene: null without fabricating initial scene', async () => {
+    const config = new ConfigService({});
+    const supabase = new SupabaseService(config);
+    const catalog = new CatalogService(supabase);
+    const profiles = new ProfilesService(supabase);
+    const contextService = new ContextService(supabase, catalog, profiles);
+
+    // Request playback far beyond episode duration (duration is 734,000ms for tears-of-steel ep 1)
+    const bootstrapBeyond = await contextService.getFireTvBootstrap(
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+      'firetv-clamp-test',
+      9999999,
+    );
+    assert.equal(bootstrapBeyond.safe_playback_ms, bootstrapBeyond.episode_duration_ms);
+
+    // Request playback at 0ms before any scene starts (if activeScene is null, active_scene must be null, not fabricated Initial Scene)
+    const bootstrapAtStart = await contextService.getFireTvBootstrap(
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+      'firetv-clamp-test',
+      0,
+    );
+    if (!bootstrapAtStart.active_scene) {
+      assert.equal(bootstrapAtStart.active_scene, null);
+      assert.deepEqual(bootstrapAtStart.prewarmed_cards, []);
+    } else {
+      assert.notEqual(bootstrapAtStart.active_scene.title, 'Initial Scene');
+    }
   });
 });
 

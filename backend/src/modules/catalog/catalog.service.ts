@@ -252,66 +252,20 @@ export class CatalogService {
     if (isConfigured) {
       const client = this.supabaseService.getClient()!;
       try {
-        const { data, error } = await this.supabaseService.executeWithRetry(async () => {
-          // Attempt typed database RPC first if implemented and available
-          if (typeof client.rpc === 'function') {
-            try {
-              const rpcRes = await client.rpc('get_paginated_programs', {
-                p_limit: limit + 1,
-                p_cursor_title: cursorData ? cursorData.title : null,
-                p_cursor_id: cursorData ? cursorData.id : null,
-                p_ascending: ascending,
-                p_genre: query.genre?.trim() || null,
-                p_query: query.q?.trim() || null,
-              });
-              if (rpcRes && rpcRes.data !== null && !rpcRes.error) {
-                return rpcRes;
-              }
-            } catch {
-              // Fall back to query builder below
-            }
-          }
+        if (typeof client.rpc !== 'function') {
+          throw new ServiceUnavailableException('Database catalog RPC get_paginated_programs is unavailable');
+        }
 
-          let qb = client
-            .from('programs')
-            .select(
-              'id, slug, title, genre, synopsis, release_year, rating, poster_url, backdrop_url, license_info, is_active',
-            )
-            .eq('is_active', true)
-            .order('title', { ascending })
-            .order('id', { ascending });
-
-          // Stable cursor filtering using validated, sanitized cursorData
-          if (cursorData) {
-            if (ascending) {
-              qb = qb.or(
-                `title.gt."${cursorData.title}",and(title.eq."${cursorData.title}",id.gt."${cursorData.id}")`,
-              );
-            } else {
-              qb = qb.or(
-                `title.lt."${cursorData.title}",and(title.eq."${cursorData.title}",id.lt."${cursorData.id}")`,
-              );
-            }
-          }
-
-          if (query.genre) {
-            const cleanGenre = query.genre.replace(/[^\w\s-]/g, '').trim();
-            if (cleanGenre) {
-              qb = qb.ilike('genre', `%${cleanGenre}%`);
-            }
-          }
-
-          // Strict PostgREST filter injection protection (Item 3)
-          if (query.q) {
-            const cleanQ = query.q.replace(/[^a-zA-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
-            if (cleanQ) {
-              qb = qb.or(`title.ilike.%${cleanQ}%,synopsis.ilike.%${cleanQ}%`);
-            }
-          }
-
-          // Fetch limit + 1 to determine if next page exists
-          return qb.limit(limit + 1);
-        });
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client.rpc('get_paginated_programs', {
+            p_limit: limit + 1,
+            p_cursor_title: cursorData ? cursorData.title : null,
+            p_cursor_id: cursorData ? cursorData.id : null,
+            p_ascending: ascending,
+            p_genre: query.genre?.trim() || null,
+            p_query: query.q?.trim() || null,
+          }),
+        );
 
         if (error) {
           this.logger.error(`Database program query failed: ${error.message}`);
@@ -523,8 +477,9 @@ export class CatalogService {
 
         if (data && !error) {
           const raw = data as any;
-          const programTitle = raw.programs?.title || raw.program_title;
-          const programSlug = raw.programs?.slug || raw.program_slug;
+          const programsObj = Array.isArray(raw.programs) ? raw.programs[0] : raw.programs;
+          const programTitle = programsObj?.title || raw.program_title;
+          const programSlug = programsObj?.slug || raw.program_slug;
 
           // Sibling lookup with retry policy (Item 10)
           const { data: siblings } = await this.supabaseService.executeWithRetry(async () =>

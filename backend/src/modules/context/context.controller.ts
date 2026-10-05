@@ -30,8 +30,8 @@ export class ContextController {
     @CurrentDevice() _authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const playbackMs = query.playbackMs ?? 0;
-    const lookbackMs = query.lookbackMs ?? 120000;
+    const playbackMs = Math.max(0, query.playbackMs ?? 0);
+    const lookbackMs = Math.max(0, query.lookbackMs ?? 120000);
 
     res.setHeader('Cache-Control', 'private, no-cache, no-transform');
     res.setHeader('X-Wisp-Temporal-Floor-Ms', playbackMs.toString());
@@ -51,7 +51,7 @@ export class ContextController {
     @CurrentDevice() authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const playbackMs = query.playbackMs ?? 0;
+    const playbackMs = Math.max(0, query.playbackMs ?? 0);
 
     res.setHeader('Cache-Control', 'private, no-cache, no-transform');
     res.setHeader('X-Wisp-Temporal-Floor-Ms', playbackMs.toString());

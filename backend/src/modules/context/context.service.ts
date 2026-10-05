@@ -33,10 +33,12 @@ export interface Stage1BootstrapResponse {
   active_scene: {
     scene_index: number;
     title: string;
+    scene_title: string;
     location_name?: string;
     start_time_ms: number;
     end_time_ms: number;
     summary: string;
+    spoiler_safe_summary: string;
     quick_action_chips: QuickActionChipItem[];
   } | null;
   prewarmed_cards: Array<{
@@ -140,7 +142,8 @@ export class ContextService {
       }
     }
 
-    // Standalone fallback path with lookbackMs propagation
+    // Standalone fallback path with lookbackMs propagation and episode verification
+    await this.catalogService.getEpisodeById(episodeId);
     return this.contextSource.getSpoilerSafeContext(episodeId, safeMs, lookbackMs);
   }
 
@@ -220,14 +223,34 @@ export class ContextService {
           if (payload.found === false) {
             throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
           }
-          // Ensure zero-typing quick action chips invariant (Rule #4)
+
           if (
             payload.active_scene &&
-            (!payload.active_scene.quick_action_chips ||
-              payload.active_scene.quick_action_chips.length === 0)
+            (Object.keys(payload.active_scene).length === 0 ||
+              (!payload.active_scene.title && !payload.active_scene.scene_title))
           ) {
-            payload.active_scene.quick_action_chips = this.getDefaultQuickActionChips();
+            payload.active_scene = null;
+          } else if (payload.active_scene) {
+            payload.active_scene.title = payload.active_scene.title || payload.active_scene.scene_title;
+            payload.active_scene.scene_title = payload.active_scene.scene_title || payload.active_scene.title;
+            payload.active_scene.summary = payload.active_scene.summary || payload.active_scene.spoiler_safe_summary;
+            payload.active_scene.spoiler_safe_summary =
+              payload.active_scene.spoiler_safe_summary || payload.active_scene.summary;
+            if (
+              !payload.active_scene.quick_action_chips ||
+              payload.active_scene.quick_action_chips.length === 0
+            ) {
+              payload.active_scene.quick_action_chips = this.getDefaultQuickActionChips();
+            }
           }
+
+          if (payload.session && Object.keys(payload.session).length === 0) {
+            payload.session = null;
+          }
+          if (payload.profile && Object.keys(payload.profile).length === 0) {
+            payload.profile = null;
+          }
+
           return payload as Stage1BootstrapResponse;
         }
 
@@ -258,8 +281,12 @@ export class ContextService {
     // 3. Resilient In-Memory Fallback Path (only for standalone / unconfigured mode)
     const ep = await this.catalogService.getEpisodeById(episodeId);
     const episodeDurationMs = ep?.duration_ms ?? 0;
+    const clampedPlaybackMs =
+      episodeDurationMs > 0
+        ? Math.min(Math.max(0, safeMs), episodeDurationMs)
+        : Math.max(0, safeMs);
 
-    const context = await this.inMemoryFallback.getSpoilerSafeContext(episodeId, safeMs);
+    const context = await this.inMemoryFallback.getSpoilerSafeContext(episodeId, clampedPlaybackMs);
     const activeScene = context.active_scene;
 
     // Resolve profile from storage if profileId provided; otherwise return null
@@ -298,34 +325,34 @@ export class ContextService {
         ? {
             scene_index: activeScene.scene_index,
             title: activeScene.scene_title,
+            scene_title: activeScene.scene_title,
             location_name: activeScene.location_name,
             start_time_ms: 0,
-            end_time_ms: safeMs + 30000,
+            end_time_ms: Math.min(
+              clampedPlaybackMs + 30000,
+              episodeDurationMs > 0 ? episodeDurationMs : clampedPlaybackMs + 30000,
+            ),
             summary: activeScene.spoiler_safe_summary,
+            spoiler_safe_summary: activeScene.spoiler_safe_summary,
             quick_action_chips: chips,
           }
-        : {
-            scene_index: 1,
-            title: 'Initial Scene',
-            start_time_ms: 0,
-            end_time_ms: 60000,
-            summary: 'Playback starting...',
-            quick_action_chips: chips,
-          },
-      prewarmed_cards: [
-        {
-          action_type: 'scene_explain',
-          provider: 'groq',
-          card: {
-            headline: 'Active Scene Context',
-            summary: activeScene?.spoiler_safe_summary || 'Contextual viewing ready.',
-            spoilerSafeUpToMs: safeMs,
-            followUpActions: ['Tell me more', 'Characters here'],
-          },
-        },
-      ],
+        : null,
+      prewarmed_cards: activeScene
+        ? [
+            {
+              action_type: 'scene_explain',
+              provider: 'groq',
+              card: {
+                headline: 'Active Scene Context',
+                summary: activeScene.spoiler_safe_summary,
+                spoilerSafeUpToMs: clampedPlaybackMs,
+                followUpActions: ['Tell me more', 'Characters here'],
+              },
+            },
+          ]
+        : [],
       session: null, // Do not fabricate fake session IDs (Item 7)
-      safe_playback_ms: safeMs,
+      safe_playback_ms: clampedPlaybackMs,
       episode_duration_ms: episodeDurationMs,
     };
   }
