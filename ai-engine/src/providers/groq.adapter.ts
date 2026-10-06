@@ -1,7 +1,9 @@
 import type { AiCompletionRequest, AiCompletionResult, IAiModelAdapter } from '../types/index.ts';
+import { AiProviderHttpError } from './errors.ts';
 
 export class GroqModelAdapter implements IAiModelAdapter {
   readonly name = 'groq';
+  readonly timeoutMs = 2000;
   private readonly apiKey?: string;
   private readonly model: string;
 
@@ -22,6 +24,7 @@ export class GroqModelAdapter implements IAiModelAdapter {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
+      signal: req.signal,
       body: JSON.stringify({
         model: this.model,
         response_format: { type: 'json_object' },
@@ -35,7 +38,7 @@ export class GroqModelAdapter implements IAiModelAdapter {
     });
 
     if (!response.ok) {
-      throw new Error(`Groq HTTP ${response.status}: ${await response.text()}`);
+      throw new AiProviderHttpError('groq', response.status, await response.text());
     }
 
     const data = (await response.json()) as any;
