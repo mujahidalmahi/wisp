@@ -54,6 +54,17 @@
 
 ---
 
+### [FL-004] NestJS `nest build` Fails When Consuming Monorepo Packages With Explicit `.ts` Imports (TS5097)
+- **Date:** 2026-10-02
+- **Component / SDK:** NestJS CLI (`@nestjs/cli` + `tsc`) / TypeScript 5.7+ / Monorepo Workspace Imports
+- **Severity:** Medium
+- **Expected Behavior:** When `@wisp/backend` imports `@wisp/ai-engine` (which uses `.ts` extension specifiers for Node.js native execution per FL-003), NestJS compilation via `nest build` should compile seamlessly.
+- **Actual Behavior:** TypeScript compiler (`tsc`) aborted with 36 instances of `error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled`.
+- **Workaround Implemented:** Added `"allowImportingTsExtensions": true` and `"rewriteRelativeImportExtensions": true` to `backend/tsconfig.json`. This leverages TypeScript 5.7+'s ability to resolve `.ts` relative imports and automatically rewrite them during JavaScript emission.
+- **Actionable Recommendation:** Monorepo templates combining Node native TypeScript execution packages and NestJS application services should preconfigure `rewriteRelativeImportExtensions: true` in downstream consuming projects.
+
+---
+
 ### [FL-005] `node --test` Reports A Fully Non-Executing Test File As `fail 0`, Because Unref'd Provider Timers Drain The Event Loop
 - **Date:** 2026-10-03
 - **Component / SDK:** Node.js `node:test` runner / `@wisp/ai-engine` provider router (`provider-router.ts`, `errors.ts`)
@@ -73,3 +84,25 @@
 - **Actual Behavior:** `main` relocated the Supabase project to a top-level `supabase/` and deleted the old `database/` tree, and updated `testing/database/schema-and-seeds.test.ts` to read `supabase/migrations/...` and `supabase/seed.sql`. Branches that predate the move still carry `database/migrations/...` and `database/seeds/seed_demo_catalog.sql`. A branch that "fixes" the fixture by pointing at its own layout therefore produces a file that merges without conflict (the two sides touch different lines) and then fails immediately after the merge, because the directory it names no longer exists. The failure surfaces as an unrelated-looking `ENOENT` in a database suite rather than as a layout conflict.
 - **Workaround Implemented:** Replaced the hardcoded `path.resolve` calls with a `readSqlAsset(...candidates)` helper that probes the post-move `supabase/` paths first and falls back to the pre-move `database/` paths, throwing a single error listing every path it tried when neither exists. The suite passes on both layouts, so the branch stays mergeable in either direction.
 - **Actionable Recommendation for Amazon / Maintainers:** Keep asset locations behind a single resolver module rather than inline `path.resolve` calls scattered across suites, and include directory moves in the branch-coordination policy so a reorg lands with a follow-up commit on every open branch in the same merge.
+
+---
+
+### [FL-007] Node.js Native Test Runner (`node --test`) Hangs When Importing NestJS Main File Due to Eager `bootstrap()` Execution
+- **Date:** 2026-10-04
+- **Component / SDK:** Node.js v24 Test Runner (`node --test`) / NestJS Entrypoint (`backend/src/main.ts`)
+- **Severity:** Medium
+- **Expected Behavior:** Importing helper functions (such as environment validators or configuration loaders) from `main.ts` or compiled `dist/main.js` into test suites should not start background HTTP listeners or hang the test runner.
+- **Actual Behavior:** Node.js top-level execution in `main.ts` invoked `bootstrap()` upon being imported by the test file. NestJS started listening on port 3000, leaving an active TCP server handle in the libuv event loop and preventing `node --test` from terminating.
+- **Workaround Implemented:** Decoupled `validateEnvironment` into a dedicated `common/config/environment.validator.ts` module and guarded `main.ts` with a CLI entrypoint check (`require.main === module` or `process.argv[1]` matching `main.js`/`main.ts`) before running `bootstrap()`.
+- **Actionable Recommendation:** Always decouple environment validation, configuration factories, and standalone startup hooks from the NestJS application entrypoint to guarantee that test runners can inspect configuration logic without triggering HTTP listener side-effects.
+
+---
+
+### [FL-008] PostgreSQL 18 Schema Permissions and `SECURITY DEFINER` Caller Resolution in Embedded PGlite Integration Testing
+- **Date:** 2026-10-05
+- **Component / SDK:** PostgreSQL 18 / `@electric-sql/pglite` / Supabase Migrations (`0006`, `0007`)
+- **Severity:** Medium
+- **Expected Behavior:** Running Supabase migration scripts against embedded PostgreSQL instances with created roles (`anon`, `authenticated`, `service_role`) should evaluate role-based RPC checks (`public.is_service_role_caller()`) seamlessly.
+- **Actual Behavior:** In PostgreSQL 18, `SECURITY DEFINER` functions switch `current_user` to the function definer (`postgres`), causing naive checks like `current_user = 'service_role'` to fail. Furthermore, PostgreSQL 18 default schema ACLs deny non-owner roles table access unless explicit grants are executed.
+- **Workaround Implemented:** Replicated the production `is_service_role_caller()` logic from `0002_temporal_context_functions.sql` inspecting `session_user` and `current_setting('role')`, and added explicit schema/table privilege grants to `service_role` in the test setup.
+- **Actionable Recommendation:** When writing real PostgreSQL migration integration tests with `pglite`, emulate Supabase's full auth role context and default schema grants before running multi-role authorization assertions.
