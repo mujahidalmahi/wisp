@@ -10,7 +10,7 @@
 [![Stack](https://img.shields.io/badge/Stack-React_Native_%E2%80%A2_NestJS_%E2%80%A2_Supabase-3ECF8E?style=for-the-badge)](./docs/ARCHITECTURE.md)
 [![AI Providers](https://img.shields.io/badge/AI-Groq_%E2%80%A2_Gemini_%E2%80%A2_OpenRouter-38BDF8?style=for-the-badge)](./docs/AI_ENGINE_GUIDE.md)
 
-[**Project Proposal**](./docs/PROPOSAL.md) • [**System Architecture**](./docs/ARCHITECTURE.md) • [**API Specification**](./docs/API_SPEC.md) • [**AI Engine Guide**](./docs/AI_ENGINE_GUIDE.md) • [**Repo Instructions**](./INSTRUCTIONS.md) • [**Contributing & Team Roles**](./CONTRIBUTING.md) • [**Friction Log**](./docs/FRICTION_LOG.md)
+[**Project Proposal**](./docs/PROPOSAL.md) • [**System Architecture**](./docs/ARCHITECTURE.md) • [**Database Architecture**](./docs/DATABASE_ARCHITECTURE.md) • [**API Specification**](./docs/API_SPEC.md) • [**AI Engine Guide**](./docs/AI_ENGINE_GUIDE.md) • [**Repo Instructions**](./INSTRUCTIONS.md) • [**Contributing & Team Roles**](./CONTRIBUTING.md) • [**Friction Log**](./docs/FRICTION_LOG.md)
 
 </div>
 
@@ -35,6 +35,7 @@ Wisp treats the **television program, current playback position, and 5-way D-pad
 | :--- | :--- |
 | **Zero-Typing 10-Foot UX** | Invoking Wisp with the Fire TV remote opens a `<100ms` Stage-1 drawer displaying the active scene header and **3–4 D-pad selectable Quick Action Chips**, plus dynamic follow-up pills on every AI card—eliminating tedious on-screen keyboard typing. |
 | **Deterministic Spoiler Safety** | Spoiler protection is enforced mathematically at the data boundary (`end_time_ms <= playback_position_ms` and `reveal_time_ms <= playback_position_ms`) in both PostgreSQL ([`0002_temporal_context_functions.sql`](./supabase/migrations/0002_temporal_context_functions.sql)) and the standalone [`temporal-filter.ts`](./ai-engine/src/context/temporal-filter.ts). |
+| **Temporal 16-Table Data Engine & Hybrid RAG** | PostgreSQL 15+ engine with 16 production tables, generated inclusive `int8range` scene bounds with GiST exclusion constraints, pure-SQL `float4[]` vector cosine similarity, Reciprocal Rank Fusion (RRF), zero-trust RLS policies, 4 trigger functions / 14 triggers, and 5 continuous percentile observability views ([`docs/DATABASE_ARCHITECTURE.md`](./docs/DATABASE_ARCHITECTURE.md)). |
 | **Modular AI Engine (`@wisp/ai-engine`)** | All AI feature pipelines (*Contextual Q&A*, *Entity Explainer*, *Scene Explainer*, *Episode Recap*, *Interactive Quiz*), prompt builders, and model adapters live in a framework-agnostic package ([`ai-engine/`](./ai-engine/README.md)) that can be developed and tested standalone without backend or database dependencies. |
 | **Household Viewing Modes** | One-click D-pad profile selector (`Quick Glance`, `Deep Lore`, `Family Mode`) dynamically tailors explanation length, tone, and vocabulary to who is watching in the living room. |
 | **Resilient Multi-Provider AI Gateway** | Server-side provider abstraction routing requests through **Groq** (`llama-3.3-70b-versatile` for sub-second TV card latency) → **Google Gemini Flash** → **OpenRouter** → **Ollama** (local development fallback), fronted by **Cloudflare Workers KV** 15-second timestamp bucket caching. |
@@ -130,6 +131,7 @@ npm run android:firetv
 | [**`CONTRIBUTING.md`**](./CONTRIBUTING.md) | Formal Role Distribution, Work Coordination Framework, Change-Control Matrix, and Quality Gates. |
 | [**`docs/PROPOSAL.md`**](./docs/PROPOSAL.md) | Refined project proposal, hackathon alignment, functional scope, and cost-control strategy. |
 | [**`docs/ARCHITECTURE.md`**](./docs/ARCHITECTURE.md) | End-to-end data flow, temporal anti-spoiler architecture, and AI provider routing matrix. |
+| [**`docs/DATABASE_ARCHITECTURE.md`**](./docs/DATABASE_ARCHITECTURE.md) | Production 16-table PostgreSQL schema, GiST temporal exclusion constraints, pure-SQL hybrid RRF search, zero-trust RLS matrix, and 8-suite test harness. |
 | [**`docs/AI_ENGINE_GUIDE.md`**](./docs/AI_ENGINE_GUIDE.md) | Developer guide for building standalone AI features and model adapters in `@wisp/ai-engine`. |
 | [**`docs/API_SPEC.md`**](./docs/API_SPEC.md) | REST API contracts (`/health`, `/context/:episodeId`, `/wisp/features`, `/wisp/query`) & programmatic SDK. |
 | [**`docs/FIRE_TV_UX_GUIDE.md`**](./docs/FIRE_TV_UX_GUIDE.md) | 10-foot typography scales, 5% overscan safe zones, and Fire TV remote D-pad key mappings. |
