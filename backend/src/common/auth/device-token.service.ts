@@ -447,25 +447,28 @@ export class DeviceTokenService implements OnModuleInit {
     // Non-production test/development convenience ONLY when explicitly enabled:
     const allowInsecureDev = process.env.ALLOW_INSECURE_DEV_DEVICE_HEADERS === 'true';
     const isProduction = process.env.NODE_ENV === 'production';
-    if (!isProduction && allowInsecureDev && typeof request.headers['x-device-id'] === 'string') {
-      const devId = request.headers['x-device-id'].trim();
-      if (devId.length >= 3) {
-        if (this.isDeviceRevoked(devId)) {
-          throw new UnauthorizedException(`Device '${devId}' has been revoked`);
-        }
-        const now = Math.floor(Date.now() / 1000);
-        return {
-          deviceId: devId,
-          payload: {
+    if (!isProduction && allowInsecureDev) {
+      const rawHeader = request.headers['x-firetv-device-id'] || request.headers['x-device-id'];
+      if (typeof rawHeader === 'string') {
+        const devId = rawHeader.trim();
+        if (devId.length >= 3) {
+          if (this.isDeviceRevoked(devId)) {
+            throw new UnauthorizedException(`Device '${devId}' has been revoked`);
+          }
+          const now = Math.floor(Date.now() / 1000);
+          return {
             deviceId: devId,
-            sub: devId,
-            typ: 'device-token',
-            iat: now,
-            exp: now + 3600,
-            iss: this.issuer,
-            aud: this.audience,
-          },
-        };
+            payload: {
+              deviceId: devId,
+              sub: devId,
+              typ: 'device-token',
+              iat: now,
+              exp: now + 3600,
+              iss: this.issuer,
+              aud: this.audience,
+            },
+          };
+        }
       }
     }
 
