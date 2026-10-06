@@ -47,3 +47,18 @@ node --test ai-engine/src/engine.test.ts
    ```
 2. Register it in [`AiFeatureRegistry`](../ai-engine/src/features/feature-registry.ts) (or dynamically via `engine.registerFeature(new ThemeAnalysisFeature())`).
 3. Both the standalone CLI (`ai-engine`), the NestJS backend (`POST /api/v1/wisp/query` and `GET /api/v1/wisp/features`), and the Fire TV client can immediately invoke `actionType: "theme_analysis"`.
+
+### 3.1 The Registry Is the Single Runtime Source of Truth
+
+`AiFeatureRegistry` drives both directions of the action-type contract, so a
+registered feature is never invisible to the model and never emitted undispatchable:
+
+| Direction | Mechanism |
+| :--- | :--- |
+| Prompt generation | `WispAiEngine.execute()` passes `listRegisteredActionTypes()` into `buildPrompts()`, so the `"actionType" must be exactly one of: ...` constraint names every registered feature, not just the five built-ins. |
+| Output validation | The same registry supplies `asActionTypeResolver()` to `formatResponseCard()`, so `validateChips()` accepts a registered custom action type instead of coercing it to `contextual_qa`. |
+
+`BaseAiFeatureModule` therefore stays framework-agnostic and registry-independent:
+it only renders whichever action types it is handed, falling back to the five
+built-ins when that list is omitted. Adding a feature therefore requires no
+prompt edits, and every card still satisfies the 2–4 `QuickActionChip` contract.

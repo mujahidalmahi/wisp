@@ -139,6 +139,16 @@ export interface AiCompletionRequest {
   userPrompt: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * Abort signal injected by {@link AiProviderRouter} to bound a single provider
+   * attempt. Adapters must forward this to `fetch` so the underlying socket is
+   * released, not merely abandoned.
+   */
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  globalTimeoutMs?: number;
+  minAttemptMs?: number;
+  quarantineMs?: number;
 }
 
 export interface AiCompletionResult {
@@ -149,9 +159,21 @@ export interface AiCompletionResult {
 
 export interface IAiModelAdapter {
   readonly name: string;
+  /**
+   * Per-provider wall-clock budget in milliseconds. Falls back to the router
+   * default when omitted, so custom adapters stay bounded without changes.
+   */
+  readonly timeoutMs?: number;
   isConfigured(): boolean;
   complete(request: AiCompletionRequest): Promise<AiCompletionResult>;
 }
+
+/**
+ * Predicate deciding whether an actionType can actually be dispatched by the
+ * engine. Backed by AiFeatureRegistry at runtime so dynamically registered
+ * features validate without being coerced.
+ */
+export type ActionTypeResolver = (actionType: string) => boolean;
 
 /**
  * Pluggable AI Feature Module interface
@@ -165,6 +187,13 @@ export interface IAiFeatureModule {
     input: AiQueryInput,
     context: TemporalProgramContext,
     profileMode: HouseholdProfileMode,
+    /**
+     * Action types the engine can dispatch. Supplied by the engine so a
+     * dynamically registered feature is advertised to the model. Falls back to
+     * the five built-ins when omitted, so a feature can still be prompted in
+     * isolation without the engine or registry.
+     */
+    availableActionTypes?: WispActionType[],
   ): AiCompletionRequest;
   formatResponseCard(
     rawModelOutput: string,
@@ -173,6 +202,7 @@ export interface IAiFeatureModule {
     profileMode: HouseholdProfileMode,
     providerName: string,
     latencyMs: number,
+    canResolveActionType?: ActionTypeResolver,
   ): WispResponseCard;
 }
 
@@ -186,4 +216,14 @@ export interface WispAiEngineConfig {
   ollamaBaseUrl?: string;
   ollamaModel?: string;
   enableCache?: boolean;
+  /** Default per-provider attempt budget in ms. Individual adapters may override. */
+  providerTimeoutMs?: number;
+  /**
+   * How long a provider is skipped after a credential or model-not-found fault.
+   * Expires automatically so a rotated key recovers without a restart.
+   */
+  providerQuarantineMs?: number;
+  globalTimeoutMs?: number;
+  minAttemptMs?: number;
+  adapters?: import('./index.ts').IAiModelAdapter[];
 }

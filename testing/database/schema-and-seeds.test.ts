@@ -3,19 +3,38 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * Resolves a SQL asset that has lived under two different roots across branches.
+ * `main` moved the Supabase project from `database/supabase` up to a top-level
+ * `supabase/`, while this branch still carries the pre-move `database/` layout.
+ * Probing both keeps the suite green on either side of that merge instead of
+ * failing on a path that no longer exists.
+ */
+function readSqlAsset(...candidates: string[]): string {
+  const rootDir = process.cwd();
+
+  for (const candidate of candidates) {
+    const resolved = path.resolve(rootDir, candidate);
+    if (fs.existsSync(resolved)) {
+      return fs.readFileSync(resolved, 'utf8');
+    }
+  }
+
+  throw new Error(
+    `Could not locate a SQL asset; tried: ${candidates.join(', ')} (cwd: ${rootDir})`,
+  );
+}
+
 describe('Database: Supabase PostgreSQL Migrations, Anti-Spoiler RPC & 3-Genre Seeds', () => {
-  const schemaSql = fs.readFileSync(
-    path.resolve('database/migrations/0001_initial_wisp_schema.sql'),
-    'utf8',
+  const schemaSql = readSqlAsset(
+    'supabase/migrations/0001_initial_wisp_schema.sql',
+    'database/migrations/0001_initial_wisp_schema.sql',
   );
-  const rpcSql = fs.readFileSync(
-    path.resolve('database/migrations/0002_temporal_context_functions.sql'),
-    'utf8',
+  const rpcSql = readSqlAsset(
+    'supabase/migrations/0002_temporal_context_functions.sql',
+    'database/migrations/0002_temporal_context_functions.sql',
   );
-  const seedSql = fs.readFileSync(
-    path.resolve('database/seeds/seed_demo_catalog.sql'),
-    'utf8',
-  );
+  const seedSql = readSqlAsset('supabase/seed.sql', 'database/seeds/seed_demo_catalog.sql');
 
   it('defines all core production tables and temporal composite indexes', () => {
     const requiredTables = [

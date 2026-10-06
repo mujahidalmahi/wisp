@@ -1,7 +1,7 @@
 # Playbook: Content & Temporal Graph Curation Agent
 
 ## Scope
-`database/migrations/**`, `database/seeds/**`
+`supabase/migrations/**`, `supabase/seed.sql`
 
 ## Responsibilities
 1. Curate public-domain / CC-BY video streams and segment them into `scene_contexts`, `transcript_segments`, `entities`, and `entity_appearances`.
