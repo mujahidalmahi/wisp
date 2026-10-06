@@ -54,18 +54,40 @@
 
 ---
 
-### [FL-004] NestJS `nest build` Fails When Consuming Monorepo Packages With Explicit `.ts` Imports (TS5097)
-- **Date:** 2026-10-02
-- **Component / SDK:** NestJS CLI (`@nestjs/cli` + `tsc`) / TypeScript 5.7+ / Monorepo Workspace Imports
+### [FL-004] `engines: ">=20.0.0"` Advertises Node 20, But Every `npm test` Script Requires Node 24
+- **Date:** 2026-10-01
+- **Component / SDK:** Node.js v20.20.2 vs v24 TypeScript Runner / `ai-engine` verification loop
 - **Severity:** Medium
-- **Expected Behavior:** When `@wisp/backend` imports `@wisp/ai-engine` (which uses `.ts` extension specifiers for Node.js native execution per FL-003), NestJS compilation via `nest build` should compile seamlessly.
-- **Actual Behavior:** TypeScript compiler (`tsc`) aborted with 36 instances of `error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled`.
-- **Workaround Implemented:** Added `"allowImportingTsExtensions": true` and `"rewriteRelativeImportExtensions": true` to `backend/tsconfig.json`. This leverages TypeScript 5.7+'s ability to resolve `.ts` relative imports and automatically rewrite them during JavaScript emission.
-- **Actionable Recommendation:** Monorepo templates combining Node native TypeScript execution packages and NestJS application services should preconfigure `rewriteRelativeImportExtensions: true` in downstream consuming projects.
+- **Expected Behavior:** `npm test`, `npm run test:ai`, `npm run test:database`, and `npm run ai:playground` should execute on the Node version declared in root `package.json` `engines`, so a contributor who satisfies the declared engine constraint is never blocked from running the test suite.
+- **Actual Behavior:** Root `package.json` declares `"engines": { "node": ">=20.0.0", "npm": ">=10.0.0" }`, but all six `test:*` scripts invoke `node --test "<glob>.test.ts"` against raw TypeScript. On the declared-minimum Node 20.20.2 every one of them dies before running a single assertion with `TypeError [ERR_UNKNOWN_FILE_EXTENSION]: Unknown file extension ".ts"`. `ai-engine/package.json` declares no `engines` at all. Installing deps is not possible as a fallback because the repo ships no lockfile and no `node_modules`, so `npm ci` cannot resolve the tree.
+- **Workaround Implemented:** Ran the suites through an on-demand Node 24 binary, `npx -y node@24 --test ...`, which requires no repo mutation, no dependency install, and no lockfile. For type checking, used `npx -y -p typescript@5.7.3 tsc --noEmit`; this still reports 11 pre-existing `TS2580`/`TS2307` errors because `@types/node` is absent with no `node_modules` installed, so typecheck baseline was captured by `git stash` before/after comparison rather than by expecting a clean exit.
+- **Actionable Recommendation:** Set root `engines.node` to `>=24.0.0`, or declare the real floor that supports type stripping (Node 22.18+/23.6+), so `engines` matches the toolchain the scripts actually require. Adding `erasableSyntaxOnly` to `ai-engine/tsconfig.json` and committing a lockfile would additionally make `npm ci && npm run typecheck` reproducible on a clean checkout.
 
 ---
 
-### [FL-005] `node --test` Reports A Fully Non-Executing Test File As `fail 0`, Because Unref'd Provider Timers Drain The Event Loop
+### [FL-005] `AbortController` Cannot Be Composed From `Node <20.3`, and `setTimeout` Return Type Collides Between The DOM And Node Libs
+- **Date:** 2026-10-01
+- **Component / SDK:** `@wisp/ai-engine` provider router / `AbortSignal.any` / TypeScript `lib: ["ES2022", "DOM"]`
+- **Severity:** Medium
+- **Expected Behavior:** Cancelling a provider attempt should deliver one signal that reflects both the router's per-provider budget and the caller's own cancellation, and a router timer should never hold the process open.
+- **Actual Behavior:** Cancelling the caller's request could never stop real in-flight provider work, because only the router's budget controller was aborted and the caller's `signal` was never forwarded into the adapter. `AbortSignal.any` is the standard way to compose two signals but is unavailable before Node 20.3, and `setTimeout(...).unref()` fails to type-check under `lib: DOM` (returns `number`), leaving a timer that keeps the process alive. Compounding this, an **already-aborted `AbortSignal` does not replay its `abort` event to listeners attached afterwards**, so the usual `addEventListener('abort', ...)` guard silently never fires for a caller signal that was cancelled before the attempt began. Any attempt-bounding code that only relies on the listener then hangs for the full duration of a provider call.
+- **Workaround Implemented:** Added `composeAbortSignal` (uses `AbortSignal.any` when present, otherwise relies on the router mirroring caller aborts onto its own controller) plus an `unrefTimer` helper that probes for `unref` instead of assuming a Node timer, and a distinct `AiProviderCallerAbortError` so caller cancellation is never mistaken for a provider timeout or folded into the aggregate provider-failure error. Because aborted signals do not replay, `attemptWithinBudget` now checks `signal.aborted` explicitly at two points: before creating any timer or calling the provider, and again inside the deadline promise before attaching its listener.
+- **Actionable Recommendation:** Declare `"lib": ["ES2022", "DOM"]` together with `@types/node` so Node timers type-check, and consider a small shared "attempt scope" helper (`runWithinBudget(signal, budgetMs, fn)`) so every AI subsystem gets correctly composed cancellation instead of re-deriving it.
+
+---
+
+### [FL-006] Per-Provider Timeout Budgets Are Coupled To The Global Ceiling, So Raising Them Silently Truncates The Fallback Chain
+- **Date:** 2026-10-02
+- **Component / SDK:** `@wisp/ai-engine` provider router (`AiProviderRouter`, `groq/gemini/openrouter/ollama.adapter.ts`)
+- **Severity:** Medium
+- **Expected Behavior:** Raising a slow provider's default timeout (a review request to move Gemini to 8000ms and OpenRouter to 10000ms) should only make that provider more patient. Instead it changes which providers are reachable at all.
+- **Actual Behavior:** `AiProviderRouter` bounds a request by `globalTimeoutMs` (default 15000) and refuses to start an attempt once the remaining budget drops below `minAttemptMs` (default 3000). Every adapter budget is therefore only granted if the *preceding* budgets leave at least `minAttemptMs` behind. Measured against the real router with all four providers hanging: the shipped defaults `2000/3000/4000/15000` attempt all four providers, while the proposed `5000/8000/10000/15000` attempts only Groq and Gemini and then raises `AiGlobalTimeoutError` after 13s — OpenRouter is never reached and the local `Ollama` fallback becomes unreachable code, regressing the "validated real-provider routing and automatic fallback chain" deliverable. The safe envelope is `groq + gemini + openrouter <= globalTimeoutMs - minAttemptMs`; `2500/4000/4500/15000` was measured to keep all four reachable.
+- **Workaround Implemented:** The proposed numbers were **not** applied. `AiCompletionRequest` already carries `globalTimeoutMs`, `minAttemptMs` and `timeoutMs`, and `WispAiEngineConfig` already accepts `adapters?: IAiModelAdapter[]`, so a deployment can raise both the ceiling and an individual adapter's `timeoutMs` together without a code change; that is the supported way to buy the headroom. A regression test now pins the coupling (`keeps every shipped provider reachable inside the default global budget` asserts `sum(groq, gemini, openrouter) <= globalTimeoutMs - minAttemptMs` against the shipped constants and fails if the proposed `5000/8000/10000/15000` is ever applied), so any future default change that truncates the chain fails loudly.
+- **Actionable Recommendation:** Treat the global ceiling, `minAttemptMs` and the per-adapter budgets as one budget to be tuned from real p95 latency telemetry rather than three independent constants, and assert `sum(remote adapter budgets) <= globalTimeoutMs - minAttemptMs` in CI so a "just raise this timeout" change cannot silently disable fallback.
+
+---
+
+### [FL-007] `node --test` Reports A Fully Non-Executing Test File As `fail 0`, Because Unref'd Provider Timers Drain The Event Loop
 - **Date:** 2026-10-03
 - **Component / SDK:** Node.js `node:test` runner / `@wisp/ai-engine` provider router (`provider-router.ts`, `errors.ts`)
 - **Severity:** High
@@ -76,7 +98,29 @@
 
 ---
 
-### [FL-006] The Supabase Project Moved From `database/supabase` To A Top-Level `supabase/` On `main`, Silently Inverting The Test Fixtures On Every Other Branch
+### [FL-008] `provider-timeouts.test.ts` Cancels Every Test In The File, And `npm run typecheck` Cannot Run At All
+- **Date:** 2026-10-03
+- **Component / SDK:** `testing/ai-integration/provider-timeouts.test.ts` / root `npm run typecheck`
+- **Severity:** Medium
+- **Expected Behavior:** A green `npm run test:ai` / `npm run typecheck` should mean the suite and the types were verified, so a reviewer can trust the reported pass count.
+- **Actual Behavior:** Two independent blind spots. First, `provider-timeouts.test.ts` cancels **all 28 of its own tests** when run on its own (`node --test testing/ai-integration/provider-timeouts.test.ts` → `tests 28 / pass 0 / fail 0 / cancelled 28`), each with `error: 'Promise resolution is still pending but the event loop has already resolved'`. Node reports these as neither passing nor failing, so a full `npm run test:ai` prints `# fail 0` and looks clean while a quarter of the suite never executed an assertion. Second, `npm run typecheck` exits 127 (`sh: 1: tsc: not found`) in every workspace because `typescript` is a root devDependency that is not installed and the repo ships no lockfile (same root cause as FL-004), so there is no typecheck signal available at all.
+- **Workaround Implemented:** Verified the quiz-validation change by running `node --test testing/ai-integration/output-validation.test.ts` directly (`tests 67 / pass 67 / fail 0 / cancelled 0`) instead of trusting the aggregate `fail 0`, and confirmed the 28 cancellations are pre-existing and unrelated by running `provider-timeouts.test.ts` in isolation with no import of the module under test. Type changes were verified at runtime through Node's type stripping rather than by `tsc`.
+- **Actionable Recommendation:** Make the timeout tests drive a fake clock instead of real timers so the event loop always drains, and add a CI guard that fails the build when any suite reports `cancelled > 0` — `fail 0` alone currently conceals a fully non-executing test file. Separately, commit a lockfile so `npm ci` restores `typescript` and `typecheck` becomes a real gate.
+
+---
+
+### [FL-009] NestJS `nest build` Fails When Consuming Monorepo Packages With Explicit `.ts` Imports (TS5097)
+- **Date:** 2026-10-02
+- **Component / SDK:** NestJS CLI (`@nestjs/cli` + `tsc`) / TypeScript 5.7+ / Monorepo Workspace Imports
+- **Severity:** Medium
+- **Expected Behavior:** When `@wisp/backend` imports `@wisp/ai-engine` (which uses `.ts` extension specifiers for Node.js native execution per FL-003), NestJS compilation via `nest build` should compile seamlessly.
+- **Actual Behavior:** TypeScript compiler (`tsc`) aborted with 36 instances of `error TS5097: An import path can only end with a '.ts' extension when 'allowImportingTsExtensions' is enabled`.
+- **Workaround Implemented:** Added `"allowImportingTsExtensions": true` and `"rewriteRelativeImportExtensions": true` to `backend/tsconfig.json`. This leverages TypeScript 5.7+'s ability to resolve `.ts` relative imports and automatically rewrite them during JavaScript emission.
+- **Actionable Recommendation:** Monorepo templates combining Node native TypeScript execution packages and NestJS application services should preconfigure `rewriteRelativeImportExtensions: true` in downstream consuming projects.
+
+---
+
+### [FL-010] The Supabase Project Moved From `database/supabase` To A Top-Level `supabase/` On `main`, Silently Inverting The Test Fixtures On Every Other Branch
 - **Date:** 2026-10-03
 - **Component / SDK:** Git branch topology / `testing/database/schema-and-seeds.test.ts`
 - **Severity:** Medium
@@ -87,7 +131,7 @@
 
 ---
 
-### [FL-007] Node.js Native Test Runner (`node --test`) Hangs When Importing NestJS Main File Due to Eager `bootstrap()` Execution
+### [FL-011] Node.js Native Test Runner (`node --test`) Hangs When Importing NestJS Main File Due to Eager `bootstrap()` Execution
 - **Date:** 2026-10-04
 - **Component / SDK:** Node.js v24 Test Runner (`node --test`) / NestJS Entrypoint (`backend/src/main.ts`)
 - **Severity:** Medium
@@ -98,7 +142,7 @@
 
 ---
 
-### [FL-008] PostgreSQL 18 Schema Permissions and `SECURITY DEFINER` Caller Resolution in Embedded PGlite Integration Testing
+### [FL-012] PostgreSQL 18 Schema Permissions and `SECURITY DEFINER` Caller Resolution in Embedded PGlite Integration Testing
 - **Date:** 2026-10-05
 - **Component / SDK:** PostgreSQL 18 / `@electric-sql/pglite` / Supabase Migrations (`0006`, `0007`)
 - **Severity:** Medium
