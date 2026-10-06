@@ -32,6 +32,8 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
     let message: string | string[] = 'Internal server error';
     let errorName = 'InternalServerError';
 
+    const extraFields: Record<string, any> = {};
+
     if (exception instanceof HttpException) {
       status = exception.getStatus();
       const res = exception.getResponse();
@@ -42,7 +44,21 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
         const obj = res as Record<string, any>;
         message = obj.message || exception.message;
         errorName = obj.error || exception.name;
+        if (obj.retryAfter !== undefined) {
+          extraFields.retryAfter = obj.retryAfter;
+          response.setHeader('Retry-After', obj.retryAfter.toString());
+        }
+        if (obj.headline !== undefined) extraFields.headline = obj.headline;
+        if (obj.body !== undefined) extraFields.body = obj.body;
       }
+    } else if (
+      (exception as any)?.type === 'entity.too.large' ||
+      (exception as any)?.status === 413 ||
+      (exception as any)?.statusCode === 413
+    ) {
+      status = HttpStatus.PAYLOAD_TOO_LARGE;
+      errorName = 'PayloadTooLargeException';
+      message = 'Request payload exceeds the maximum permitted limit of 16 KB.';
     } else if (exception instanceof Error) {
       // Map PostgREST / Postgres errors to proper HTTP codes if they escape
       const err = exception as any;
@@ -104,6 +120,7 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
       correlationId,
       error: errorName,
       message,
+      ...extraFields,
     });
   }
 }

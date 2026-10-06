@@ -106,3 +106,14 @@
 - **Actual Behavior:** In PostgreSQL 18, `SECURITY DEFINER` functions switch `current_user` to the function definer (`postgres`), causing naive checks like `current_user = 'service_role'` to fail. Furthermore, PostgreSQL 18 default schema ACLs deny non-owner roles table access unless explicit grants are executed.
 - **Workaround Implemented:** Replicated the production `is_service_role_caller()` logic from `0002_temporal_context_functions.sql` inspecting `session_user` and `current_setting('role')`, and added explicit schema/table privilege grants to `service_role` in the test setup.
 - **Actionable Recommendation:** When writing real PostgreSQL migration integration tests with `pglite`, emulate Supabase's full auth role context and default schema grants before running multi-role authorization assertions.
+
+---
+
+### [FL-009] Enforcing Strict HTTP Payload Limits in NestJS Requires Disabling Implicit Body Parser (`bodyParser: false`)
+- **Date:** 2026-10-06
+- **Component / SDK:** NestJS HTTP Boundary (`NestFactory.create`) / Express `body-parser`
+- **Severity:** Low
+- **Expected Behavior:** Calling `app.use(json({ limit: '16kb' }))` in `main.ts` should enforce a 16 KB request payload limit on incoming JSON requests.
+- **Actual Behavior:** By default, `NestFactory.create(AppModule)` automatically registers Express `json()` and `urlencoded()` with a default 100 KB limit ahead of user-defined middleware. Adding subsequent `app.use(json({ limit: '16kb' }))` does not supersede the already mounted parser, allowing payloads up to 100 KB to be fully buffered into memory before application filters can intercept them.
+- **Workaround Implemented:** Initialized the Nest application with `{ bodyParser: false }` (`NestFactory.create(AppModule, { bodyParser: false })`) and explicitly registered `json({ limit: '16kb' })` and `urlencoded({ extended: true, limit: '16kb' })` before mounting global prefix and guards. Added `GlobalHttpExceptionFilter` error mapping for `entity.too.large` returning HTTP 413 `PayloadTooLargeException`.
+- **Actionable Recommendation for Amazon / Maintainers:** Document the `{ bodyParser: false }` requirement prominently in backend security checklists when configuring custom HTTP payload limits on NestJS gateway services.
