@@ -81,11 +81,17 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
       } else if (err.code === '23514') {
         status = HttpStatus.BAD_REQUEST;
         errorName = 'BadRequestException';
-        message = err.message || 'Check constraint violation.';
+        message =
+          process.env.NODE_ENV === 'production'
+            ? 'Validation constraint violation.'
+            : err.message || 'Check constraint violation.';
       } else if (err.code === '42501') {
         status = HttpStatus.FORBIDDEN;
         errorName = 'ForbiddenException';
-        message = err.message || 'Access denied for requested resource.';
+        message =
+          process.env.NODE_ENV === 'production'
+            ? 'Access denied for requested resource.'
+            : err.message || 'Access denied for requested resource.';
       } else if (
         err.code === '08006' ||
         err.code === '08001' ||

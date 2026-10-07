@@ -26,7 +26,7 @@ export function filterContextByTimestamp(
   const recentTranscript = dataset.transcriptSegments
     .filter(
       (seg) =>
-        seg.endTimeMs <= Math.max(effectivePlayhead, 30000) && seg.startTimeMs >= lowerBound,
+        seg.endTimeMs <= effectivePlayhead && seg.startTimeMs >= lowerBound,
     )
     .sort((a, b) => a.startTimeMs - b.startTimeMs)
     .map((seg) => ({

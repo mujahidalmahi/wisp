@@ -6,7 +6,11 @@ const DANGEROUS_CONTROL_CHARS_REGEX = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 // LLM prompt-injection instruction override delimiters
 const PROMPT_DELIMITERS_REGEX =
-  /(?:<\|(?:im_start|im_end|system|user|assistant)\|>|\[(?:INST|\/INST)\]|<<\/?SYS>>)/gi;
+  /(?:<\|(?:im_start|im_end|system|user|assistant|endoftext|fim_prefix|fim_middle|fim_suffix)\|>|\[(?:INST|\/INST|SYSTEM|\/SYSTEM)\]|<<\/?SYS>>)/gi;
+
+// Unicode directional formatting overrides and zero-width evasion characters
+const UNICODE_BIDI_AND_EVASION_REGEX =
+  /[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/g;
 
 /**
  * Normalizes and sanitizes untrusted string input defensively without destroying
@@ -18,7 +22,9 @@ export function sanitizeInputString(input: string): string {
   return input
     // 1. Strip raw control characters and null bytes
     .replace(DANGEROUS_CONTROL_CHARS_REGEX, '')
-    // 2. Strip LLM boundary delimiter override markers
+    // 2. Strip Unicode bidirectional overrides and zero-width characters
+    .replace(UNICODE_BIDI_AND_EVASION_REGEX, '')
+    // 3. Strip LLM boundary delimiter override markers
     .replace(PROMPT_DELIMITERS_REGEX, '')
     .trim();
 }
@@ -48,6 +54,9 @@ export class InputSanitizationMiddleware implements NestMiddleware {
   use(req: Request, res: Response, next: NextFunction) {
     if (req.body && typeof req.body === 'object') {
       req.body = sanitizePayloadRecursively(req.body);
+    }
+    if (req.query && typeof req.query === 'object') {
+      req.query = sanitizePayloadRecursively(req.query) as any;
     }
     next();
   }

@@ -22,3 +22,9 @@ jobs:
 
       - name: Run Multi-Layer Test Suite (testing/)
         run: node --test "testing/**/*.test.ts"
+
+      - name: Run Security Regression Suite
+        run: node --test security/regression.test.ts
+
+      - name: Run Security Audit & Penetration Suite
+        run: node security/runner.ts
