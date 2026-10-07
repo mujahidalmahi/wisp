@@ -11,6 +11,7 @@ This repository builds **Wisp** (*AI-Powered Contextual Viewing for Amazon Fire 
 5. **Server-Side Credentials Only:** Never place `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `SUPABASE_SERVICE_ROLE_KEY` inside `frontend/`.
 6. **Log Developer Friction Immediately:** Whenever a build, SDK, focus, or API quirk occurs, append an entry to [`docs/FRICTION_LOG.md`](./docs/FRICTION_LOG.md).
 7. **No Git Operations Without Explicit User Permission:** NEVER execute `git add`, `git commit`, `git push`, `git pull`, `git checkout`, `git branch`, `git merge`, `git reset`, or any other state-changing Git command unless the user explicitly instructs you to run that Git operation in their current prompt.
+8. **Mandatory Pre-Commit Security Verification:** Always execute `npm run security:test` (and `npm run security:audit` before significant changes/releases) to ensure zero spoiler leaks, no secret leakage, and strict adherence to API and prompt boundaries before any commit is finalized.
 
 ## 2. Specialized Agent Playbooks & Branch Mapping
 - **Modular AI Integration Agent (`ai-integration` branch):** [`agents/playbooks/ai-engine-agent.md`](./agents/playbooks/ai-engine-agent.md)

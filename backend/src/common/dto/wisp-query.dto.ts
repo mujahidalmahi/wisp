@@ -1,4 +1,13 @@
-import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export enum WispActionType {
   CONTEXTUAL_QA = 'contextual_qa',
@@ -28,6 +37,7 @@ export class WispQueryRequestDto {
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(300)
   prompt!: string;
 
   @IsOptional()
