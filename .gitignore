@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-package-lock.json
 *.docx
 .pnp
 .pnp.js
@@ -44,3 +43,6 @@ Thumbs.db
 # Supabase local
 supabase/.branches
 supabase/.temp
+
+# Dynamic Security Reports
+security/reports/

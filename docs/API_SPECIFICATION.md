@@ -616,8 +616,8 @@ Returns the updated `ViewingProfile` object.
 #### 5.1 Query Wisp AI Engine
 - **Path:** `POST /api/v1/wisp/query`
 - **Method:** `POST`
-- **Auth Guard:** Public / Gateway-Throttled
-- **Purpose:** Synthesizes an AI response card when the viewer clicks a Quick Action Chip or enters a voice/text query.
+- **Auth Guard:** `DeviceAuthGuard` (`Authorization: Bearer <token>` or `X-Device-Token`)
+- **Purpose:** Synthesizes an AI response card when the viewer clicks a Quick Action Chip or enters a voice/text query. Requires verified device authentication.
 
 **Request Body (`WispQueryRequestDto`):**
 ```json

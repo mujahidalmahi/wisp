@@ -123,8 +123,11 @@ describe('Security Regression Suite: Permanent Safeguards for Verified Vulnerabi
     try {
       const { sanitizeInputString } = await import('../backend/dist/common/security/input-sanitizer.js');
       cleaned = sanitizeInputString(attackInput);
-    } catch {
-      // Direct canonical regex fallback matching input-sanitizer.ts
+    } catch (err: any) {
+      if (err?.code !== 'ERR_MODULE_NOT_FOUND') {
+        throw err;
+      }
+      // Direct canonical regex fallback matching input-sanitizer.ts when running before backend build
       cleaned = attackInput
         .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
         .replace(/[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/g, '')

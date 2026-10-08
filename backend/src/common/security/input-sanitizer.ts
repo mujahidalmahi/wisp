@@ -29,8 +29,11 @@ export function sanitizeInputString(input: string): string {
     .trim();
 }
 
+const DANGEROUS_OBJECT_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 /**
- * Recursively sanitizes strings within an arbitrary payload object or array.
+ * Recursively sanitizes strings within an arbitrary payload object or array,
+ * while strictly preventing prototype pollution attacks by stripping dangerous keys.
  */
 export function sanitizePayloadRecursively(value: unknown): unknown {
   if (typeof value === 'string') {
@@ -39,12 +42,21 @@ export function sanitizePayloadRecursively(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sanitizePayloadRecursively);
   }
-  if (value !== null && typeof value === 'object' && !(value instanceof Date)) {
-    const sanitizedObj: Record<string, any> = {};
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    !(value instanceof Date) &&
+    !(value instanceof RegExp) &&
+    !(value instanceof Buffer)
+  ) {
+    const sanitizedObj: Record<string, any> = Object.create(null);
     for (const [key, val] of Object.entries(value)) {
+      if (DANGEROUS_OBJECT_KEYS.has(key) || DANGEROUS_OBJECT_KEYS.has(key.toLowerCase())) {
+        continue;
+      }
       sanitizedObj[key] = sanitizePayloadRecursively(val);
     }
-    return sanitizedObj;
+    return { ...sanitizedObj };
   }
   return value;
 }

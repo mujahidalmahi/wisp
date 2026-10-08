@@ -19,18 +19,25 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install --no-audit
+        run: npm ci
+
+      - name: Monorepo Typecheck
+        run: npm run typecheck
 
       - name: Build Backend
         run: npm --workspace=backend run build
 
+      - name: Run Backend Test Suite
+        run: npm --workspace=backend run test
+
       - name: Run Multi-Layer Test Suite (testing/)
-        run: node --test "testing/**/*.test.ts"
+        run: npm test
 
       - name: Run Security Regression Suite
-        run: node --test security/regression.test.ts
+        run: npm run security:test
 
       - name: Run Security Audit & Penetration Suite
-        run: node security/runner.ts
+        run: npm run security:audit

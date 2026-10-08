@@ -50,34 +50,27 @@ export class DatabaseRateLimitGuard implements CanActivate {
       return true;
     }
 
-    // 2. Resolve target device identifier
-    let resolvedDeviceId = request.deviceId;
-    if (!resolvedDeviceId && this.deviceTokenService) {
+    // 2. Resolve target identity securely
+    // Authenticated devices MUST be verified cryptographically via deviceTokenService.
+    // Unauthenticated callers are bounded by trusted client IP, never by spoofable headers.
+    let authenticatedDeviceId: string | undefined = request.deviceId;
+    if (!authenticatedDeviceId && this.deviceTokenService) {
       try {
         const verified = this.deviceTokenService.extractAndVerify(request);
         if (verified?.deviceId) {
-          resolvedDeviceId = verified.deviceId;
+          authenticatedDeviceId = verified.deviceId;
           request.deviceId = verified.deviceId;
           request.devicePayload = verified.payload;
         }
       } catch {
-        // Safe to ignore authentication errors; route-level DeviceAuthGuard rejects unauthorized requests
+        // Unauthenticated or token invalid
       }
     }
 
-    if (!resolvedDeviceId) {
-      resolvedDeviceId =
-        (typeof request.headers['x-firetv-device-id'] === 'string'
-          ? request.headers['x-firetv-device-id'].trim()
-          : undefined) ||
-        (typeof request.headers['x-device-id'] === 'string'
-          ? request.headers['x-device-id'].trim()
-          : undefined) ||
-        (typeof request.body?.deviceId === 'string'
-          ? request.body.deviceId.trim()
-          : undefined) ||
-        'anonymous-firetv';
-    }
+    // Rate-limiting identity: authenticated deviceId or trusted client IP bucket
+    const rateLimitIdentity = authenticatedDeviceId
+      ? authenticatedDeviceId
+      : `ip:${this.extractClientIp(request)}`;
 
     const windowSec = 60;
     const maxRequests = 30;
@@ -88,22 +81,49 @@ export class DatabaseRateLimitGuard implements CanActivate {
         const { data, error } = await this.supabaseService.executeRpc<RateLimitRpcResult>(
           'check_device_rate_limit',
           {
-            p_device_id: resolvedDeviceId,
+            p_device_id: rateLimitIdentity,
             p_window_sec: windowSec,
             p_max_requests: maxRequests,
           },
         );
 
+        // Fail-closed in production when RPC check fails or returns no data
         if (error || !data) {
-          this.logger.warn(`Rate limit RPC check error: ${error}. Permitting request.`);
-          return true;
+          this.logger.error(`Rate limit RPC check error: ${error || 'null response'}`);
+          if (this.isProduction()) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+                error: 'ServiceUnavailable',
+                message: 'Rate limiting service is temporarily unavailable. Request denied for protection.',
+                headline: 'Service Temporarily Unavailable',
+                body: 'Wisp is currently unable to verify rate limits. Please try again in a few moments.',
+              },
+              HttpStatus.SERVICE_UNAVAILABLE,
+            );
+          }
+          return this.handleInMemoryFallback(rateLimitIdentity, windowSec, maxRequests, response);
         }
 
-        const resetEpoch = Math.ceil(new Date(data.window_reset_at).getTime() / 1000);
-        const retryAfterSec = Math.max(
-          1,
-          Math.ceil((new Date(data.window_reset_at).getTime() - Date.now()) / 1000),
-        );
+        // Validate window_reset_at date
+        const resetMs = new Date(data.window_reset_at).getTime();
+        if (isNaN(resetMs) || !data.window_reset_at) {
+          this.logger.error(`Malformed window_reset_at from rate limit RPC: ${data.window_reset_at}`);
+          if (this.isProduction()) {
+            throw new HttpException(
+              {
+                statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+                error: 'ServiceUnavailable',
+                message: 'Invalid rate limiter window state.',
+              },
+              HttpStatus.SERVICE_UNAVAILABLE,
+            );
+          }
+          return this.handleInMemoryFallback(rateLimitIdentity, windowSec, maxRequests, response);
+        }
+
+        const resetEpoch = Math.ceil(resetMs / 1000);
+        const retryAfterSec = Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
 
         // Emit standard rate-limit headers
         response.setHeader('X-RateLimit-Limit', data.max_requests.toString());
@@ -114,7 +134,7 @@ export class DatabaseRateLimitGuard implements CanActivate {
           response.setHeader('Retry-After', retryAfterSec.toString());
 
           this.logger.warn(
-            `Device rate limit exceeded for '${data.device_id}': ${data.current_count}/${data.max_requests} (Retry-After: ${retryAfterSec}s)`,
+            `Rate limit exceeded for '${data.device_id}': ${data.current_count}/${data.max_requests} (Retry-After: ${retryAfterSec}s)`,
           );
 
           throw new HttpException(
@@ -133,13 +153,23 @@ export class DatabaseRateLimitGuard implements CanActivate {
         return true;
       } catch (err: any) {
         if (err instanceof HttpException) throw err;
-        this.logger.warn(`Rate limiter fallback on error: ${err?.message}`);
-        return true;
+        this.logger.error(`Rate limiter execution error: ${err?.message}`);
+        if (this.isProduction()) {
+          throw new HttpException(
+            {
+              statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+              error: 'ServiceUnavailable',
+              message: 'Rate limiting service unavailable.',
+            },
+            HttpStatus.SERVICE_UNAVAILABLE,
+          );
+        }
+        return this.handleInMemoryFallback(rateLimitIdentity, windowSec, maxRequests, response);
       }
     }
 
     // 4. In-Memory Fallback for test and unconfigured environments
-    return this.handleInMemoryFallback(resolvedDeviceId, windowSec, maxRequests, response);
+    return this.handleInMemoryFallback(rateLimitIdentity, windowSec, maxRequests, response);
   }
 
   private handleInMemoryFallback(
@@ -188,5 +218,25 @@ export class DatabaseRateLimitGuard implements CanActivate {
     }
 
     return true;
+  }
+
+  private isProduction(): boolean {
+    return process.env.NODE_ENV === 'production';
+  }
+
+  private extractClientIp(request: any): string {
+    if (typeof request?.ip === 'string' && request.ip.trim().length > 0) {
+      return request.ip.trim();
+    }
+    const cfIp = request?.headers?.['cf-connecting-ip'];
+    if (typeof cfIp === 'string' && cfIp.trim().length > 0) {
+      return cfIp.trim();
+    }
+    const rawForwarded = request?.headers?.['x-forwarded-for'];
+    if (typeof rawForwarded === 'string' && rawForwarded.length > 0) {
+      const first = rawForwarded.split(',')[0].trim();
+      if (first) return first;
+    }
+    return request?.socket?.remoteAddress || '127.0.0.1';
   }
 }
