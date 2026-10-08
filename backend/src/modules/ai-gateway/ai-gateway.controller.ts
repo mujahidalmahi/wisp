@@ -28,8 +28,12 @@ export class AiGatewayController {
   }
 
   @Post('query')
-  async queryWisp(@Body() dto: WispQueryRequestDto): Promise<WispResponseCardDto> {
-    return this.aiGatewayService.processWispQuery(dto);
+  @UseGuards(DeviceAuthGuard)
+  async queryWisp(
+    @Body() dto: WispQueryRequestDto,
+    @CurrentDevice() authenticatedDeviceId: string,
+  ): Promise<WispResponseCardDto> {
+    return this.aiGatewayService.processWispQuery(dto, authenticatedDeviceId);
   }
 
   /**

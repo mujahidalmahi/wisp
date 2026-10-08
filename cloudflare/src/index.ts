@@ -68,22 +68,52 @@ export default {
     const originUrl = `${env.NESTJS_ORIGIN_URL.replace(/\/$/, '')}${url.pathname}${url.search}`;
     const ttl = parseInt(env.CACHE_TTL_SECONDS || '3600', 10);
 
-    // Check KV cache for deterministic Wisp AI queries
+    // Check KV cache for deterministic Wisp AI queries (Blocker 10)
     if (request.method === 'POST' && url.pathname.endsWith('/wisp/query') && env.WISP_CACHE) {
+      const hasAuth = Boolean(
+        request.headers.get('Authorization') || request.headers.get('X-Device-Token'),
+      );
+
+      // Do not serve or write unauthenticated queries to edge cache; forward directly to origin
+      if (!hasAuth) {
+        return fetch(originUrl, {
+          method: 'POST',
+          headers: request.headers,
+          body: request.body,
+        });
+      }
+
       const bodyClone = (await request.clone().json()) as Record<string, any>;
       const bucketSec = Math.floor((bodyClone.playbackPositionMs || 0) / 15000) * 15;
-      const kvKey = `wisp:${bodyClone.episodeId}:${bucketSec}:${bodyClone.actionType}:${bodyClone.profileMode || 'quick_glance'}:${String(bodyClone.prompt || '').toLowerCase().trim()}`;
+      const profileId = bodyClone.profileId ? String(bodyClone.profileId).trim() : 'default';
+      const cleanPrompt = String(bodyClone.prompt || '').toLowerCase().trim().replace(/\s+/g, ' ');
+      const kvKey = `wisp:${bodyClone.episodeId}:${bucketSec}:${bodyClone.actionType}:${bodyClone.profileMode || 'quick_glance'}:${profileId}:${cleanPrompt}`;
 
       const cachedJson = await env.WISP_CACHE.get(kvKey);
       if (cachedJson) {
-        return new Response(cachedJson, {
-          status: 200,
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/json',
-            'X-Wisp-Edge-Cache': 'HIT',
-          },
-        });
+        try {
+          const parsed = JSON.parse(cachedJson);
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.headline === 'string' &&
+            typeof parsed.body === 'string' &&
+            (typeof parsed.spoilerSafeUpToMs !== 'number' ||
+              parsed.spoilerSafeUpToMs <= (bodyClone.playbackPositionMs || 0))
+          ) {
+            return new Response(cachedJson, {
+              status: 200,
+              headers: {
+                ...corsHeaders,
+                'Content-Type': 'application/json',
+                'Cache-Control': 'private, no-cache, no-transform',
+                'X-Wisp-Edge-Cache': 'HIT',
+              },
+            });
+          }
+        } catch {
+          // Malformed cache entry: fall through to origin
+        }
       }
 
       const forwardHeaders = new Headers(request.headers);
@@ -97,7 +127,21 @@ export default {
 
       const responseText = await originResp.text();
       if (originResp.ok) {
-        ctx.waitUntil(env.WISP_CACHE.put(kvKey, responseText, { expirationTtl: ttl }));
+        try {
+          const parsed = JSON.parse(responseText);
+          if (
+            parsed &&
+            typeof parsed === 'object' &&
+            typeof parsed.headline === 'string' &&
+            typeof parsed.body === 'string' &&
+            (typeof parsed.spoilerSafeUpToMs !== 'number' ||
+              parsed.spoilerSafeUpToMs <= (bodyClone.playbackPositionMs || 0))
+          ) {
+            ctx.waitUntil(env.WISP_CACHE.put(kvKey, responseText, { expirationTtl: ttl }));
+          }
+        } catch {
+          // Non-JSON or malformed: do not store in KV
+        }
       }
 
       return new Response(responseText, {
@@ -105,6 +149,7 @@ export default {
         headers: {
           ...corsHeaders,
           'Content-Type': 'application/json',
+          'Cache-Control': 'private, no-cache, no-transform',
           'X-Wisp-Edge-Cache': 'MISS',
         },
       });

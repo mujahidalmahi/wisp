@@ -117,3 +117,14 @@
 - **Actual Behavior:** By default, `NestFactory.create(AppModule)` automatically registers Express `json()` and `urlencoded()` with a default 100 KB limit ahead of user-defined middleware. Adding subsequent `app.use(json({ limit: '16kb' }))` does not supersede the already mounted parser, allowing payloads up to 100 KB to be fully buffered into memory before application filters can intercept them.
 - **Workaround Implemented:** Initialized the Nest application with `{ bodyParser: false }` (`NestFactory.create(AppModule, { bodyParser: false })`) and explicitly registered `json({ limit: '16kb' })` and `urlencoded({ extended: true, limit: '16kb' })` before mounting global prefix and guards. Added `GlobalHttpExceptionFilter` error mapping for `entity.too.large` returning HTTP 413 `PayloadTooLargeException`.
 - **Actionable Recommendation for Amazon / Maintainers:** Document the `{ bodyParser: false }` requirement prominently in backend security checklists when configuring custom HTTP payload limits on NestJS gateway services.
+
+---
+
+### [FL-010] Global Guards Running Ahead of Route-Level Token Verification Can Erode Defense-in-Depth Identity Guarantees
+- **Date:** 2026-10-08
+- **Component / SDK:** NestJS Guards Pipeline / Device Authentication / Edge Rate Limiter
+- **Severity:** High
+- **Expected Behavior:** Global rate limit guards should meter authenticated callers by verified device identity and reject or safely bucket unauthenticated callers without allowing client-spoofed headers to create unbounded rate-limiting buckets.
+- **Actual Behavior:** When rate limiting was registered as a global guard while device authentication was mounted as a route-level guard (`DeviceAuthGuard`), the global guard executed first. Resolving device identity from unverified client headers (`X-FireTV-Device-Id` or request body) allowed callers to spoof arbitrary identities to bypass rate limits or DoS shared buckets. Furthermore, fail-open fallback during database RPC outages completely disabled device protection.
+- **Workaround Implemented:** Reordered identity derivation to strictly require valid cryptographic device tokens for authenticated device bucketing, keyed unauthenticated callers strictly by trusted client IP (`ip:${clientIp}`), and enforced fail-closed HTTP 503 responses in production when rate limit RPCs fail or emit malformed reset timestamps.
+- **Actionable Recommendation for Amazon / Maintainers:** Ensure gateway frameworks and architecture blueprints explicitly document guard execution order hierarchies between global pre-auth rate limiters and route-level cryptographic token authenticators, emphasizing fail-closed defaults and IP-based fallback over unverified client headers.

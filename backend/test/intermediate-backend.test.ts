@@ -142,17 +142,18 @@ describe('Phase 2 Intermediate Backend: Strict CORS Configuration', () => {
 describe('Phase 2 Intermediate Backend: Cryptographic CSRF Service', () => {
   const csrfService = new CsrfService();
 
-  it('generates HMAC-SHA256 tokens with valid timestamp and nonce', () => {
+  it('generates HMAC-SHA256 tokens with valid timestamp, nonce, and client hash', () => {
     const res = csrfService.generateToken(3600);
     assert.ok(res.csrfToken);
     assert.equal(res.expiresInSeconds, 3600);
     assert.equal(res.headerName, 'X-CSRF-Token');
 
     const parts = res.csrfToken.split('.');
-    assert.equal(parts.length, 3);
+    assert.equal(parts.length, 4);
     assert.ok(parseInt(parts[0], 16) > 0);
     assert.equal(parts[1].length, 32); // 16 bytes hex
-    assert.equal(parts[2].length, 64); // sha256 hex
+    assert.equal(parts[2].length, 16); // 8 bytes hex client hash
+    assert.equal(parts[3].length, 64); // sha256 hex
   });
 
   it('accepts and verifies genuine freshly-generated tokens', () => {
@@ -165,12 +166,16 @@ describe('Phase 2 Intermediate Backend: Cryptographic CSRF Service', () => {
     const parts = token.split('.');
 
     // Tampered payload
-    const tamperedPayload = `ffffffff.${parts[1]}.${parts[2]}`;
+    const tamperedPayload = `ffffffff.${parts[1]}.${parts[2]}.${parts[3]}`;
     assert.equal(csrfService.verifyToken(tamperedPayload), false);
 
     // Tampered signature
-    const tamperedSig = `${parts[0]}.${parts[1]}.0000000000000000000000000000000000000000000000000000000000000000`;
+    const tamperedSig = `${parts[0]}.${parts[1]}.${parts[2]}.0000000000000000000000000000000000000000000000000000000000000000`;
     assert.equal(csrfService.verifyToken(tamperedSig), false);
+
+    // Tampered client binding
+    const tamperedClient = `${parts[0]}.${parts[1]}.ffffffffffffffff.${parts[3]}`;
+    assert.equal(csrfService.verifyToken(tamperedClient), false);
 
     // Malformed formats
     assert.equal(csrfService.verifyToken('invalid-token'), false);
@@ -180,6 +185,12 @@ describe('Phase 2 Intermediate Backend: Cryptographic CSRF Service', () => {
     assert.equal(csrfService.verifyToken('a.b'), false);
   });
 
+  it('enforces client binding and rejects cross-client token replay (Blocker 11)', () => {
+    const tokenClientA = csrfService.generateToken('192.168.1.100').csrfToken;
+    assert.equal(csrfService.verifyToken(tokenClientA, '192.168.1.100'), true);
+    assert.equal(csrfService.verifyToken(tokenClientA, '10.0.0.50'), false);
+  });
+
   it('rejects expired CSRF tokens', () => {
     const expiredTimeHex = (Date.now() - 7200 * 1000).toString(16);
     const nonceHex = crypto.randomBytes(16).toString('hex');
@@ -187,11 +198,12 @@ describe('Phase 2 Intermediate Backend: Cryptographic CSRF Service', () => {
       process.env.CSRF_SECRET ||
       process.env.DEVICE_AUTH_SECRET ||
       'wisp-csrf-dev-secret-token-2026';
+    const clientHash = csrfService.computeClientHash('127.0.0.1');
     const sig = crypto
       .createHmac('sha256', secret)
-      .update(`${expiredTimeHex}:${nonceHex}`)
+      .update(`${expiredTimeHex}:${nonceHex}:${clientHash}`)
       .digest('hex');
-    const expiredToken = `${expiredTimeHex}.${nonceHex}.${sig}`;
+    const expiredToken = `${expiredTimeHex}.${nonceHex}.${clientHash}.${sig}`;
     assert.equal(csrfService.verifyToken(expiredToken), false);
   });
 });
@@ -310,24 +322,71 @@ describe('Phase 2 Intermediate Backend: CsrfAndOriginGuard Protection', () => {
     assert.equal(req.deviceId, 'firetv-device-01');
   });
 
-  it('permits operator state-changing endpoints without requiring device tokens', () => {
-    const reqRevoke = {
-      method: 'POST',
-      path: '/api/v1/auth/revoke',
-      headers: {
-        'x-operator-token': 'wisp-operator-secret',
-      },
-    };
-    assert.equal(guard.canActivate(createMockContext(reqRevoke)), true);
+  it('permits operator state-changing endpoints with verified operator tokens and rejects invalid tokens (Blocker 10)', () => {
+    const origInternal = process.env.INTERNAL_OPERATOR_TOKEN;
+    process.env.INTERNAL_OPERATOR_TOKEN = 'wisp-operator-secret';
+    try {
+      const reqRevoke = {
+        method: 'POST',
+        path: '/api/v1/auth/revoke',
+        headers: {
+          'x-operator-token': 'wisp-operator-secret',
+        },
+      };
+      assert.equal(guard.canActivate(createMockContext(reqRevoke)), true);
 
-    const reqRotate = {
+      const reqRotate = {
+        method: 'POST',
+        path: '/api/v1/auth/rotate-secret',
+        headers: {
+          'x-operator-token': 'wisp-operator-secret',
+        },
+      };
+      assert.equal(guard.canActivate(createMockContext(reqRotate)), true);
+
+      // Invalid operator token is rejected immediately with 401 Unauthorized
+      const reqBad = {
+        method: 'POST',
+        path: '/api/v1/auth/revoke',
+        headers: {
+          'x-operator-token': 'forged-or-wrong-token',
+        },
+      };
+      assert.throws(
+        () => guard.canActivate(createMockContext(reqBad)),
+        (err: any) => err instanceof UnauthorizedException && err.message.includes('Invalid operator credentials'),
+      );
+    } finally {
+      process.env.INTERNAL_OPERATOR_TOKEN = origInternal;
+    }
+  });
+
+  it('rejects unauthenticated non-enrollment auth routes without operator credentials (Blocker 10)', () => {
+    const reqNonEnroll = {
       method: 'POST',
-      path: '/api/v1/auth/rotate-secret',
-      headers: {
-        'x-operator-token': 'wisp-operator-secret',
-      },
+      path: '/api/v1/auth/pre-authorize',
+      headers: {},
     };
-    assert.equal(guard.canActivate(createMockContext(reqRotate)), true);
+    assert.throws(
+      () => guard.canActivate(createMockContext(reqNonEnroll)),
+      (err: any) => err instanceof UnauthorizedException,
+    );
+  });
+
+  it('permits exact public enrollment bootstrap routes without requiring device tokens (Blocker 10)', () => {
+    const reqEnroll = {
+      method: 'POST',
+      path: '/api/v1/auth/enroll',
+      headers: {},
+    };
+    assert.equal(guard.canActivate(createMockContext(reqEnroll)), true);
+
+    const reqDeviceToken = {
+      method: 'POST',
+      path: '/api/v1/auth/device-token',
+      headers: {},
+    };
+    assert.equal(guard.canActivate(createMockContext(reqDeviceToken)), true);
   });
 });
 
@@ -667,7 +726,7 @@ describe('Phase 2 Intermediate Backend: 15-Second Temporal AI Response Cache', (
     assert.equal(aiGateway.computeTimeBucketSec(-500), 0); // clamped to 0
   });
 
-  it('generates deterministic cache keys across all required dimensions', () => {
+  it('generates deterministic cache keys across all required dimensions and prompt hash (Blocker 7)', () => {
     const aiGateway = new AiGatewayService(config, contextService, mockSupabaseUnconfigured);
 
     const key1 = aiGateway.computeCacheKey(
@@ -675,11 +734,31 @@ describe('Phase 2 Intermediate Backend: 15-Second Temporal AI Response Cache', (
       WispActionType.CONTEXTUAL_QA,
       HouseholdProfileMode.QUICK_GLANCE,
       15,
+      'Who is the character?',
     );
-    assert.equal(
-      key1,
-      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1:contextual_qa:quick_glance:15',
+    assert.ok(
+      key1.startsWith('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1:contextual_qa:quick_glance:15:'),
     );
+
+    // Key with different prompt in same bucket produces different hash (no cache collision)
+    const keyDiffPrompt = aiGateway.computeCacheKey(
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+      WispActionType.CONTEXTUAL_QA,
+      HouseholdProfileMode.QUICK_GLANCE,
+      15,
+      'What is happening in this scene?',
+    );
+    assert.notEqual(key1, keyDiffPrompt);
+
+    // Key with same prompt (case-insensitive, whitespace-insensitive) produces identical key
+    const keySamePrompt = aiGateway.computeCacheKey(
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+      WispActionType.CONTEXTUAL_QA,
+      HouseholdProfileMode.QUICK_GLANCE,
+      15,
+      '  who is the CHARACTER?  ',
+    );
+    assert.equal(key1, keySamePrompt);
 
     // Key with different bucket
     const key2 = aiGateway.computeCacheKey(
@@ -687,6 +766,7 @@ describe('Phase 2 Intermediate Backend: 15-Second Temporal AI Response Cache', (
       WispActionType.CONTEXTUAL_QA,
       HouseholdProfileMode.QUICK_GLANCE,
       30,
+      'Who is the character?',
     );
     assert.notEqual(key1, key2);
 
@@ -696,6 +776,7 @@ describe('Phase 2 Intermediate Backend: 15-Second Temporal AI Response Cache', (
       WispActionType.CONTEXTUAL_QA,
       HouseholdProfileMode.DEEP_LORE,
       15,
+      'Who is the character?',
     );
     assert.notEqual(key1, key3);
 
@@ -705,6 +786,7 @@ describe('Phase 2 Intermediate Backend: 15-Second Temporal AI Response Cache', (
       WispActionType.SCENE_EXPLAIN,
       HouseholdProfileMode.QUICK_GLANCE,
       15,
+      'Who is the character?',
     );
     assert.notEqual(key1, key4);
   });
@@ -755,6 +837,53 @@ describe('Phase 2 Intermediate Backend: 15-Second Temporal AI Response Cache', (
     assert.ok(elapsedMs < 50); // Sub-50ms execution budget (<10ms normal backend)
   });
 
+  it('validates cached card and rejects spoiler-unsafe cache entries (Blocker 8)', async () => {
+    let engineExecuted = false;
+    // Spoiler-unsafe card where spoilerSafeUpToMs (45s) > playbackPositionMs (15s)
+    const spoilerUnsafeCard = {
+      headline: 'Future Spoiler Context',
+      body: 'Contains details revealed in future',
+      spoilerSafeUpToMs: 45000,
+      profileMode: 'quick_glance',
+      providerUsed: 'groq',
+      followUpChips: [],
+    };
+
+    const mockSupabase = createMockSupabase({
+      rpc: async (name, params) => {
+        if (name === 'get_or_touch_ai_cache') {
+          return { data: spoilerUnsafeCard, error: null };
+        }
+        return { data: null, error: null };
+      },
+    });
+
+    const aiGateway = new AiGatewayService(config, contextService, mockSupabase);
+    (aiGateway as any).engine.execute = async () => {
+      engineExecuted = true;
+      return {
+        headline: 'Safe Context',
+        body: 'Safe contextual response generated on cache invalidation',
+        spoilerSafeUpToMs: 15000,
+        profileMode: 'quick_glance',
+        providerUsed: 'groq',
+        followUpChips: [],
+      };
+    };
+
+    const result = await aiGateway.processWispQuery({
+      episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+      playbackPositionMs: 15000,
+      actionType: WispActionType.CONTEXTUAL_QA,
+      prompt: 'Who is on screen?',
+      profileMode: HouseholdProfileMode.QUICK_GLANCE,
+    });
+
+    assert.equal(result.cached, false);
+    assert.equal(engineExecuted, true);
+    assert.equal(result.headline, 'Safe Context');
+  });
+
   it('persists response to cache on cache miss', async () => {
     let getTouchCalled = false;
     let upsertCalled = false;
@@ -796,9 +925,14 @@ describe('Phase 2 Intermediate Backend: 15-Second Temporal AI Response Cache', (
     assert.equal(getTouchCalled, true);
     assert.equal(upsertCalled, true);
     assert.equal(upsertParams.p_time_bucket_sec, 30);
+    const expectedHash = crypto
+      .createHash('sha256')
+      .update('explain current situation')
+      .digest('hex')
+      .slice(0, 16);
     assert.equal(
       upsertParams.p_cache_key,
-      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1:contextual_qa:quick_glance:30',
+      `bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1:contextual_qa:quick_glance:30:${expectedHash}`,
     );
     assert.equal(result.cached, false);
   });

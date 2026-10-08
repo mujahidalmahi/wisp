@@ -71,7 +71,7 @@ async function main() {
   console.log('\n[6/13] Executing Authorization & IDOR/BOLA Penetration Tests...');
   const authzResult = await runAuthorizationTests();
   summary.suites.push(authzResult);
-  console.log(`  -> Status: ${authzResult.status} (${authzResult.testsPassed}/${authResult.testsRun} tests passed, ${authzResult.durationMs}ms)`);
+  console.log(`  -> Status: ${authzResult.status} (${authzResult.testsPassed}/${authzResult.testsRun} tests passed, ${authzResult.durationMs}ms)`);
 
   // 7. Input Validation & Injection Suite
   console.log('\n[7/13] Executing Input Validation, Injection & Parameter Pollution Tests...');

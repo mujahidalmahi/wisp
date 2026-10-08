@@ -40,6 +40,7 @@ export class SessionsService {
 
   // In-memory sessions storage for dev/test environments without database
   private readonly inMemorySessions = new Map<string, ConversationSessionResponse>();
+  private readonly inMemoryProfiles = new Map<string, { id: string; deviceId: string }>();
 
   constructor(
     private readonly supabaseService: SupabaseService,
@@ -77,6 +78,8 @@ export class SessionsService {
         .eq('device_id', cleanDeviceId)
         .eq('episode_id', episodeId)
         .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle();
 
       if (error) {
@@ -160,12 +163,35 @@ export class SessionsService {
         throw new ServiceUnavailableException('Database client unavailable');
       }
 
-      // Check for existing session
+      // 1. Validate profile ownership if profileId is supplied (Blocker 3)
+      if (dto.profileId) {
+        const { data: profile, error: profErr } = await client
+          .from('profiles')
+          .select('id, device_id')
+          .eq('id', dto.profileId)
+          .maybeSingle();
+
+        if (profErr) {
+          throw new ServiceUnavailableException(`Database error verifying profile: ${profErr.message}`);
+        }
+
+        if (!profile || profile.device_id !== cleanDeviceId) {
+          throw new ForbiddenException(
+            `Profile '${dto.profileId}' does not belong to authenticated device '${cleanDeviceId}'`,
+          );
+        }
+      }
+
+      // 2. Check for active (unexpired) session
+      const nowIso = new Date().toISOString();
       const { data: existingSession, error: fetchErr } = await client
         .from('conversation_sessions')
         .select('*')
         .eq('device_id', cleanDeviceId)
         .eq('episode_id', episodeId)
+        .gt('expires_at', nowIso)
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle();
 
       if (fetchErr) {
@@ -179,8 +205,21 @@ export class SessionsService {
           ? existingSession.bookmarked_moments
           : [];
 
-        const updatedBookmarks = [...existingBookmarks, newBookmark];
+        // Idempotency check: avoid duplicate appends on retries (Blocker 5)
+        const existingMatching = existingBookmarks.find(
+          (b) =>
+            (dto.interactionId && b.interactionId === dto.interactionId) ||
+            (b.playbackPositionMs === safePlaybackMs && b.label === newBookmark.label),
+        );
+        const isDuplicate = !!existingMatching;
+        const returnBookmark = existingMatching || newBookmark;
 
+        // Cap maximum bookmarks at 100 to prevent unbounded JSONB growth
+        const updatedBookmarks = isDuplicate
+          ? existingBookmarks
+          : [...existingBookmarks.slice(-99), newBookmark];
+
+        // Safely scope update to session ID, authenticated device ID, episode ID, and active expiry (Blockers 4, 6 & 7)
         const { data: updated, error: updateErr } = await client
           .from('conversation_sessions')
           .update({
@@ -190,21 +229,28 @@ export class SessionsService {
             expires_at: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
           })
           .eq('id', existingSession.id)
+          .eq('device_id', cleanDeviceId)
+          .eq('episode_id', episodeId)
+          .gt('expires_at', nowIso)
           .select('*')
-          .single();
+          .maybeSingle();
 
         if (updateErr) {
           throw new ServiceUnavailableException(`Failed to append bookmark: ${updateErr.message}`);
         }
 
-        return {
-          success: true,
-          bookmark: newBookmark,
-          sessionId: updated.id,
-          bookmarkedMoments: updatedBookmarks,
-        };
-      } else {
-        // Create new conversation session with the initial bookmark
+        if (updated && updated.device_id === cleanDeviceId) {
+          return {
+            success: true,
+            bookmark: returnBookmark,
+            sessionId: updated.id,
+            bookmarkedMoments: updatedBookmarks,
+          };
+        }
+        // If existing session expired or was mutated concurrently, fall through to create a fresh session
+      }
+
+      // Create new conversation session with the initial bookmark (Blocker 6 & 7)
         const { data: created, error: insertErr } = await client
           .from('conversation_sessions')
           .insert({
@@ -233,9 +279,17 @@ export class SessionsService {
           bookmarkedMoments: [newBookmark],
         };
       }
-    }
 
     // In-memory fallback
+    if (dto.profileId && this.inMemoryProfiles.has(dto.profileId)) {
+      const prof = this.inMemoryProfiles.get(dto.profileId);
+      if (prof && prof.deviceId !== cleanDeviceId) {
+        throw new ForbiddenException(
+          `Profile '${dto.profileId}' does not belong to authenticated device '${cleanDeviceId}'`,
+        );
+      }
+    }
+
     const key = this.sessionKey(cleanDeviceId, episodeId);
     let session = this.inMemorySessions.get(key);
     if (!session || new Date(session.expiresAt).getTime() <= Date.now()) {
@@ -254,10 +308,27 @@ export class SessionsService {
       };
       this.inMemorySessions.set(key, session);
     } else {
-      session.bookmarkedMoments.push(newBookmark);
+      const existingMatching = session.bookmarkedMoments.find(
+        (b) =>
+          (dto.interactionId && b.interactionId === dto.interactionId) ||
+          (b.playbackPositionMs === safePlaybackMs && b.label === newBookmark.label),
+      );
+      if (!existingMatching) {
+        if (session.bookmarkedMoments.length >= 100) {
+          session.bookmarkedMoments.shift();
+        }
+        session.bookmarkedMoments.push(newBookmark);
+      }
       session.lastPlaybackPositionMs = safePlaybackMs;
       session.updatedAt = new Date().toISOString();
       session.expiresAt = new Date(Date.now() + 12 * 3600 * 1000).toISOString();
+
+      return {
+        success: true,
+        bookmark: existingMatching || newBookmark,
+        sessionId: session.id,
+        bookmarkedMoments: session.bookmarkedMoments,
+      };
     }
 
     return {
@@ -266,5 +337,12 @@ export class SessionsService {
       sessionId: session.id,
       bookmarkedMoments: session.bookmarkedMoments,
     };
+  }
+
+  /**
+   * Helper for tests to register profile device ownership in unconfigured mode.
+   */
+  registerInMemoryProfile(profileId: string, deviceId: string): void {
+    this.inMemoryProfiles.set(profileId, { id: profileId, deviceId });
   }
 }

@@ -6,6 +6,7 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import * as crypto from 'crypto';
 import { CsrfService } from './csrf.service';
 import { resolveAllowedOrigins } from './cors.config';
 import { DeviceTokenService } from '../auth/device-token.service';
@@ -15,6 +16,13 @@ export class CsrfAndOriginGuard implements CanActivate {
   private readonly logger = new Logger(CsrfAndOriginGuard.name);
   private readonly csrfService: CsrfService;
   private readonly deviceTokenService: DeviceTokenService;
+
+  private readonly publicBootstrapRoutes = new Set([
+    '/auth/enroll',
+    '/auth/device-token',
+    '/api/v1/auth/enroll',
+    '/api/v1/auth/device-token',
+  ]);
 
   constructor(
     csrfService?: CsrfService,
@@ -33,7 +41,9 @@ export class CsrfAndOriginGuard implements CanActivate {
       return true;
     }
 
-    const path = request.path || request.url || '';
+    const rawPath = request.path || request.url || '';
+    const normalizedPath =
+      '/' + rawPath.split('?')[0].replace(/^\/+|\/+$/g, '').toLowerCase();
 
     // 2. Browser / Web Request Integrity Validation
     const secFetchSite = request.headers['sec-fetch-site'];
@@ -44,7 +54,7 @@ export class CsrfAndOriginGuard implements CanActivate {
 
     // Reject cross-site state-changing browser requests immediately
     if (secFetchSite === 'cross-site') {
-      this.logger.warn(`Rejected cross-site state-changing request from ${request.ip}`);
+      this.logger.warn(`Rejected cross-site state-changing request from ${this.extractClientIp(request)}`);
       throw new ForbiddenException('Cross-site state-changing requests are strictly forbidden.');
     }
 
@@ -76,22 +86,41 @@ export class CsrfAndOriginGuard implements CanActivate {
         }
       }
 
-      // Browser state-changing requests MUST present a valid HMAC-SHA256 CSRF token
+      // Browser state-changing requests MUST present a valid HMAC-SHA256 CSRF token bound to client identity
       if (!csrfToken || typeof csrfToken !== 'string') {
         throw new ForbiddenException('Missing CSRF token for state-changing browser request.');
       }
 
-      if (!this.csrfService.verifyToken(csrfToken)) {
+      const clientIdentifier = this.extractClientIp(request);
+      if (!this.csrfService.verifyToken(csrfToken, clientIdentifier)) {
         throw new ForbiddenException('Invalid or expired CSRF token.');
       }
 
       return true;
     }
 
-    // 3. Fire TV / Native Device Client Validation (Non-browser path)
+    // 3. Operator Token Authentication
+    // If x-operator-token is presented, it MUST be cryptographically verified; never fail-open or bypass unverified
+    const rawOperatorHeader = request.headers['x-operator-token'];
+    if (
+      rawOperatorHeader !== undefined &&
+      rawOperatorHeader !== null &&
+      rawOperatorHeader !== ''
+    ) {
+      if (!this.verifyOperatorAuth(request)) {
+        this.logger.warn(
+          `Rejected invalid or unconfigured operator token from ${this.extractClientIp(request)}`,
+        );
+        throw new UnauthorizedException('Invalid operator credentials.');
+      }
+      return true;
+    }
+
+    // 4. Fire TV / Native Device Client Validation (Non-browser path)
     const fireTvDeviceId = request.headers['x-firetv-device-id'];
     const standardDeviceId = request.headers['x-device-id'];
-    const effectiveDeviceId = (fireTvDeviceId || standardDeviceId) as string | undefined;
+    const wispDeviceId = request.headers['x-wisp-device-id'];
+    const effectiveDeviceId = (fireTvDeviceId || standardDeviceId || wispDeviceId) as string | undefined;
 
     // Check device ID format if provided
     if (effectiveDeviceId) {
@@ -100,7 +129,7 @@ export class CsrfAndOriginGuard implements CanActivate {
       }
     }
 
-    // If request already has an authenticated device (e.g. from DeviceAuthGuard), verify header consistency
+    // If request already has an authenticated device (e.g. from upstream guard), verify header consistency
     if (request.deviceId) {
       if (effectiveDeviceId && effectiveDeviceId.trim() !== request.deviceId) {
         throw new ForbiddenException(
@@ -126,22 +155,67 @@ export class CsrfAndOriginGuard implements CanActivate {
         return true;
       } catch (err) {
         if (err instanceof ForbiddenException) throw err;
+        if (this.verifyOperatorAuth(request)) {
+          return true;
+        }
         throw new UnauthorizedException('Invalid device credentials for state-changing request.');
       }
     }
 
-    // Exempt dedicated device enrollment, token exchange, and operator management endpoints
-    // AuthController performs its own strict authentication (challenges, device secrets, operator tokens)
-    if (
-      path.includes('/auth/') ||
-      Boolean(request.headers['x-operator-token'])
-    ) {
+    // 5. Strictly allow exact public bootstrap endpoints needed for device enrollment and token acquisition
+    if (this.publicBootstrapRoutes.has(normalizedPath)) {
       return true;
     }
 
-    // Reject unauthenticated state-changing requests that provide neither CSRF token nor device credentials
+    // Reject unauthenticated state-changing requests that provide neither CSRF token nor valid credentials
     throw new UnauthorizedException(
       'State-changing request requires valid device authentication or browser CSRF integrity token.',
     );
+  }
+
+  private verifyOperatorAuth(request: any): boolean {
+    const expected =
+      process.env.INTERNAL_OPERATOR_TOKEN || process.env.OPERATOR_TOKEN;
+    if (!expected || expected.trim().length === 0) {
+      return false;
+    }
+
+    const operatorTokenHeader = request.headers?.['x-operator-token'];
+    const authHeader = request.headers?.['authorization'];
+    const candidate =
+      (typeof operatorTokenHeader === 'string' && operatorTokenHeader.trim().length > 0
+        ? operatorTokenHeader.trim()
+        : undefined) ||
+      (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7).trim()
+        : undefined);
+
+    if (!candidate) {
+      return false;
+    }
+
+    const candBuf = Buffer.from(candidate);
+    const expBuf = Buffer.from(expected.trim());
+    if (candBuf.length !== expBuf.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(candBuf, expBuf);
+  }
+
+  private extractClientIp(request: any): string {
+    if (typeof request?.ip === 'string' && request.ip.trim().length > 0) {
+      return request.ip.trim();
+    }
+    const cfIp = request?.headers?.['cf-connecting-ip'];
+    if (typeof cfIp === 'string' && cfIp.trim().length > 0) {
+      return cfIp.trim();
+    }
+    const rawForwarded = request?.headers?.['x-forwarded-for'];
+    if (typeof rawForwarded === 'string' && rawForwarded.length > 0) {
+      const first = rawForwarded.split(',')[0].trim();
+      if (first) return first;
+    }
+    return request?.socket?.remoteAddress || '127.0.0.1';
   }
 }
