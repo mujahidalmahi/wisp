@@ -106,3 +106,15 @@
 - **Actual Behavior:** In PostgreSQL 18, `SECURITY DEFINER` functions switch `current_user` to the function definer (`postgres`), causing naive checks like `current_user = 'service_role'` to fail. Furthermore, PostgreSQL 18 default schema ACLs deny non-owner roles table access unless explicit grants are executed.
 - **Workaround Implemented:** Replicated the production `is_service_role_caller()` logic from `0002_temporal_context_functions.sql` inspecting `session_user` and `current_setting('role')`, and added explicit schema/table privilege grants to `service_role` in the test setup.
 - **Actionable Recommendation:** When writing real PostgreSQL migration integration tests with `pglite`, emulate Supabase's full auth role context and default schema grants before running multi-role authorization assertions.
+
+---
+
+### [FL-009] `@nestjs/throttler` v6 Method Decorator Typing Rejects Array Options in Favor of Named Storage Dictionary
+- **Date:** 2026-10-09
+- **Component / SDK:** NestJS Throttler (`@nestjs/throttler` v6) / TypeScript Strict Mode
+- **Severity:** Low
+- **Expected Behavior:** Declaring custom method-level rate limits via `@Throttle([{ ttl: 60000, limit: 12 }])` should compile and apply per-route overrides matching the `ThrottlerModule.forRoot([...])` array syntax.
+- **Actual Behavior:** TypeScript emits `TS2345: Argument of type '{ ttl: number; limit: number; }[]' is not assignable to parameter of type 'Record<string, ThrottlerMethodOrControllerOptions>'. Index signature for type 'string' is missing in type '{ ttl: number; limit: number; }[]'`. In v6, while `forRoot` accepts an array of named configurations, the method decorator `@Throttle(...)` expects a dictionary keyed by named tracker (e.g., `{ default: { limit: 12, ttl: 60000 } }`).
+- **Workaround Implemented:** Updated the route-level throttle definition in `AiGatewayController` to `@Throttle({ default: { limit: 12, ttl: 60000 } })`, targeting the default in-memory throttler registered in `AppModule`.
+- **Actionable Recommendation:** NestJS Throttler documentation and upgrade guides should explicitly contrast the root module array registration syntax with the method decorator named dictionary signature.
+

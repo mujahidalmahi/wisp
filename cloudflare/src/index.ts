@@ -7,8 +7,9 @@ export interface Env {
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Wisp-Device-Id',
+  'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers':
+    'Content-Type, Authorization, X-Wisp-Device-Id, X-Device-Secret, X-Enrollment-Code, X-Operator-Token, X-Enrollment-Key',
 };
 
 export default {
@@ -69,9 +70,23 @@ export default {
         });
       }
 
+      const forwardHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      // Preserve device authentication and correlation headers through edge cache path
+      const headersToForward = [
+        'authorization', 'x-wisp-device-id', 'x-device-secret',
+        'x-enrollment-code', 'x-operator-token', 'x-enrollment-key',
+        'x-request-id', 'x-correlation-id',
+      ];
+      for (const name of headersToForward) {
+        const val = request.headers.get(name);
+        if (val) forwardHeaders[name] = val;
+      }
+
       const originResp = await fetch(originUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: forwardHeaders,
         body: JSON.stringify(bodyClone),
       });
 

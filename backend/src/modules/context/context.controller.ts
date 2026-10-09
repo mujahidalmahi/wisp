@@ -2,7 +2,6 @@ import {
   Controller,
   Get,
   Param,
-  ParseUUIDPipe,
   Query,
   Res,
   UseGuards,
@@ -25,7 +24,7 @@ export class ContextController {
    */
   @Get(':episodeId')
   async getInstantSceneContext(
-    @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
+    @Param('episodeId') episodeId: string,
     @Query() query: GetContextQueryDto,
     @CurrentDevice() _authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,
@@ -46,7 +45,7 @@ export class ContextController {
    */
   @Get(':episodeId/bootstrap')
   async getFireTvBootstrap(
-    @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
+    @Param('episodeId') episodeId: string,
     @Query() query: GetBootstrapQueryDto,
     @CurrentDevice() authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,
