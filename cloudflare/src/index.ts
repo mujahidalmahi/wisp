@@ -12,9 +12,9 @@ export function resolveCorsHeaders(request: Request, env: Env): Record<string, s
   const allowed = configured.split(',').map((o) => o.trim()).filter(Boolean);
 
   const headers: Record<string, string> = {
-    'Access-Control-Allow-Methods': 'GET, HEAD, POST, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers':
-      'Content-Type, Authorization, X-Wisp-Device-Id, X-FireTV-Device-Id, X-Device-Id, X-Device-Token, X-CSRF-Token, X-Request-Id, X-Profile-Id, X-Operator-Token',
+      'Content-Type, Authorization, X-Wisp-Device-Id, X-FireTV-Device-Id, X-Device-Id, X-Device-Token, X-CSRF-Token, X-Request-Id, X-Profile-Id, X-Operator-Token, X-Device-Secret, X-Enrollment-Code, X-Enrollment-Key, X-Correlation-Id',
   };
 
   if (origin && allowed.includes(origin)) {

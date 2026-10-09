@@ -194,3 +194,15 @@
 - **Actual Behavior:** Binding CSRF tokens solely to `clientIp` caused frequent false-positive CSRF rejections for Fire TV devices connected to dynamic 4G/5G mobile hotspots or Carrier-Grade NAT (CGNAT) pools where egress IPs rotate between requests. Additionally, without session cookies, untrusted direct HTTP requests could forge forwarding headers (`X-Forwarded-For`) to manipulate IP-bound tokens.
 - **Workaround Implemented:** Introduced server-managed `wisp_csrf_session` HttpOnly cookies to bind CSRF tokens to stable browser/client sessions (`session:<sessionId>`), falling back to trusted socket client IPs (`ip:<clientIp>`) only when cookies are disabled. Enforced strict proxy boundaries (`TRUST_PROXY`) so forwarding headers are never trusted on direct connections.
 - **Actionable Recommendation for Maintainers:** When designing CSRF token binding for consumer TV and web applications, anchor tokens to cryptographically random, server-managed HttpOnly session cookies rather than raw client IP addresses.
+
+---
+
+### [FL-013] `@nestjs/throttler` v6 Method Decorator Typing Rejects Array Options in Favor of Named Storage Dictionary
+- **Date:** 2026-10-09
+- **Component / SDK:** NestJS Throttler (`@nestjs/throttler` v6) / TypeScript Strict Mode
+- **Severity:** Low
+- **Expected Behavior:** Declaring custom method-level rate limits via `@Throttle([{ ttl: 60000, limit: 12 }])` should compile and apply per-route overrides matching the `ThrottlerModule.forRoot([...])` array syntax.
+- **Actual Behavior:** TypeScript emits `TS2345: Argument of type '{ ttl: number; limit: number; }[]' is not assignable to parameter of type 'Record<string, ThrottlerMethodOrControllerOptions>'. Index signature for type 'string' is missing in type '{ ttl: number; limit: number; }[]'`. In v6, while `forRoot` accepts an array of named configurations, the method decorator `@Throttle(...)` expects a dictionary keyed by named tracker (e.g., `{ default: { limit: 12, ttl: 60000 } }`).
+- **Workaround Implemented:** Updated the route-level throttle definition in `AiGatewayController` to `@Throttle({ default: { limit: 12, ttl: 60000 } })`, targeting the default in-memory throttler registered in `AppModule`.
+- **Actionable Recommendation:** NestJS Throttler documentation and upgrade guides should explicitly contrast the root module array registration syntax with the method decorator named dictionary signature.
+

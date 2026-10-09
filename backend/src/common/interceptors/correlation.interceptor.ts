@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NestInterceptor,
   ExecutionContext,
   CallHandler,
@@ -11,6 +12,8 @@ import { Response, Request } from 'express';
 
 @Injectable()
 export class RequestCorrelationInterceptor implements NestInterceptor {
+  private readonly logger = new Logger('HttpRequest');
+
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const http = context.switchToHttp();
     const req = http.getRequest<Request & { correlationId?: string; startTimeHr?: bigint }>();
@@ -33,11 +36,17 @@ export class RequestCorrelationInterceptor implements NestInterceptor {
 
     res.setHeader('X-Request-Id', correlationId);
 
+    const deviceId = (req.headers['x-wisp-device-id'] as string) || (req.headers['x-device-id'] as string) || '-';
+
     return next.handle().pipe(
       tap(() => {
         const elapsedNs = process.hrtime.bigint() - startTimeHr;
         const elapsedMs = Number(elapsedNs) / 1_000_000;
         res.setHeader('X-Response-Time', `${elapsedMs.toFixed(2)}ms`);
+
+        this.logger.log(
+          `${req.method} ${req.url} ${res.statusCode} ${elapsedMs.toFixed(1)}ms [${correlationId}] device=${deviceId}`,
+        );
       }),
     );
   }

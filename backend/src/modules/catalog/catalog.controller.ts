@@ -2,7 +2,6 @@ import {
   Controller,
   Get,
   Param,
-  ParseUUIDPipe,
   Query,
 } from '@nestjs/common';
 import { CatalogService } from './catalog.service';
@@ -25,7 +24,7 @@ export class CatalogController {
 
   @Get('episodes/:episodeId')
   async getEpisodeById(
-    @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
+    @Param('episodeId') episodeId: string,
   ) {
     return this.catalogService.getEpisodeById(episodeId);
   }
