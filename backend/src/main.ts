@@ -1,7 +1,10 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { validateEnvironment } from './common/config/environment.validator';
+import { createSecurityHeadersMiddleware } from './common/security/security-headers.config';
+import { buildCorsOptions } from './common/security/cors.config';
 
 export { validateEnvironment };
 
@@ -9,37 +12,30 @@ async function bootstrap() {
   validateEnvironment();
 
   const logger = new Logger('WispBootstrap');
-  const app = await NestFactory.create(AppModule);
 
+  // Disable default bodyParser so strict 16 KB payload boundary is enforced
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+  // Configure trusted proxy handling when enabled
+  if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1') {
+    const expressApp = app.getHttpAdapter().getInstance();
+    expressApp.set('trust proxy', 1);
+  }
+
+  // 1. Strict 16 KB Request Payload Protection
+  app.use(json({ limit: '16kb' }));
+  app.use(urlencoded({ extended: true, limit: '16kb' }));
+
+  // 2. Strict HTTP Security Headers (Helmet, CSP, nosniff, DENY, Permissions-Policy, HSTS)
+  app.use(createSecurityHeadersMiddleware());
+
+  // 3. Global API Routing Prefix
   app.setGlobalPrefix('api/v1');
 
-  // Configurable CORS with safe defaults (Item 15)
-  const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
-    ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-    : ['http://localhost:3000', 'http://10.0.2.2:3000', 'http://127.0.0.1:3000', 'http://localhost:8081'];
+  // 4. Strict CORS Allowlisting (No Wildcard in Production)
+  app.enableCors(buildCorsOptions());
 
-  const hasWildcardOrigin = allowedOrigins.includes('*');
-  const enableCredentials = !hasWildcardOrigin;
-
-  app.enableCors({
-    origin: hasWildcardOrigin ? '*' : allowedOrigins,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-Device-Id',
-      'X-Device-Token',
-      'X-Profile-Id',
-      'X-Request-Id',
-      'X-Operator-Token',
-      'X-Enrollment-Code',
-      'X-Enrollment-Key',
-      'X-Device-Secret',
-      'Accept',
-    ],
-    credentials: enableCredentials,
-  });
-
+  // 5. Global Validation Pipe with strict parameter whitelisting
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

@@ -1,4 +1,14 @@
-import { IsEnum, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export enum WispActionType {
   CONTEXTUAL_QA = 'contextual_qa',
@@ -17,10 +27,12 @@ export enum HouseholdProfileMode {
 export class WispQueryRequestDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(100)
   episodeId!: string;
 
   @IsInt()
   @Min(0)
+  @Max(86400000, { message: 'playbackPositionMs cannot exceed 86400000 (24 hours)' })
   playbackPositionMs!: number;
 
   @IsEnum(WispActionType)
@@ -28,6 +40,7 @@ export class WispQueryRequestDto {
 
   @IsString()
   @IsNotEmpty()
+  @MaxLength(300)
   prompt!: string;
 
   @IsOptional()
@@ -36,8 +49,10 @@ export class WispQueryRequestDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   profileId?: string;
 }
+
 
 export interface QuickActionChip {
   id: string;

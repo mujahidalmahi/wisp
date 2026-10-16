@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
@@ -9,8 +9,14 @@ import { ProfilesModule } from './modules/profiles/profiles.module';
 import { ContextModule } from './modules/context/context.module';
 import { AiGatewayModule } from './modules/ai-gateway/ai-gateway.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { SecurityModule } from './modules/security/security.module';
+import { SessionsModule } from './modules/sessions/sessions.module';
 import { GlobalHttpExceptionFilter } from './common/filters/http-exception.filter';
 import { RequestCorrelationInterceptor } from './common/interceptors/correlation.interceptor';
+import { CsrfAndOriginGuard } from './common/security/csrf-and-origin.guard';
+import { DatabaseRateLimitGuard } from './common/security/database-rate-limit.guard';
+import { HppMiddleware } from './common/security/hpp.middleware';
+import { InputSanitizationMiddleware } from './common/security/input-sanitizer';
 
 @Module({
   imports: [
@@ -26,6 +32,8 @@ import { RequestCorrelationInterceptor } from './common/interceptors/correlation
     ]),
     AuthModule,
     SupabaseModule,
+    SecurityModule,
+    SessionsModule,
     HealthModule,
     CatalogModule,
     ProfilesModule,
@@ -45,6 +53,20 @@ import { RequestCorrelationInterceptor } from './common/interceptors/correlation
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
+    {
+      provide: APP_GUARD,
+      useClass: CsrfAndOriginGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: DatabaseRateLimitGuard,
+    },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(HppMiddleware, InputSanitizationMiddleware)
+      .forRoutes('*');
+  }
+}

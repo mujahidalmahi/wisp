@@ -8,8 +8,7 @@
     "ai-engine",
     "frontend",
     "backend",
-    "cloudflare",
-    "testing"
+    "cloudflare"
   ],
   "scripts": {
     "ai:playground": "npm --workspace=ai-engine run playground",
@@ -28,6 +27,8 @@
     "test:database": "node --test \"testing/database/*.test.ts\"",
     "test:cloudflare": "node --test \"testing/cloudflare/*.test.ts\"",
     "test:e2e": "node --test \"testing/full-application/*.test.ts\"",
+    "security:audit": "node security/runner.ts",
+    "security:test": "node --test security/regression.test.ts",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,sql,yml}\""
   },
   "devDependencies": {

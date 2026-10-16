@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+*.docx
 .pnp
 .pnp.js
 
@@ -42,3 +43,6 @@ Thumbs.db
 # Supabase local
 supabase/.branches
 supabase/.temp
+
+# Dynamic Security Reports
+security/reports/

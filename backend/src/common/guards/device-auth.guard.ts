@@ -42,6 +42,9 @@ export class DeviceAuthGuard implements CanActivate {
       }
     };
 
+    checkMismatch(request.headers?.['x-device-id'], 'header x-device-id');
+    checkMismatch(request.headers?.['x-firetv-device-id'], 'header x-firetv-device-id');
+    checkMismatch(request.headers?.['x-wisp-device-id'], 'header x-wisp-device-id');
     checkMismatch(request.query?.deviceId, 'query');
     checkMismatch(request.body?.deviceId, 'payload');
     checkMismatch(request.params?.deviceId, 'param');

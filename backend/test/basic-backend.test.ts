@@ -1626,6 +1626,83 @@ describe('Phase 1 Basic Backend: Production Demo Fallback Quarantine & Startup G
     }
   });
 
+  it('validateEnvironment throws fatal error on startup when CORS_ALLOWED_ORIGINS contains wildcard in production', () => {
+    const origEnv = process.env.NODE_ENV;
+    const origCors = process.env.CORS_ALLOWED_ORIGINS;
+    process.env.NODE_ENV = 'production';
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    process.env.CORS_ALLOWED_ORIGINS = 'https://example.com, *';
+    try {
+      assert.throws(
+        () => validateEnvironment(),
+        /CORS_ALLOWED_ORIGINS cannot contain wildcard "\*"/,
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      process.env.CORS_ALLOWED_ORIGINS = origCors;
+    }
+  });
+
+  it('validateEnvironment throws fatal error on startup when DEVICE_AUTH_SECRET has insufficient entropy in production', () => {
+    const origEnv = process.env.NODE_ENV;
+    const origSecret = process.env.DEVICE_AUTH_SECRET;
+    const origJwt = process.env.JWT_SECRET;
+    process.env.NODE_ENV = 'production';
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    process.env.DEVICE_AUTH_SECRET = 'too-short';
+    delete process.env.JWT_SECRET;
+    try {
+      assert.throws(
+        () => validateEnvironment(),
+        /DEVICE_AUTH_SECRET \(or JWT_SECRET\) must be set with at least 32 characters in production/,
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      process.env.DEVICE_AUTH_SECRET = origSecret;
+      process.env.JWT_SECRET = origJwt;
+    }
+  });
+
+  it('validateEnvironment throws fatal error on startup when INTERNAL_OPERATOR_TOKEN is too weak in production', () => {
+    const origEnv = process.env.NODE_ENV;
+    const origSecret = process.env.DEVICE_AUTH_SECRET;
+    const origOp = process.env.INTERNAL_OPERATOR_TOKEN;
+    process.env.NODE_ENV = 'production';
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    process.env.DEVICE_AUTH_SECRET = 'a'.repeat(32);
+    process.env.INTERNAL_OPERATOR_TOKEN = 'weak-op-token';
+    try {
+      assert.throws(
+        () => validateEnvironment(),
+        /INTERNAL_OPERATOR_TOKEN must be at least 32 characters in production/,
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      process.env.DEVICE_AUTH_SECRET = origSecret;
+      process.env.INTERNAL_OPERATOR_TOKEN = origOp;
+    }
+  });
+
+  it('validateEnvironment passes when production configuration meets all security constraints', () => {
+    const origEnv = process.env.NODE_ENV;
+    const origSecret = process.env.DEVICE_AUTH_SECRET;
+    const origOp = process.env.INTERNAL_OPERATOR_TOKEN;
+    process.env.NODE_ENV = 'production';
+    delete process.env.ENABLE_DEMO_FALLBACK;
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    process.env.DEVICE_AUTH_SECRET = 'a'.repeat(32);
+    process.env.INTERNAL_OPERATOR_TOKEN = 'b'.repeat(32);
+    try {
+      assert.doesNotThrow(() => validateEnvironment());
+    } finally {
+      process.env.NODE_ENV = origEnv;
+      process.env.DEVICE_AUTH_SECRET = origSecret;
+      process.env.INTERNAL_OPERATOR_TOKEN = origOp;
+    }
+  });
+
   it('guarantees that under NODE_ENV=production, services reject demo fallback even if ENABLE_DEMO_FALLBACK=true', async () => {
     const origEnv = process.env.NODE_ENV;
     const origFallback = process.env.ENABLE_DEMO_FALLBACK;
