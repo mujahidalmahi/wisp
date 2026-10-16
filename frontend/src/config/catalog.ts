@@ -23,7 +23,7 @@ export const DEMO_PROGRAMS: CatalogProgram[] = [
   },
   {
     programId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
-    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
     title: "Sintel: Dragon's Call",
     episodeTitle: 'The Lonely Spear',
     genre: 'Fantasy / Mystery',
@@ -34,7 +34,7 @@ export const DEMO_PROGRAMS: CatalogProgram[] = [
   },
   {
     programId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3',
-    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
+    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4',
     title: 'Cosmos Odyssey',
     episodeTitle: 'Standing Up in the Milky Way',
     genre: 'Science Documentary',

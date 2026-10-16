@@ -64,10 +64,11 @@ export const InteractiveQuizCard: React.FC<Props> = ({ quiz, onAnswerSelected })
               onPress={() => handleSelectOption(idx)}
               style={[
                 styles.optionCard,
-                isFocused && !isAnswered && styles.optionFocused,
                 isAnswered && isOptionCorrect && styles.optionCorrect,
                 isAnswered && isOptionSelected && !isCorrect && styles.optionIncorrect,
                 isAnswered && !isOptionCorrect && !isOptionSelected && styles.optionDimmed,
+                isFocused && styles.optionFocused,
+                isFocused && isAnswered && styles.optionFocusedPostAnswer,
               ]}
             >
               <View style={styles.optionContent}>
@@ -82,9 +83,10 @@ export const InteractiveQuizCard: React.FC<Props> = ({ quiz, onAnswerSelected })
                 <Text
                   style={[
                     styles.optionText,
-                    isFocused && !isAnswered && styles.optionTextFocused,
+                    isFocused && styles.optionTextFocused,
                     isAnswered && isOptionCorrect && styles.optionTextCorrect,
                     isAnswered && isOptionSelected && !isCorrect && styles.optionTextIncorrect,
+                    isFocused && isAnswered && { fontWeight: '800' as const },
                   ]}
                 >
                   {option}
@@ -180,7 +182,13 @@ const styles = StyleSheet.create({
   optionFocused: {
     backgroundColor: TVTheme.colors.cardFocused,
     borderColor: TVTheme.colors.focusRing,
+    borderWidth: 2,
     transform: [{ scale: 1.02 }],
+  },
+  optionFocusedPostAnswer: {
+    opacity: 1,
+    borderColor: TVTheme.colors.focusRing,
+    borderWidth: 2,
   },
   optionCorrect: {
     backgroundColor: 'rgba(16, 185, 129, 0.2)',

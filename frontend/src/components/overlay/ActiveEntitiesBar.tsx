@@ -20,6 +20,7 @@ export const ActiveEntitiesBar: React.FC<Props> = ({ entities, onAskAboutEntity 
     entities.find((e) => e.in_current_scene) || entities[0] || null,
   );
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const [isAskFocused, setIsAskFocused] = useState<boolean>(false);
 
   if (!entities || entities.length === 0) return null;
 
@@ -93,10 +94,21 @@ export const ActiveEntitiesBar: React.FC<Props> = ({ entities, onAskAboutEntity 
 
           {onAskAboutEntity && (
             <Pressable
+              onFocus={() => setIsAskFocused(true)}
+              onBlur={() => setIsAskFocused(false)}
               onPress={() => onAskAboutEntity(selectedEntity)}
-              style={({ pressed }) => [styles.askButton, pressed && { opacity: 0.8 }]}
+              style={({ pressed }) => [
+                styles.askButton,
+                isAskFocused && styles.askButtonFocused,
+                pressed && { opacity: 0.8 },
+              ]}
             >
-              <Text style={styles.askButtonText}>
+              <Text
+                style={[
+                  styles.askButtonText,
+                  isAskFocused && styles.askButtonTextFocused,
+                ]}
+              >
                 ✨ Ask Wisp about {selectedEntity.name}
               </Text>
             </Pressable>
@@ -216,13 +228,13 @@ const styles = StyleSheet.create({
   },
   entityDescription: {
     color: TVTheme.colors.textSecondary,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 20,
+    lineHeight: 28,
     marginBottom: 10,
   },
   factBox: {
     backgroundColor: 'rgba(30, 41, 59, 0.7)',
-    padding: 10,
+    padding: 12,
     borderRadius: 8,
     borderLeftWidth: 3,
     borderLeftColor: TVTheme.colors.focusRing,
@@ -230,27 +242,37 @@ const styles = StyleSheet.create({
   },
   factTitle: {
     color: TVTheme.colors.focusRing,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
-    marginBottom: 2,
+    marginBottom: 4,
+    letterSpacing: 0.5,
   },
   factText: {
     color: TVTheme.colors.textPrimary,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 18,
+    lineHeight: 26,
   },
   askButton: {
     backgroundColor: 'rgba(56, 189, 248, 0.15)',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     borderRadius: 8,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: TVTheme.colors.accentCyan,
     alignItems: 'center',
   },
+  askButtonFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    borderWidth: 2,
+    backgroundColor: 'rgba(245, 158, 11, 0.25)',
+  },
   askButtonText: {
     color: TVTheme.colors.accentCyan,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '700',
+  },
+  askButtonTextFocused: {
+    color: TVTheme.colors.focusRing,
+    fontWeight: '800',
   },
 });

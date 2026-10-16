@@ -51,3 +51,15 @@
 - **Actual Behavior:** Node's native TypeScript strip-only loader throws `ERR_MODULE_NOT_FOUND` on extensionless imports, fails on non-type interface imports, and throws `SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript parameter property is not supported in strip-only mode`.
 - **Workaround Implemented:** Configured `ai-engine/package.json` with `"type": "module"`, enabled `"allowImportingTsExtensions": true` in `ai-engine/tsconfig.json`, replaced constructor parameter properties with explicit class field declarations, and standardized on `import type` + `.ts` import specifiers across `ai-engine/src/**`.
 - **Actionable Recommendation:** Enable `"erasableSyntaxOnly": true` in shared TypeScript templates targeting Node 22/24 native execution so the IDE flags constructor parameter properties at authoring time.
+
+---
+
+### [FL-004] Fire TV Remote Focus Ring Disappearance on Conditional / Post-Answer UI States
+- **Date:** 2026-10-16
+- **Component / SDK:** Fire OS Focus Engine / React Native TV Pressable
+- **Severity:** Medium
+- **Expected Behavior:** Pressable components styled with conditional result borders (such as quiz option selection or entity inspection) should maintain an amber focus ring (`#F59E0B`) when navigated via D-pad after state mutation.
+- **Actual Behavior:** When conditional answer evaluation styles (`optionCorrect`, `optionIncorrect`, `optionDimmed`) were applied, state gates like `!isAnswered` suppressed the active `isFocused` focus ring, rendering the cursor invisible to viewers navigating post-answer.
+- **Workaround Implemented:** Decoupled `isFocused` styling so that high-contrast focus rings (`#F59E0B`, width 2) override dimmed or static border states, and added explicit `onFocus`/`onBlur` tracking across HUD controls (`catalogButton`, `scrubButton`).
+- **Actionable Recommendation:** Provide higher-level TV button primitives with an `isFocused` higher-priority overlay layer that cannot be inadvertently overwritten by custom component state styling.
+

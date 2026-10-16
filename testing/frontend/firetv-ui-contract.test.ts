@@ -55,4 +55,14 @@ describe('Fire TV Client: 3-Genre Demo Catalog Invariants', () => {
       assert.ok(prog.synopsis.length > 10, `Program ${prog.title} must have descriptive synopsis`);
     }
   });
+
+  it('strictly matches catalog episode IDs with database seed schema (Issue 1)', () => {
+    const tears = DEMO_PROGRAMS.find((p) => p.title === 'Tears of Steel');
+    const sintel = DEMO_PROGRAMS.find((p) => p.title.includes('Sintel'));
+    const cosmos = DEMO_PROGRAMS.find((p) => p.title === 'Cosmos Odyssey');
+
+    assert.equal(tears?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1');
+    assert.equal(sintel?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3');
+    assert.equal(cosmos?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4');
+  });
 });

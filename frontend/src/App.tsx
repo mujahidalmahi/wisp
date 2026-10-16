@@ -69,7 +69,6 @@ export default function App() {
     setEpisodeId(prog.episodeId);
     setPlaybackPositionMs(25000); // Start near beginning of chosen show
     setResponseCard(null);
-    loadInstantSceneContext(prog.episodeId, 25000);
   };
 
   const handleSelectChip = async (chip: QuickActionChip) => {

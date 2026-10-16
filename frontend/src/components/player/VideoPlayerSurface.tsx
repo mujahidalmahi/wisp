@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { TVTheme } from '../../theme/tvTheme';
 
@@ -25,6 +25,11 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   onAdvanceTimestamp,
   onOpenCatalog,
 }) => {
+  const [isCatalogFocused, setIsCatalogFocused] = useState<boolean>(false);
+  const [isWispFocused, setIsWispFocused] = useState<boolean>(false);
+  const [isRewindFocused, setIsRewindFocused] = useState<boolean>(false);
+  const [isForwardFocused, setIsForwardFocused] = useState<boolean>(false);
+
   const sec = Math.floor(playbackPositionMs / 1000);
   const formattedTime = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(
     sec % 60,
@@ -60,8 +65,23 @@ export const VideoPlayerSurface: React.FC<Props> = ({
         </View>
 
         {!overlayVisible && onOpenCatalog && (
-          <Pressable onPress={onOpenCatalog} style={styles.catalogButton}>
-            <Text style={styles.catalogButtonText}>📚 Switch Program</Text>
+          <Pressable
+            onPress={onOpenCatalog}
+            onFocus={() => setIsCatalogFocused(true)}
+            onBlur={() => setIsCatalogFocused(false)}
+            style={[
+              styles.catalogButton,
+              isCatalogFocused && styles.catalogButtonFocused,
+            ]}
+          >
+            <Text
+              style={[
+                styles.catalogButtonText,
+                isCatalogFocused && styles.catalogButtonTextFocused,
+              ]}
+            >
+              📚 Switch Program
+            </Text>
           </Pressable>
         )}
       </View>
@@ -86,23 +106,56 @@ export const VideoPlayerSurface: React.FC<Props> = ({
           </View>
 
           <View style={styles.bottomBar}>
-            <Pressable hasTVPreferredFocus onPress={onInvokeWisp} style={styles.wispButton}>
+            <Pressable
+              hasTVPreferredFocus
+              onPress={onInvokeWisp}
+              onFocus={() => setIsWispFocused(true)}
+              onBlur={() => setIsWispFocused(false)}
+              style={[
+                styles.wispButton,
+                isWispFocused && styles.wispButtonFocused,
+              ]}
+            >
               <Text style={styles.wispButtonText}>✨ Invoke Wisp (Menu / Select)</Text>
             </Pressable>
 
             <View style={styles.controlsGroup}>
               <Pressable
                 onPress={() => onAdvanceTimestamp(-30000)}
-                style={styles.scrubButton}
+                onFocus={() => setIsRewindFocused(true)}
+                onBlur={() => setIsRewindFocused(false)}
+                style={[
+                  styles.scrubButton,
+                  isRewindFocused && styles.scrubButtonFocused,
+                ]}
               >
-                <Text style={styles.scrubButtonText}>-0:30 Rewind</Text>
+                <Text
+                  style={[
+                    styles.scrubButtonText,
+                    isRewindFocused && styles.scrubButtonTextFocused,
+                  ]}
+                >
+                  -0:30 Rewind
+                </Text>
               </Pressable>
 
               <Pressable
                 onPress={() => onAdvanceTimestamp(60000)}
-                style={styles.scrubButton}
+                onFocus={() => setIsForwardFocused(true)}
+                onBlur={() => setIsForwardFocused(false)}
+                style={[
+                  styles.scrubButton,
+                  isForwardFocused && styles.scrubButtonFocused,
+                ]}
               >
-                <Text style={styles.scrubButtonText}>+1:00 Forward</Text>
+                <Text
+                  style={[
+                    styles.scrubButtonText,
+                    isForwardFocused && styles.scrubButtonTextFocused,
+                  ]}
+                >
+                  +1:00 Forward
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -193,10 +246,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
+  catalogButtonFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    borderWidth: 2,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    transform: [{ scale: 1.05 }],
+  },
   catalogButtonText: {
     color: TVTheme.colors.textPrimary,
     fontSize: 15,
     fontWeight: '700',
+  },
+  catalogButtonTextFocused: {
+    color: '#FFFFFF',
+    fontWeight: '800',
   },
   centerCanvas: {
     flex: 1,
@@ -260,6 +323,13 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     paddingHorizontal: 24,
     borderRadius: 12,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  wispButtonFocused: {
+    borderColor: '#FFFFFF',
+    borderWidth: 2,
+    transform: [{ scale: 1.04 }],
   },
   wispButtonText: {
     color: '#090B10',
@@ -278,9 +348,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
+  scrubButtonFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    borderWidth: 2,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    transform: [{ scale: 1.05 }],
+  },
   scrubButtonText: {
     color: TVTheme.colors.textSecondary,
     fontSize: 15,
     fontWeight: '600',
+  },
+  scrubButtonTextFocused: {
+    color: TVTheme.colors.textPrimary,
+    fontWeight: '800',
   },
 });

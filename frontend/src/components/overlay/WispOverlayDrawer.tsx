@@ -100,7 +100,15 @@ export const WispOverlayDrawer: React.FC<Props> = ({
 
         {/* Interactive Trivia Challenge Card when quizPayload is present */}
         {responseCard?.quizPayload && !loadingAi && (
-          <InteractiveQuizCard quiz={responseCard.quizPayload} />
+          <View style={styles.quizWrapper}>
+            <InteractiveQuizCard quiz={responseCard.quizPayload} />
+            <View style={styles.providerTelemetryBar}>
+              <View style={styles.telemetryDot} />
+              <Text style={styles.providerTelemetryText}>
+                Provider: {responseCard.providerUsed} • {responseCard.latencyMs}ms
+              </Text>
+            </View>
+          </View>
         )}
 
         {/* Standard AI Response Card (when not a standalone quiz, or in addition) */}
@@ -229,5 +237,33 @@ const styles = StyleSheet.create({
   errorText: {
     color: TVTheme.colors.errorBadge,
     fontSize: 16,
+  },
+  quizWrapper: {
+    marginBottom: 14,
+  },
+  providerTelemetryBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignSelf: 'flex-start',
+    marginTop: -8,
+    marginBottom: 12,
+  },
+  telemetryDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: TVTheme.colors.spoilerSafeBadge,
+  },
+  providerTelemetryText: {
+    color: TVTheme.colors.textMuted,
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
