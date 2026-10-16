@@ -36,17 +36,35 @@ export class RequestCorrelationInterceptor implements NestInterceptor {
 
     res.setHeader('X-Request-Id', correlationId);
 
-    const deviceId = (req.headers['x-wisp-device-id'] as string) || (req.headers['x-device-id'] as string) || '-';
+    const rawDeviceId =
+      (req as any).device?.id ||
+      (req.headers['x-wisp-device-id'] as string) ||
+      (req.headers['x-device-id'] as string) ||
+      '-';
+    const cleanDeviceId = String(rawDeviceId).replace(/[\r\n\x00-\x1F\x7F]/g, '').slice(0, 64);
+    const cleanUrl = (req.originalUrl || req.url || '').replace(/[\r\n\x00-\x1F\x7F]/g, '');
 
     return next.handle().pipe(
-      tap(() => {
-        const elapsedNs = process.hrtime.bigint() - startTimeHr;
-        const elapsedMs = Number(elapsedNs) / 1_000_000;
-        res.setHeader('X-Response-Time', `${elapsedMs.toFixed(2)}ms`);
+      tap({
+        next: () => {
+          const elapsedNs = process.hrtime.bigint() - startTimeHr;
+          const elapsedMs = Number(elapsedNs) / 1_000_000;
+          res.setHeader('X-Response-Time', `${elapsedMs.toFixed(2)}ms`);
 
-        this.logger.log(
-          `${req.method} ${req.url} ${res.statusCode} ${elapsedMs.toFixed(1)}ms [${correlationId}] device=${deviceId}`,
-        );
+          this.logger.log(
+            `${req.method} ${cleanUrl} ${res.statusCode} ${elapsedMs.toFixed(1)}ms [${correlationId}] device=${cleanDeviceId}`,
+          );
+        },
+        error: (err: any) => {
+          const elapsedNs = process.hrtime.bigint() - startTimeHr;
+          const elapsedMs = Number(elapsedNs) / 1_000_000;
+          const status = err?.status || err?.statusCode || 500;
+          const cleanErrorMessage = String(err?.message || 'Internal Error').replace(/[\r\n\x00-\x1F\x7F]/g, '');
+
+          this.logger.warn(
+            `${req.method} ${cleanUrl} ${status} ${elapsedMs.toFixed(1)}ms [${correlationId}] device=${cleanDeviceId} error="${cleanErrorMessage}"`,
+          );
+        },
       }),
     );
   }

@@ -23,6 +23,7 @@ describe('Cloudflare Edge: Worker Routing, Security Invariants & R2 Media Stream
     assert.ok(workerSource.includes('X-Device-Secret'));
     assert.ok(workerSource.includes('X-Enrollment-Code'));
     assert.ok(workerSource.includes('X-Operator-Token'));
+    assert.ok(workerSource.includes('X-Correlation-Id'));
   });
 
   it('forwards device auth, correlation headers, and trusted client IP through to NestJS origin', () => {

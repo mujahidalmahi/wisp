@@ -465,7 +465,7 @@ export class CatalogService {
         );
 
         if (error) {
-          if (error.code === 'PGRST116') {
+          if (error.code === 'PGRST116' || error.code === '22P02') {
             // Explicit Not Found in production database (Item 5)
             throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
           }

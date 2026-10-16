@@ -42,15 +42,14 @@ export class AiGatewayController {
     @Body() dto: WispQueryRequestDto,
     @CurrentDevice() authenticatedDeviceId: string,
   ): Promise<WispResponseCardDto> {
-    const start = Date.now();
-    this.logger.log(
+    this.logger.debug(
       `AI query: action=${dto.actionType} episode=${dto.episodeId} playback=${dto.playbackPositionMs}ms profile=${dto.profileMode || 'quick_glance'}`,
     );
 
     const card = await this.aiGatewayService.processWispQuery(dto, authenticatedDeviceId);
 
-    this.logger.log(
-      `AI query completed: action=${dto.actionType} latency=${Date.now() - start}ms`,
+    this.logger.debug(
+      `AI query completed: action=${dto.actionType} provider=${card.providerUsed}`,
     );
     return card;
   }

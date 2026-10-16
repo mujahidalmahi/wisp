@@ -3,6 +3,30 @@ import { ForbiddenException, Logger } from '@nestjs/common';
 
 const logger = new Logger('CorsConfig');
 
+/**
+ * Permitted headers for CORS preflight requests across Cloudflare Edge and NestJS backend.
+ * Includes correlation and trace headers (X-Request-Id, X-Correlation-Id) as well as
+ * Wisp device auth tokens and Fire TV device headers.
+ */
+export const CORS_ALLOWED_HEADERS: string[] = [
+  'Content-Type',
+  'Authorization',
+  'X-CSRF-Token',
+  'X-FireTV-Device-Id',
+  'X-Wisp-Device-Id',
+  'X-Device-Id',
+  'X-Device-Token',
+  'X-Profile-Id',
+  'X-Request-Id',
+  'X-Correlation-Id',
+  'X-Api-Key',
+  'X-Operator-Token',
+  'X-Enrollment-Code',
+  'X-Enrollment-Key',
+  'X-Device-Secret',
+  'Accept',
+];
+
 export function resolveAllowedOrigins(): string[] {
   const isProduction = process.env.NODE_ENV === 'production';
   const configured = process.env.CORS_ALLOWED_ORIGINS;
@@ -60,22 +84,7 @@ export function buildCorsOptions(): CorsOptions {
       );
     },
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-CSRF-Token',
-      'X-FireTV-Device-Id',
-      'X-Request-Id',
-      'X-Api-Key',
-      'X-Device-Id',
-      'X-Device-Token',
-      'X-Profile-Id',
-      'X-Operator-Token',
-      'X-Enrollment-Code',
-      'X-Enrollment-Key',
-      'X-Device-Secret',
-      'Accept',
-    ],
+    allowedHeaders: CORS_ALLOWED_HEADERS,
     exposedHeaders: [
       'X-RateLimit-Limit',
       'X-RateLimit-Remaining',
@@ -87,5 +96,26 @@ export function buildCorsOptions(): CorsOptions {
     ],
     credentials: true,
     maxAge: 86400, // 24 hours preflight cache
+  };
+}
+
+export function getCorsConfig(): CorsOptions {
+  const allowedOrigins = process.env.CORS_ALLOWED_ORIGINS
+    ? process.env.CORS_ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+    : [
+        'http://localhost:3000',
+        'http://10.0.2.2:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:8081',
+      ];
+
+  const hasWildcardOrigin = allowedOrigins.includes('*');
+  const enableCredentials = !hasWildcardOrigin;
+
+  return {
+    origin: hasWildcardOrigin ? '*' : allowedOrigins,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: CORS_ALLOWED_HEADERS,
+    credentials: enableCredentials,
   };
 }

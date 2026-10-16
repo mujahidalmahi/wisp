@@ -206,3 +206,15 @@
 - **Workaround Implemented:** Updated the route-level throttle definition in `AiGatewayController` to `@Throttle({ default: { limit: 12, ttl: 60000 } })`, targeting the default in-memory throttler registered in `AppModule`.
 - **Actionable Recommendation:** NestJS Throttler documentation and upgrade guides should explicitly contrast the root module array registration syntax with the method decorator named dictionary signature.
 
+---
+
+### [FL-010] Unhandled Error Telemetry Blind Spot and Log Forgery (CWE-117) in NestJS Request Interceptors
+- **Date:** 2026-10-16
+- **Component / SDK:** NestJS Interceptors / RxJS `tap` / Centralized Observability (CloudWatch / Datadog)
+- **Severity:** Medium
+- **Expected Behavior:** An HTTP request telemetry interceptor using `tap()` should capture complete request/response telemetry across all HTTP status codes, and unverified client request headers like `X-Wisp-Device-Id` should be safe to interpolate into log messages.
+- **Actual Behavior:** Passing a single callback function to RxJS `tap(() => { ... })` only hooks into successful next emissions; when an endpoint throws an exception (e.g. 400 Bad Request, 401 Unauthorized, 429 Throttled, or 500 Server Error), the interceptor callback never fires, omitting failed requests from access logs. Additionally, raw unverified device headers interpolated directly into log lines expose log collectors to CRLF injection (`\r\n`) and log record forgery (CWE-117).
+- **Workaround Implemented:** Upgraded `tap()` to pass a full observer object `{ next: () => ..., error: (err) => ... }` so failed responses are logged with status code and error messages, and sanitized control characters `/[\r\n\x00-\x1F\x7F]/g` with length bounding (64 chars) while prioritizing verified device claims `(req as any).device?.id`.
+- **Actionable Recommendation:** Provide a built-in NestJS logging interceptor utility with automated CRLF stripping and dual next/error stream observation out of the box.
+
+
