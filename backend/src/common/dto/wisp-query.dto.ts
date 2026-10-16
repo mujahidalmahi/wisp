@@ -70,6 +70,7 @@ export interface WispResponseCardDto {
   cached: boolean;
   latencyMs: number;
   followUpChips: QuickActionChip[];
+  interactionId?: string;
   quizPayload?: {
     question: string;
     options: string[];

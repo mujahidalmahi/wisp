@@ -58,6 +58,8 @@ export declare class InMemoryCatalogContextSource implements ContextSource {
   ): Promise<TemporalProgramContext>;
 }
 
+export declare const EMBEDDED_DEMO_EPISODES: Record<string, any>;
+
 export declare class HybridContextSource implements ContextSource {
   constructor(
     dbSource: (

@@ -11,8 +11,10 @@ import { AiGatewayModule } from './modules/ai-gateway/ai-gateway.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { SecurityModule } from './modules/security/security.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
+import { ObservabilityModule } from './modules/observability/observability.module';
 import { GlobalHttpExceptionFilter } from './common/filters/http-exception.filter';
 import { RequestCorrelationInterceptor } from './common/interceptors/correlation.interceptor';
+import { SpoilerFirewallInterceptor } from './common/interceptors/spoiler-firewall.interceptor';
 import { CsrfAndOriginGuard } from './common/security/csrf-and-origin.guard';
 import { DatabaseRateLimitGuard } from './common/security/database-rate-limit.guard';
 import { HppMiddleware } from './common/security/hpp.middleware';
@@ -39,6 +41,7 @@ import { InputSanitizationMiddleware } from './common/security/input-sanitizer';
     ProfilesModule,
     ContextModule,
     AiGatewayModule,
+    ObservabilityModule,
   ],
   providers: [
     {
@@ -48,6 +51,10 @@ import { InputSanitizationMiddleware } from './common/security/input-sanitizer';
     {
       provide: APP_INTERCEPTOR,
       useClass: RequestCorrelationInterceptor,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: SpoilerFirewallInterceptor,
     },
     {
       provide: APP_GUARD,

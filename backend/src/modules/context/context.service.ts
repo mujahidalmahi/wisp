@@ -9,10 +9,12 @@ import {
   HybridContextSource,
   InMemoryCatalogContextSource,
   TemporalProgramContext,
+  EMBEDDED_DEMO_EPISODES,
 } from '@wisp/ai-engine';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CatalogService } from '../catalog/catalog.service';
 import { ProfilesService } from '../profiles/profiles.service';
+import { HybridRagSearchDto } from './dto/hybrid-rag-search.dto';
 
 export { TemporalProgramContext };
 
@@ -358,6 +360,362 @@ export class ContextService {
       safe_playback_ms: clampedPlaybackMs,
       episode_duration_ms: episodeDurationMs,
     };
+  }
+
+  /**
+   * Advanced Hybrid Reciprocal Rank Fusion (RRF) RAG Search:
+   * Fuses lexical full-text search, trigram matching, and vector cosine similarity.
+   * Strictly bounded by playbackPositionMs (anti-spoiler).
+   */
+  async hybridRagSearch(episodeId: string, dto: HybridRagSearchDto): Promise<any[]> {
+    const safePlaybackMs = Math.max(0, dto.playbackPositionMs ?? 0);
+    const limit = Math.max(1, Math.min(20, dto.limit ?? 6));
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
+
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
+      try {
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client.rpc('hybrid_spoiler_safe_rag_search', {
+            p_episode_id: episodeId,
+            p_playback_ms: safePlaybackMs,
+            p_query_text: dto.queryText,
+            p_query_vector: dto.queryVector ?? null,
+            p_limit: limit,
+          }),
+        );
+
+        if (error) {
+          if (error.code === 'PGRST116' || error.code === 'P0002' || error.code === '22P02') {
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
+          this.logger.error(`Database RPC hybrid_spoiler_safe_rag_search failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database RAG search failed: ${error.message}`);
+          }
+        } else if (data) {
+          return Array.isArray(data) ? data : [];
+        }
+      } catch (err: any) {
+        if (err instanceof NotFoundException || err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Error executing hybrid RAG search: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database RAG search failed');
+        }
+      }
+    }
+
+    // In-memory fallback
+    await this.catalogService.getEpisodeById(episodeId);
+    return this.fallbackHybridRagSearch(episodeId, safePlaybackMs, dto.queryText, limit);
+  }
+
+  private fallbackHybridRagSearch(
+    episodeId: string,
+    playbackMs: number,
+    queryText: string,
+    limit: number,
+  ): any[] {
+    const dataset = EMBEDDED_DEMO_EPISODES[episodeId];
+    if (!dataset) return [];
+
+    const candidates: Array<{
+      id: string;
+      source_type: string;
+      start_time_ms: number;
+      end_time_ms: number;
+      reveal_time_ms: number;
+      content_text: string;
+      lex_score: number;
+      vec_score: number;
+      rrf_score: number;
+    }> = [];
+
+    const cleanQuery = queryText.toLowerCase().trim();
+    const terms = cleanQuery.split(/\s+/).filter(Boolean);
+
+    // 1. Transcript segments
+    dataset.transcriptSegments.forEach((seg, idx) => {
+      if (seg.endTimeMs <= playbackMs) {
+        const text = `${seg.speaker}: ${seg.dialogue}`;
+        const lower = text.toLowerCase();
+        let matches = 0;
+        terms.forEach((t) => {
+          if (lower.includes(t)) matches++;
+        });
+        if (matches > 0 || cleanQuery === '') {
+          const lexScore = matches / (terms.length || 1);
+          candidates.push({
+            id: `transcript-${idx}`,
+            source_type: 'transcript_segment',
+            start_time_ms: seg.startTimeMs,
+            end_time_ms: seg.endTimeMs,
+            reveal_time_ms: seg.endTimeMs,
+            content_text: text,
+            lex_score: lexScore,
+            vec_score: 0,
+            rrf_score: 1 / (60 + (candidates.length + 1)),
+          });
+        }
+      }
+    });
+
+    // 2. Scene contexts
+    dataset.scenes.forEach((scene) => {
+      if (scene.endTimeMs <= playbackMs) {
+        const text = `${scene.sceneTitle} - ${scene.locationName}: ${scene.spoilerSafeSummary}`;
+        const lower = text.toLowerCase();
+        let matches = 0;
+        terms.forEach((t) => {
+          if (lower.includes(t)) matches++;
+        });
+        if (matches > 0 || cleanQuery === '') {
+          const lexScore = matches / (terms.length || 1);
+          candidates.push({
+            id: `scene-${scene.sceneIndex}`,
+            source_type: 'scene_summary',
+            start_time_ms: scene.startTimeMs,
+            end_time_ms: scene.endTimeMs,
+            reveal_time_ms: scene.endTimeMs,
+            content_text: text,
+            lex_score: lexScore,
+            vec_score: 0,
+            rrf_score: 1 / (60 + (candidates.length + 1)),
+          });
+        }
+      }
+    });
+
+    return candidates
+      .sort((a, b) => b.lex_score - a.lex_score || b.end_time_ms - a.end_time_ms)
+      .slice(0, limit);
+  }
+
+  /**
+   * Spoiler-Safe Transcript Dialogue Search:
+   * Returns matching lines strictly where end_time_ms <= playbackMs.
+   */
+  async searchTranscript(
+    episodeId: string,
+    playbackMs: number,
+    query: string,
+    limit = 10,
+  ): Promise<any[]> {
+    const safePlaybackMs = Math.max(0, playbackMs ?? 0);
+    const safeLimit = Math.max(1, Math.min(50, limit ?? 10));
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
+
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
+      try {
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client.rpc('search_spoiler_safe_transcript', {
+            p_episode_id: episodeId,
+            p_playback_ms: safePlaybackMs,
+            p_search_query: query,
+            p_limit: safeLimit,
+          }),
+        );
+
+        if (error) {
+          if (error.code === 'PGRST116' || error.code === 'P0002' || error.code === '22P02') {
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
+          this.logger.error(`Database RPC search_spoiler_safe_transcript failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database transcript search failed: ${error.message}`);
+          }
+        } else if (data) {
+          return Array.isArray(data) ? data : [];
+        }
+      } catch (err: any) {
+        if (err instanceof NotFoundException || err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Error searching transcript: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database transcript search failed');
+        }
+      }
+    }
+
+    // In-memory fallback
+    await this.catalogService.getEpisodeById(episodeId);
+    const dataset = EMBEDDED_DEMO_EPISODES[episodeId];
+    if (!dataset) return [];
+
+    const cleanQuery = query.toLowerCase().trim();
+    return dataset.transcriptSegments
+      .filter((seg) => seg.endTimeMs <= safePlaybackMs && seg.dialogue.toLowerCase().includes(cleanQuery))
+      .slice(0, safeLimit)
+      .map((seg) => ({
+        start_time_ms: seg.startTimeMs,
+        end_time_ms: seg.endTimeMs,
+        speaker_name: seg.speaker,
+        text: seg.dialogue,
+      }));
+  }
+
+  /**
+   * Cross-Episode / Multi-Season Context Resolution:
+   * Unlocks 100% of completed prior episodes and 0..playbackMs of current episode.
+   * Strictly blocks future episodes.
+   */
+  async getCrossEpisodeContext(episodeId: string, playbackMs: number): Promise<any> {
+    const safePlaybackMs = Math.max(0, playbackMs ?? 0);
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
+
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
+      try {
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client.rpc('get_cross_episode_spoiler_safe_context', {
+            p_episode_id: episodeId,
+            p_playback_ms: safePlaybackMs,
+          }),
+        );
+
+        if (error) {
+          if (error.code === 'PGRST116' || error.code === 'P0002' || error.code === '22P02') {
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
+          this.logger.error(`Database RPC get_cross_episode_spoiler_safe_context failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database cross-episode query failed: ${error.message}`);
+          }
+        } else if (data) {
+          return data;
+        }
+      } catch (err: any) {
+        if (err instanceof NotFoundException || err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Error querying cross-episode context: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database cross-episode query failed');
+        }
+      }
+    }
+
+    // In-memory fallback
+    await this.catalogService.getEpisodeById(episodeId);
+    const currentEpisodeContext = await this.getSpoilerSafeContext(episodeId, safePlaybackMs);
+    return {
+      found: true,
+      prior_episodes: [],
+      current_episode: currentEpisodeContext,
+    };
+  }
+
+  /**
+   * Post-Watch Trivia Quiz API:
+   * Returns multiple-choice trivia unlocked up to playbackMs.
+   */
+  async getPostWatchQuiz(
+    episodeId: string,
+    playbackMs: number,
+    profileMode = 'quick_glance',
+    limit = 5,
+  ): Promise<any[]> {
+    const safePlaybackMs = Math.max(0, playbackMs ?? 0);
+    const safeLimit = Math.max(1, Math.min(20, limit ?? 5));
+    const isConfigured = this.supabaseService.isConfigured();
+    const allowDemoFallback = this.allowDemoFallback(isConfigured);
+
+    if (isConfigured) {
+      const client = this.supabaseService.getClient()!;
+      try {
+        const { data, error } = await this.supabaseService.executeWithRetry(async () =>
+          client.rpc('get_episode_post_watch_quiz', {
+            p_episode_id: episodeId,
+            p_playback_ms: safePlaybackMs,
+            p_profile_mode: profileMode,
+            p_limit: safeLimit,
+          }),
+        );
+
+        if (error) {
+          if (error.code === 'PGRST116' || error.code === 'P0002' || error.code === '22P02') {
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
+          this.logger.error(`Database RPC get_episode_post_watch_quiz failed: ${error.message}`);
+          if (!allowDemoFallback) {
+            throw new ServiceUnavailableException(`Database quiz query failed: ${error.message}`);
+          }
+        } else if (data) {
+          return Array.isArray(data) ? data : [];
+        }
+      } catch (err: any) {
+        if (err instanceof NotFoundException || err instanceof ServiceUnavailableException) throw err;
+        this.logger.error(`Error querying episode quiz: ${err?.message}`);
+        if (!allowDemoFallback) {
+          throw new ServiceUnavailableException('Database quiz query failed');
+        }
+      }
+    }
+
+    // In-memory fallback: Return curated trivia if playbackMs allows
+    await this.catalogService.getEpisodeById(episodeId);
+    const demoQuizzes: Record<string, any[]> = {
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1': [
+        {
+          id: 'quiz-tos-1',
+          unlock_time_ms: 120000,
+          profile_mode: 'quick_glance',
+          difficulty: 'medium',
+          question: 'What key memory is Thom reconstructing inside the Oude Kerk?',
+          options: [
+            'The space elevator launch',
+            'The bridge breakup with Celia 40 years ago',
+            'The discovery of the robot factory',
+            'The flight over New Amsterdam',
+          ],
+          correctIndex: 1,
+          explanation:
+            "Thom and Celia's personal dispute inadvertently broadcast emotional signals that caused the global robotic swarm to awaken.",
+        },
+      ],
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3': [
+        {
+          id: 'quiz-sintel-1',
+          unlock_time_ms: 60000,
+          profile_mode: 'quick_glance',
+          difficulty: 'easy',
+          question: 'What first connected Sintel and the baby dragon Scales?',
+          options: [
+            'She stole a dragon egg from the monastery',
+            'She nursed its broken wing in the desert oasis',
+            'She tamed it with a magic spear',
+            'They escaped a gladiator arena together',
+          ],
+          correctIndex: 1,
+          explanation:
+            'Sintel discovered Scales with a broken wing and spent months feeding it desert fowl until it regained strength to fly.',
+        },
+      ],
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4': [
+        {
+          id: 'quiz-cosmos-1',
+          unlock_time_ms: 120000,
+          profile_mode: 'quick_glance',
+          difficulty: 'hard',
+          question: 'On the 365-day Cosmic Calendar, when does all recorded human history occur?',
+          options: [
+            'December 1st at midnight',
+            'December 25th in the morning',
+            'December 31st in the final 14 seconds',
+            'November 15th during the ice age',
+          ],
+          correctIndex: 2,
+          explanation:
+            'All of human civilization, pyramids, wars, and technology occupy only the last 14 seconds of December 31st.',
+        },
+      ],
+    };
+
+    const quizzes = demoQuizzes[episodeId] || [];
+    return quizzes
+      .filter((q) => q.unlock_time_ms <= safePlaybackMs)
+      .slice(0, safeLimit);
   }
 
   private getDefaultQuickActionChips(): QuickActionChipItem[] {
