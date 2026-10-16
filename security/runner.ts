@@ -116,7 +116,15 @@ async function main() {
   console.log(`  -> Status: ${infraResult.status} (${infraResult.checksPassed}/${infraResult.checksRun} checks passed, ${infraResult.durationMs}ms)`);
 
   const totalDuration = Date.now() - startTime;
-  const anyFailed = summary.suites.some((s: any) => s.status === SecurityStatus.FAIL);
+  const anyFailed = summary.suites.some(
+    (s: any) =>
+      s.status === SecurityStatus.FAIL ||
+      s.status === SecurityStatus.MANUAL_REVIEW_REQUIRED ||
+      (Array.isArray(s.findings) &&
+        s.findings.some(
+          (f: any) => f.severity === Severity.CRITICAL || f.severity === Severity.HIGH,
+        )),
+  );
   summary.overallStatus = anyFailed ? 'FAIL' : 'PASS';
 
   // Generate Report Markdown

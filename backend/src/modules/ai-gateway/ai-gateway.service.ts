@@ -15,6 +15,7 @@ import {
   WispQueryRequestDto,
   WispResponseCardDto,
 } from '../../common/dto/wisp-query.dto';
+import { validateWispResponseCard } from '../../common/dto/response-card-validator';
 
 interface InMemoryCacheEntry {
   payload: WispResponseCardDto;
@@ -102,46 +103,17 @@ export class AiGatewayService {
     payload: any,
     dto: WispQueryRequestDto,
   ): boolean {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    const profileMode = dto.profileMode || HouseholdProfileMode.QUICK_GLANCE;
+    const res = validateWispResponseCard(payload, {
+      episodeId: dto.episodeId,
+      actionType: dto.actionType,
+      profileMode,
+      playbackPositionMs: dto.playbackPositionMs,
+    });
+    if (!res.valid) {
+      this.logger.warn(`Rejected invalid cached AI card: ${res.reason}`);
       return false;
     }
-
-    if (
-      typeof payload.headline !== 'string' ||
-      payload.headline.trim().length === 0 ||
-      typeof payload.body !== 'string' ||
-      payload.body.trim().length === 0
-    ) {
-      return false;
-    }
-
-    if (payload.episodeId && payload.episodeId !== dto.episodeId) {
-      return false;
-    }
-    if (payload.actionType && payload.actionType !== dto.actionType) {
-      return false;
-    }
-    const reqProfileMode = dto.profileMode || HouseholdProfileMode.QUICK_GLANCE;
-    if (payload.profileMode && payload.profileMode !== reqProfileMode) {
-      return false;
-    }
-
-    // Strict Anti-Spoiler Boundary: Cached card must NEVER exceed current playback playhead
-    if (typeof payload.spoilerSafeUpToMs === 'number') {
-      if (payload.spoilerSafeUpToMs > dto.playbackPositionMs) {
-        this.logger.warn(
-          `Rejected unsafe cached AI card: spoilerSafeUpToMs (${payload.spoilerSafeUpToMs}) > playbackPositionMs (${dto.playbackPositionMs})`,
-        );
-        return false;
-      }
-    }
-
-    if (payload.chips) {
-      if (!Array.isArray(payload.chips) || payload.chips.length < 2 || payload.chips.length > 4) {
-        return false;
-      }
-    }
-
     return true;
   }
 
@@ -245,8 +217,23 @@ export class AiGatewayService {
     }
     const originLatencyMs = Date.now() - startExec;
 
+    // Strict validation of newly generated AI card before returning or persisting (Blocker 8)
+    const valResult = validateWispResponseCard(card, {
+      episodeId: dto.episodeId,
+      actionType: dto.actionType,
+      profileMode,
+      playbackPositionMs: dto.playbackPositionMs,
+    });
+
+    if (!valResult.valid || !valResult.card) {
+      this.logger.error(`AI Engine generated invalid card schema: ${valResult.reason}`);
+      throw new ServiceUnavailableException(
+        `AI provider produced an invalid response card: ${valResult.reason}`,
+      );
+    }
+
     const responseCard: WispResponseCardDto = {
-      ...(card as unknown as WispResponseCardDto),
+      ...valResult.card,
       cached: false,
       latencyMs: originLatencyMs,
     };
@@ -270,11 +257,24 @@ export class AiGatewayService {
         this.logger.warn(`Failed to upsert to ai_response_cache: ${err?.message}`);
       }
     } else {
+      const now = Date.now();
+      if (this.inMemoryAiCache.size >= 1000) {
+        for (const [key, val] of this.inMemoryAiCache.entries()) {
+          if (now > val.expiresAt) {
+            this.inMemoryAiCache.delete(key);
+          }
+        }
+        if (this.inMemoryAiCache.size >= 1000) {
+          const oldest = this.inMemoryAiCache.keys().next().value;
+          if (oldest) this.inMemoryAiCache.delete(oldest);
+        }
+      }
       this.inMemoryAiCache.set(cacheKey, {
         payload: responseCard,
-        expiresAt: Date.now() + 86400 * 1000,
+        expiresAt: now + 86400 * 1000,
       });
     }
+
 
     return responseCard;
   }
@@ -331,14 +331,45 @@ export class AiGatewayService {
       }
 
       // 3. Persist vote into interaction_history scoped to profile ownership predicate
-      const { error: updateErr } = await client
+      // and verifying returned row to eliminate TOCTOU authorization race (Blocker 10)
+      const updateQuery = client
         .from('interaction_history')
         .update({ user_helpful_vote: vote })
         .eq('id', interactionId)
         .eq('profile_id', interaction.profile_id);
 
+      let updated: any = null;
+      let updateErr: any = null;
+
+      if (typeof (updateQuery as any)?.select === 'function') {
+        const sel = (updateQuery as any).select('id, user_helpful_vote');
+        if (typeof sel?.maybeSingle === 'function') {
+          const res = await sel.maybeSingle();
+          updated = res.data;
+          updateErr = res.error;
+        } else if (typeof sel?.single === 'function') {
+          const res = await sel.single();
+          updated = res.data;
+          updateErr = res.error;
+        } else {
+          const res = await sel;
+          updated = res?.data;
+          updateErr = res?.error;
+        }
+      } else {
+        const res = await (updateQuery as any);
+        updated = res?.data ?? { id: interactionId, user_helpful_vote: vote };
+        updateErr = res?.error;
+      }
+
       if (updateErr) {
         throw new ServiceUnavailableException(`Failed to record vote: ${updateErr.message}`);
+      }
+
+      if (!updated) {
+        throw new ForbiddenException(
+          `Interaction authorization changed concurrently; update rejected`,
+        );
       }
 
       return {
@@ -375,6 +406,10 @@ export class AiGatewayService {
     deviceId?: string,
     profileId?: string,
   ): void {
+    if (this.inMemoryInteractions.size >= 5000) {
+      const oldest = this.inMemoryInteractions.keys().next().value;
+      if (oldest) this.inMemoryInteractions.delete(oldest);
+    }
     this.inMemoryInteractions.set(interactionId, {
       id: interactionId,
       deviceId,
@@ -383,3 +418,4 @@ export class AiGatewayService {
     });
   }
 }
+

@@ -953,7 +953,11 @@ describe('Phase 2 Intermediate Backend: Conversation Sessions & Bookmarks API', 
     const bookmark1 = await sessionsService.createBookmark(episodeId, deviceA, {
       playbackPositionMs: 25000,
       label: 'Crucial Revelation',
-      aiCard: { headline: 'Plot Reveal' },
+      aiCard: {
+        headline: 'Plot Reveal',
+        body: 'Context explaining the plot reveal',
+        spoilerSafeUpToMs: 25000,
+      },
     });
 
     assert.equal(bookmark1.success, true);
@@ -1034,6 +1038,20 @@ describe('Phase 2 Intermediate Backend: Viewer Feedback API (Voting)', () => {
     assert.equal(result.interactionId, interactionId);
     assert.equal(result.vote, 1);
   });
+
+  it('controller supports both PATCH and POST voteInteraction routes', async () => {
+    const interactionId = '33333333-4444-5555-6666-777777777777';
+    aiGateway.registerInMemoryInteraction(interactionId, 'device-owner-01');
+
+    const patchRes = await controller.voteInteraction(interactionId, { vote: 1 }, 'device-owner-01');
+    assert.equal(patchRes.success, true);
+    assert.equal(patchRes.vote, 1);
+
+    const postRes = await controller.voteInteractionPost(interactionId, { vote: -1 }, 'device-owner-01');
+    assert.equal(postRes.success, true);
+    assert.equal(postRes.vote, -1);
+  });
+
 
   it('rejects cross-device interaction vote attempts with 403 Forbidden', async () => {
     const interactionId = '22222222-3333-4444-5555-666666666666';

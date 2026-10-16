@@ -172,3 +172,25 @@
 - **Actual Behavior:** When rate limiting was registered as a global guard while device authentication was mounted as a route-level guard (`DeviceAuthGuard`), the global guard executed first. Resolving device identity from unverified client headers (`X-FireTV-Device-Id` or request body) allowed callers to spoof arbitrary identities to bypass rate limits or DoS shared buckets. Furthermore, fail-open fallback during database RPC outages completely disabled device protection.
 - **Workaround Implemented:** Reordered identity derivation to strictly require valid cryptographic device tokens for authenticated device bucketing, keyed unauthenticated callers strictly by trusted client IP (`ip:${clientIp}`), and enforced fail-closed HTTP 503 responses in production when rate limit RPCs fail or emit malformed reset timestamps.
 - **Actionable Recommendation for Amazon / Maintainers:** Ensure gateway frameworks and architecture blueprints explicitly document guard execution order hierarchies between global pre-auth rate limiters and route-level cryptographic token authenticators, emphasizing fail-closed defaults and IP-based fallback over unverified client headers.
+
+---
+
+### [FL-011] Edge KV Caching of Dynamic AI Endpoints Causes Cross-Tenant Leakage and Freshness Gaps
+- **Date:** 2026-10-10
+- **Component / SDK:** Cloudflare Workers KV / Edge Gateway / NestJS AI Gateway
+- **Severity:** High
+- **Expected Behavior:** Edge caching should accelerate repeat AI queries while maintaining absolute tenant isolation and freshness boundaries.
+- **Actual Behavior:** Caching POST `/wisp/query` responses at the Cloudflare Edge KV tier lacked visibility into profile ownership, viewer device tokens, and atomic cache validation. In shared household environments or multi-tenant deployments, caching dynamic user queries at the edge risked serving cached responses across unverified devices and bypassed server-side anti-spoiler playhead clamping.
+- **Workaround Implemented:** Bypassed edge KV caching completely for `/wisp/query`, routing all queries directly to the NestJS origin with `Cache-Control: private, no-cache, no-store, must-revalidate`. Relied on the backend's deterministic sub-10ms PostgreSQL temporal cache (`get_or_touch_ai_cache`) which performs complete device token authentication, profile ownership checks, and runtime schema/spoiler boundary validation before serving or storing cards.
+- **Actionable Recommendation for Cloudflare / Amazon Maintainers:** Clearly designate edge caching patterns for static assets vs user-specific AI inference. Never place shared edge KV caches in front of authenticated user-personalized AI endpoints without end-to-end device cryptographic binding.
+
+---
+
+### [FL-012] Binding CSRF Tokens Exclusively to Client IPs Breaks Mobile/NAT Viewers While Lacking Session Anchors
+- **Date:** 2026-10-11
+- **Component / SDK:** CSRF Defense / Express Cookie Parser / Mobile Hotspots & CGNAT
+- **Severity:** Medium
+- **Expected Behavior:** CSRF tokens bound to client identity should prevent cross-origin request forgery without disrupting legitimate users whose outbound network IP changes dynamically.
+- **Actual Behavior:** Binding CSRF tokens solely to `clientIp` caused frequent false-positive CSRF rejections for Fire TV devices connected to dynamic 4G/5G mobile hotspots or Carrier-Grade NAT (CGNAT) pools where egress IPs rotate between requests. Additionally, without session cookies, untrusted direct HTTP requests could forge forwarding headers (`X-Forwarded-For`) to manipulate IP-bound tokens.
+- **Workaround Implemented:** Introduced server-managed `wisp_csrf_session` HttpOnly cookies to bind CSRF tokens to stable browser/client sessions (`session:<sessionId>`), falling back to trusted socket client IPs (`ip:<clientIp>`) only when cookies are disabled. Enforced strict proxy boundaries (`TRUST_PROXY`) so forwarding headers are never trusted on direct connections.
+- **Actionable Recommendation for Maintainers:** When designing CSRF token binding for consumer TV and web applications, anchor tokens to cryptographically random, server-managed HttpOnly session cookies rather than raw client IP addresses.

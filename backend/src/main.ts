@@ -16,6 +16,12 @@ async function bootstrap() {
   // Disable default bodyParser so strict 16 KB payload boundary is enforced
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
+  // Configure trusted proxy handling when enabled
+  if (process.env.TRUST_PROXY === 'true' || process.env.TRUST_PROXY === '1') {
+    const expressApp = app.getHttpAdapter().getInstance();
+    expressApp.set('trust proxy', 1);
+  }
+
   // 1. Strict 16 KB Request Payload Protection
   app.use(json({ limit: '16kb' }));
   app.use(urlencoded({ extended: true, limit: '16kb' }));

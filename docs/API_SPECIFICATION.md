@@ -708,6 +708,114 @@ Returns the updated `ViewingProfile` object.
 
 ---
 
+#### 5.3 Viewer Feedback Voting (`POST /api/v1/wisp/interactions/:id/vote`)
+- **Path:** `POST /api/v1/wisp/interactions/:id/vote`
+- **Method:** `POST`
+- **Auth Guard:** `DeviceAuthGuard` (`Authorization: Bearer <token>` or `X-Device-Token`)
+- **Purpose:** Records viewer helpfulness feedback (+1, 0, -1) on an AI interaction card.
+- **Security & Integrity Invariants:**
+  - Evaluated via atomic PostgreSQL RPC `vote_interaction_atomic` (or server-side scoped update with returned row verification).
+  - Strictly verifies that the target interaction is linked to a profile owned by the calling device (`profiles.device_id = authenticatedDeviceId`), eliminating TOCTOU authorization races.
+
+**Request Body (`VoteInteractionDto`):**
+```json
+{
+  "vote": 1
+}
+```
+
+**Success Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "interactionId": "33333333-3333-3333-3333-333333333333",
+  "vote": 1
+}
+```
+
+---
+
+#### 5.4 Conversation Sessions & Bookmarks API (`/api/v1/sessions`)
+
+##### Create Bookmark
+- **Path:** `POST /api/v1/sessions/:episodeId/bookmarks`
+- **Method:** `POST`
+- **Auth Guard:** `DeviceAuthGuard` (`Authorization: Bearer <token>` or `X-Device-Token`)
+- **Purpose:** Pins a timestamped AI insight card or viewer note into `bookmarked_moments` on the device's conversation session.
+- **Security & Integrity Invariants:**
+  - Executed via atomic PostgreSQL RPC `add_session_bookmark` with row-level locking (`FOR UPDATE`).
+  - Strict profile ownership check (`profiles.device_id = authenticatedDeviceId`).
+  - Concurrent deduplication on matching `interactionId` or playback position + label.
+  - Automatically resets expired sessions (`expires_at < now()`) to a fresh session rather than appending to stale historical rows.
+  - Hard cap of 100 bookmark entries per session to prevent unbounded JSONB storage growth.
+  - Runtime response card validation: `dto.aiCard` is validated against `validateWispResponseCard`, enforcing `spoilerSafeUpToMs <= playbackPositionMs` and matching dimensions.
+
+**Request Body (`CreateBookmarkDto`):**
+```json
+{
+  "playbackPositionMs": 45000,
+  "label": "Watchtower Strategy Note",
+  "profileId": "11111111-1111-1111-1111-111111111111",
+  "interactionId": "33333333-3333-3333-3333-333333333333",
+  "aiCard": {
+    "headline": "Thom — Defensive Commander",
+    "body": "Thom is directing the Oude Kerk watchtower defenses while the team aligns the beacon.",
+    "spoilerSafeUpToMs": 45000
+  }
+}
+```
+
+**Success Response (`200 OK`):**
+```json
+{
+  "success": true,
+  "bookmark": {
+    "id": "bkmk-44444444-4444-4444-4444-444444444444",
+    "playbackPositionMs": 45000,
+    "label": "Watchtower Strategy Note",
+    "createdAt": "2026-10-16T10:00:00.000Z",
+    "aiCard": {
+      "headline": "Thom — Defensive Commander",
+      "body": "Thom is directing the Oude Kerk watchtower defenses while the team aligns the beacon.",
+      "spoilerSafeUpToMs": 45000
+    }
+  },
+  "sessionId": "55555555-5555-5555-5555-555555555555",
+  "bookmarkedMoments": [...]
+}
+```
+
+##### Get Active Conversation Session
+- **Path:** `GET /api/v1/sessions/:episodeId`
+- **Method:** `GET`
+- **Auth Guard:** `DeviceAuthGuard` (`Authorization: Bearer <token>` or `X-Device-Token`)
+- **Purpose:** Fetches the active conversation session, recent interaction turns, and pinned bookmarks for this episode and authenticated device.
+
+---
+
+### Security Architecture & Operational Invariants
+
+1. **Edge Cache Forwarding & Private Cache-Control:**
+   - Cloudflare Worker edge routes (`/wisp/query`) bypass edge KV caching completely and proxy directly to the NestJS origin.
+   - Emits `Cache-Control: private, no-cache, no-store, must-revalidate` for user-specific AI responses to prevent edge tenant leakage and intermediate caching.
+   - Backend maintains the deterministic 15-second sub-10ms PostgreSQL temporal cache (`get_or_touch_ai_cache`) scoped to episode, action, profile mode, 15-second playhead bucket, and prompt hash.
+
+2. **CSRF Session Cookie Binding:**
+   - Web / Browser clients receive an `HttpOnly`, `SameSite=Lax` session cookie (`wisp_csrf_session`) generated with cryptographic entropy on initial CSRF token retrieval (`GET /api/v1/security/csrf-token`).
+   - CSRF tokens are cryptographically bound to `session:<sessionId>` (with fallback to verified client IP `ip:<clientIp>`).
+   - Replay attempts using a CSRF token with a mismatched session cookie are rejected with HTTP 403 `ForbiddenException`.
+
+3. **Two-Tier Rate Limiting & Fail-Closed 503 Semantics:**
+   - In production (`NODE_ENV=production`), missing or unconfigured Supabase database connections fail closed immediately with HTTP 503 `ServiceUnavailableException`. Process-local in-memory bypasses are strictly forbidden in production.
+   - All RPC responses from `check_device_rate_limit` are validated against strict runtime schemas (`allowed` boolean, non-negative integer counts, `remaining <= max_requests`, consistency, and valid `window_reset_at` within 24h). Malformed RPC payloads trigger fail-closed 503 errors.
+   - Forwarding headers (`CF-Connecting-IP`, `X-Forwarded-For`) are trusted only when `TRUST_PROXY` is explicitly enabled; direct untrusted connections rely on verified socket IPs.
+
+4. **Shared Runtime Response Card Validation:**
+   - All AI cards—generated engine output, backend database cache hits, and client-submitted bookmark cards—must pass `validateWispResponseCard`.
+   - Enforces required `headline` (<= 120 chars) and `body` (<= 2000 chars), strict anti-spoiler boundaries (`spoilerSafeUpToMs <= playbackPositionMs`), matching episode/action/profile dimensions, 2 to 4 quick action chips, and valid quiz payload structure.
+
+---
+
 ### Module 6: Health & Operational Probes (`/api/v1/health`)
 
 #### 6.1 Service Liveness Probe

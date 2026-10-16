@@ -4,9 +4,11 @@ import assert from 'node:assert/strict';
 import crypto from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import {
+  BadRequestException,
   ForbiddenException,
   HttpException,
   HttpStatus,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 
@@ -26,6 +28,21 @@ import {
   HouseholdProfileMode,
   WispActionType,
 } from '../dist/common/dto/wisp-query.dto.js';
+import { extractClientIp } from '../dist/common/security/client-ip.util.js';
+import {
+  resolveOrCreateCsrfSessionId,
+  resolveClientBindingIdentifier,
+  CSRF_SESSION_COOKIE,
+} from '../dist/common/security/csrf-session.util.js';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
+import { validateWispResponseCard } from '../dist/common/dto/response-card-validator.js';
+import { CreateProfileDto } from '../dist/modules/profiles/dto/create-profile.dto.js';
+import { UpdateProfileDto } from '../dist/modules/profiles/dto/update-profile.dto.js';
+import { ProfilesService } from '../dist/modules/profiles/profiles.service.js';
+import { CreateBookmarkDto } from '../dist/modules/sessions/dto/create-bookmark.dto.js';
+import { WispQueryRequestDto } from '../dist/common/dto/wisp-query.dto.js';
+import { GlobalHttpExceptionFilter } from '../dist/common/filters/http-exception.filter.js';
 
 function createMockSupabase(handlers: {
   rpc?: (name: string, params: any) => Promise<{ data: any; error: any }>;
@@ -998,4 +1015,591 @@ describe('PR Review Security Blockers Regression Suite', () => {
       assert.equal(sanitized.cleanKey, 'safe  text');
     });
   });
+
+  // =========================================================================
+  // Blocker 15: Production unconfigured Supabase rate limit fail-closed (Blocker 3)
+  // =========================================================================
+  describe('Blocker 15: Production unconfigured Supabase fail-closed', () => {
+    it('throws 503 in production when Supabase is unconfigured, rejecting in-memory bypass', async () => {
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'production';
+      try {
+        const unconfiguredSupabase = Object.create(SupabaseService.prototype);
+        unconfiguredSupabase.isConfigured = () => false;
+
+        const guard = new DatabaseRateLimitGuard(unconfiguredSupabase);
+        const req = { url: '/api/v1/context/query', method: 'POST', ip: '10.0.0.1', headers: {} };
+
+        await assert.rejects(
+          async () => guard.canActivate(createMockContext(req)),
+          (err: any) =>
+            err instanceof HttpException &&
+            err.getStatus() === HttpStatus.SERVICE_UNAVAILABLE &&
+            err.getResponse()?.headline === 'Service Temporarily Unavailable',
+        );
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+
+    it('permits in-memory limiter in development when Supabase is unconfigured', async () => {
+      const origEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = 'development';
+      try {
+        const unconfiguredSupabase = Object.create(SupabaseService.prototype);
+        unconfiguredSupabase.isConfigured = () => false;
+
+        const guard = new DatabaseRateLimitGuard(unconfiguredSupabase);
+        const req = { url: '/api/v1/context/query', method: 'POST', ip: '10.0.0.99', headers: {} };
+
+        const allowed = await guard.canActivate(createMockContext(req));
+        assert.equal(allowed, true);
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    });
+  });
+
+  // =========================================================================
+  // Blocker 16: Strict rate-limit RPC response schema validation (Blocker 4)
+  // =========================================================================
+  describe('Blocker 16: Strict rate-limit RPC response schema validation', () => {
+    const origEnv = process.env.NODE_ENV;
+
+    const testMalformedRpcField = async (fieldDescription: string, malformedData: any) => {
+      process.env.NODE_ENV = 'production';
+      try {
+        const mockSupabase = createMockSupabase({
+          rpc: async () => ({
+            data: malformedData,
+            error: null,
+          }),
+        });
+        const guard = new DatabaseRateLimitGuard(mockSupabase);
+        const req = { url: '/api/v1/context/query', method: 'POST', ip: '10.0.0.1', headers: {} };
+
+        await assert.rejects(
+          async () => guard.canActivate(createMockContext(req)),
+          (err: any) =>
+            err instanceof HttpException &&
+            err.getStatus() === HttpStatus.SERVICE_UNAVAILABLE,
+          `Expected 503 for malformed RPC field: ${fieldDescription}`,
+        );
+      } finally {
+        process.env.NODE_ENV = origEnv;
+      }
+    };
+
+    it('rejects non-boolean allowed field', async () => {
+      await testMalformedRpcField('non-boolean allowed', {
+        allowed: 'true', // string, not boolean
+        device_id: 'ip:10.0.0.1',
+        current_count: 1,
+        max_requests: 30,
+        remaining: 29,
+        window_reset_at: new Date(Date.now() + 60000).toISOString(),
+      });
+    });
+
+    it('rejects mismatched device_id field', async () => {
+      await testMalformedRpcField('mismatched device_id', {
+        allowed: true,
+        device_id: 'ip:192.168.1.1', // different from ip:10.0.0.1
+        current_count: 1,
+        max_requests: 30,
+        remaining: 29,
+        window_reset_at: new Date(Date.now() + 60000).toISOString(),
+      });
+    });
+
+    it('rejects negative current_count', async () => {
+      await testMalformedRpcField('negative current_count', {
+        allowed: true,
+        device_id: 'ip:10.0.0.1',
+        current_count: -1,
+        max_requests: 30,
+        remaining: 29,
+        window_reset_at: new Date(Date.now() + 60000).toISOString(),
+      });
+    });
+
+    it('rejects negative or non-integer max_requests', async () => {
+      await testMalformedRpcField('non-integer max_requests', {
+        allowed: true,
+        device_id: 'ip:10.0.0.1',
+        current_count: 1,
+        max_requests: 30.5,
+        remaining: 29,
+        window_reset_at: new Date(Date.now() + 60000).toISOString(),
+      });
+    });
+
+    it('rejects negative remaining', async () => {
+      await testMalformedRpcField('negative remaining', {
+        allowed: true,
+        device_id: 'ip:10.0.0.1',
+        current_count: 1,
+        max_requests: 30,
+        remaining: -5,
+        window_reset_at: new Date(Date.now() + 60000).toISOString(),
+      });
+    });
+
+    it('rejects remaining > max_requests', async () => {
+      await testMalformedRpcField('remaining > max_requests', {
+        allowed: true,
+        device_id: 'ip:10.0.0.1',
+        current_count: 1,
+        max_requests: 30,
+        remaining: 35,
+        window_reset_at: new Date(Date.now() + 60000).toISOString(),
+      });
+    });
+
+    it('rejects inconsistent count and remaining (remaining !== max - count)', async () => {
+      await testMalformedRpcField('inconsistent count and remaining', {
+        allowed: true,
+        device_id: 'ip:10.0.0.1',
+        current_count: 10,
+        max_requests: 30,
+        remaining: 25, // should be 20
+        window_reset_at: new Date(Date.now() + 60000).toISOString(),
+      });
+    });
+
+    it('rejects window_reset_at in the past', async () => {
+      await testMalformedRpcField('window_reset_at in the past', {
+        allowed: true,
+        device_id: 'ip:10.0.0.1',
+        current_count: 1,
+        max_requests: 30,
+        remaining: 29,
+        window_reset_at: new Date(Date.now() - 60000).toISOString(),
+      });
+    });
+
+    it('rejects window_reset_at unreasonably far in future (>24h)', async () => {
+      await testMalformedRpcField('window_reset_at > 24h', {
+        allowed: true,
+        device_id: 'ip:10.0.0.1',
+        current_count: 1,
+        max_requests: 30,
+        remaining: 29,
+        window_reset_at: new Date(Date.now() + 48 * 3600 * 1000).toISOString(),
+      });
+    });
+  });
+
+  // =========================================================================
+  // Blocker 17: Safe client IP extraction boundary (Blocker 5)
+  // =========================================================================
+  describe('Blocker 17: Safe client IP extraction boundary', () => {
+    it('ignores CF-Connecting-IP and X-Forwarded-For on direct connection when TRUST_PROXY is disabled', () => {
+      const orig = process.env.TRUST_PROXY;
+      delete process.env.TRUST_PROXY;
+      try {
+        const req = {
+          ip: '203.0.113.195',
+          socket: { remoteAddress: '203.0.113.195' },
+          headers: {
+            'cf-connecting-ip': '198.51.100.99',
+            'x-forwarded-for': '198.51.100.100, 10.0.0.1',
+          },
+        };
+        const ip = extractClientIp(req);
+        assert.equal(ip, '203.0.113.195');
+      } finally {
+        process.env.TRUST_PROXY = orig;
+      }
+    });
+
+    it('honors CF-Connecting-IP when TRUST_PROXY is enabled', () => {
+      const orig = process.env.TRUST_PROXY;
+      process.env.TRUST_PROXY = 'true';
+      try {
+        const req = {
+          ip: '10.0.0.1',
+          headers: {
+            'cf-connecting-ip': '198.51.100.42',
+            'x-forwarded-for': '198.51.100.99',
+          },
+        };
+        const ip = extractClientIp(req);
+        assert.equal(ip, '198.51.100.42');
+      } finally {
+        process.env.TRUST_PROXY = orig;
+      }
+    });
+  });
+
+  // =========================================================================
+  // Blocker 18: Bookmark aiCard schema & spoiler boundary (Blocker 9)
+  // =========================================================================
+  describe('Blocker 18: Bookmark aiCard schema and anti-spoiler enforcement', () => {
+    it('rejects bookmark aiCard with spoilerSafeUpToMs exceeding playbackPositionMs', async () => {
+      const sessions = new SessionsService(
+        createMockSupabase({}),
+        createMockCatalogService(),
+      );
+
+      await assert.rejects(
+        async () =>
+          sessions.createBookmark('ep-1', 'device-1', {
+            playbackPositionMs: 15000,
+            label: 'Spoiler moment',
+            aiCard: {
+              headline: 'Future reveal',
+              body: 'This happened later in the show',
+              spoilerSafeUpToMs: 45000, // Spoiler!
+            },
+          }),
+        (err: any) =>
+          err instanceof BadRequestException &&
+          err.message.includes('Anti-spoiler violation'),
+      );
+    });
+
+    it('rejects bookmark aiCard missing headline or body', async () => {
+      const sessions = new SessionsService(
+        createMockSupabase({}),
+        createMockCatalogService(),
+      );
+
+      await assert.rejects(
+        async () =>
+          sessions.createBookmark('ep-1', 'device-1', {
+            playbackPositionMs: 15000,
+            label: 'Incomplete moment',
+            aiCard: {
+              headline: 'Only headline',
+              // missing body!
+              spoilerSafeUpToMs: 15000,
+            },
+          }),
+        (err: any) =>
+          err instanceof BadRequestException &&
+          err.message.includes('Body must be a non-empty string'),
+      );
+    });
+
+    it('rejects bookmark aiCard with mismatched episodeId', async () => {
+      const sessions = new SessionsService(
+        createMockSupabase({}),
+        createMockCatalogService(),
+      );
+
+      await assert.rejects(
+        async () =>
+          sessions.createBookmark('ep-1', 'device-1', {
+            playbackPositionMs: 15000,
+            label: 'Mismatch episode',
+            aiCard: {
+              episodeId: 'different-episode',
+              headline: 'Headline',
+              body: 'Body text',
+              spoilerSafeUpToMs: 15000,
+            },
+          }),
+        (err: any) =>
+          err instanceof BadRequestException &&
+          err.message.includes('Episode mismatch'),
+      );
+    });
+  });
+
+  // =========================================================================
+  // Blocker 19: AI Gateway generated card runtime schema validation (Blocker 8)
+  // =========================================================================
+  describe('Blocker 19: AI Gateway generated card runtime schema validation', () => {
+    it('rejects generated card when AI engine returns future spoiler', async () => {
+      const config = new ConfigService({});
+      const aiGateway = new AiGatewayService(
+        config,
+        createMockContextService(),
+        createMockSupabase({}),
+      );
+
+      (aiGateway as any).engine.execute = async () => ({
+        headline: 'Spoiler generated',
+        body: 'Leaked future spoiler',
+        spoilerSafeUpToMs: 60000, // 60s at 10s playback
+      });
+
+      await assert.rejects(
+        async () =>
+          aiGateway.processWispQuery({
+            episodeId: 'ep-1',
+            playbackPositionMs: 10000,
+            actionType: WispActionType.CONTEXTUAL_QA,
+            prompt: 'What happens next?',
+          }),
+        (err: any) =>
+          err instanceof ServiceUnavailableException &&
+          err.message.includes('Anti-spoiler violation'),
+      );
+    });
+
+    it('rejects generated card when AI engine produces malformed quiz options', async () => {
+      const config = new ConfigService({});
+      const aiGateway = new AiGatewayService(
+        config,
+        createMockContextService(),
+        createMockSupabase({}),
+      );
+
+      (aiGateway as any).engine.execute = async () => ({
+        headline: 'Quiz question',
+        body: 'Quiz body',
+        spoilerSafeUpToMs: 10000,
+        quizPayload: {
+          question: 'Who did it?',
+          options: ['Only one option'], // Invalid: requires 2 to 4 choices
+          correctIndex: 0,
+        },
+      });
+
+      await assert.rejects(
+        async () =>
+          aiGateway.processWispQuery({
+            episodeId: 'ep-1',
+            playbackPositionMs: 10000,
+            actionType: WispActionType.POST_WATCH_QUIZ,
+            prompt: 'Start quiz',
+          }),
+        (err: any) =>
+          err instanceof ServiceUnavailableException &&
+          err.message.includes('Quiz options must be an array of 2 to 4 choices'),
+      );
+    });
+  });
+
+  // =========================================================================
+  // Blocker 20: CSRF token session cookie binding (Blocker 11)
+  // =========================================================================
+  describe('Blocker 20: CSRF token session cookie binding', () => {
+    const csrfService = new CsrfService();
+    const guard = new CsrfAndOriginGuard(csrfService);
+
+    it('permits request when CSRF token is bound to matching session cookie', () => {
+      const sessionId = 'session_test_xyz123';
+      const token = csrfService.generateToken('session:' + sessionId).csrfToken;
+
+      const req = {
+        method: 'POST',
+        path: '/api/v1/sessions',
+        headers: {
+          'x-csrf-token': token,
+          cookie: `${CSRF_SESSION_COOKIE}=${sessionId}`,
+          origin: 'http://localhost:3000',
+        },
+      };
+
+      assert.equal(guard.canActivate(createMockContext(req)), true);
+    });
+
+    it('rejects replay when token is presented with different session cookie', () => {
+      const sessionId = 'session_test_xyz123';
+      const token = csrfService.generateToken('session:' + sessionId).csrfToken;
+
+      const req = {
+        method: 'POST',
+        path: '/api/v1/sessions',
+        headers: {
+          'x-csrf-token': token,
+          cookie: `${CSRF_SESSION_COOKIE}=session_different_999`,
+          origin: 'http://localhost:3000',
+        },
+      };
+
+      assert.throws(
+        () => guard.canActivate(createMockContext(req)),
+        (err: any) =>
+          err instanceof ForbiddenException &&
+          err.message.includes('Invalid or expired CSRF token'),
+      );
+    });
+  });
+
+  // =========================================================================
+  // Blocker 21: Profile DTO hex color and displayName validation
+  // =========================================================================
+  describe('Blocker 21: Profile DTO hex color and displayName validation', () => {
+    it('accepts valid 6-character hex colors in CreateProfileDto', async () => {
+      const dto = plainToInstance(CreateProfileDto, {
+        deviceId: 'device-test-01',
+        displayName: 'Test Viewer',
+        avatarColor: '#4f46e5',
+      });
+      const errors = await validate(dto);
+      assert.equal(errors.length, 0);
+    });
+
+    it('rejects malformed or injection strings in avatarColor', async () => {
+      for (const invalid of ['red', 'rgb(255,0,0)', 'url(x)', '#123', '#gggggg', 'javascript:alert(1)']) {
+        const dto = plainToInstance(CreateProfileDto, {
+          deviceId: 'device-test-01',
+          displayName: 'Test Viewer',
+          avatarColor: invalid,
+        });
+        const errors = await validate(dto);
+        assert.ok(errors.length > 0, `Expected invalid avatarColor '${invalid}' to fail`);
+        assert.ok(errors.some((e) => e.property === 'avatarColor'));
+      }
+    });
+
+    it('rejects empty or whitespace-only displayName in UpdateProfileDto', async () => {
+      const dto = plainToInstance(UpdateProfileDto, {
+        displayName: '   ',
+      });
+      const errors = await validate(dto);
+      assert.ok(errors.length > 0);
+      assert.ok(errors.some((e) => e.property === 'displayName'));
+    });
+  });
+
+  // =========================================================================
+  // Blocker 22: Enforce 10-profile maximum per device
+  // =========================================================================
+  describe('Blocker 22: Enforce 10-profile maximum per device', () => {
+    it('rejects creation of more than 10 profiles for a single device with 400 BadRequest', async () => {
+      const mockSupabase = createMockSupabase({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              order: () => Promise.resolve({
+                data: Array.from({ length: 10 }, (_, i) => ({
+                  id: `profile-${i}`,
+                  device_id: 'device-at-capacity',
+                  display_name: `Viewer ${i}`,
+                  mode: HouseholdProfileMode.QUICK_GLANCE,
+                  spoiler_strictness: 'strict',
+                  voice_tts_enabled: false,
+                  last_active_at: new Date().toISOString(),
+                })),
+                error: null,
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const profilesService = new ProfilesService(mockSupabase);
+
+      await assert.rejects(
+        async () =>
+          profilesService.createProfile(
+            {
+              deviceId: 'device-at-capacity',
+              displayName: 'Viewer 11',
+            },
+            'device-at-capacity',
+          ),
+        (err: any) =>
+          err instanceof BadRequestException &&
+          err.message.includes('Maximum limit of 10 profiles reached for this device'),
+      );
+    });
+  });
+
+  // =========================================================================
+  // Blocker 23: Bookmark and WispQuery DTO bounds enforcement
+  // =========================================================================
+  describe('Blocker 23: Bookmark and WispQuery DTO bounds enforcement', () => {
+    it('rejects CreateBookmarkDto with playbackPositionMs exceeding 24 hours', async () => {
+      const dto = plainToInstance(CreateBookmarkDto, {
+        playbackPositionMs: 86400001,
+        label: 'Moment 1',
+      });
+      const errors = await validate(dto);
+      assert.ok(errors.some((e) => e.property === 'playbackPositionMs'));
+    });
+
+    it('rejects CreateBookmarkDto with label exceeding 200 characters', async () => {
+      const dto = plainToInstance(CreateBookmarkDto, {
+        playbackPositionMs: 1000,
+        label: 'A'.repeat(201),
+      });
+      const errors = await validate(dto);
+      assert.ok(errors.some((e) => e.property === 'label'));
+    });
+
+    it('rejects WispQueryRequestDto with playbackPositionMs exceeding 24 hours', async () => {
+      const dto = plainToInstance(WispQueryRequestDto, {
+        episodeId: 'ep-1',
+        playbackPositionMs: 86400001,
+        actionType: WispActionType.CONTEXTUAL_QA,
+        prompt: 'What happened?',
+      });
+      const errors = await validate(dto);
+      assert.ok(errors.some((e) => e.property === 'playbackPositionMs'));
+    });
+
+    it('rejects WispQueryRequestDto with episodeId exceeding 100 characters', async () => {
+      const dto = plainToInstance(WispQueryRequestDto, {
+        episodeId: 'E'.repeat(101),
+        playbackPositionMs: 1000,
+        actionType: WispActionType.CONTEXTUAL_QA,
+        prompt: 'What happened?',
+      });
+      const errors = await validate(dto);
+      assert.ok(errors.some((e) => e.property === 'episodeId'));
+    });
+  });
+
+  // =========================================================================
+  // Blocker 24: GlobalHttpExceptionFilter path sanitization
+  // =========================================================================
+  describe('Blocker 24: GlobalHttpExceptionFilter path sanitization', () => {
+    it('sanitizes reflected path in error responses stripping HTML tags and control chars', () => {
+      const filter = new GlobalHttpExceptionFilter();
+      let capturedResponse: any = null;
+      let capturedStatus = 0;
+
+      const mockHost = {
+        switchToHttp: () => ({
+          getRequest: () => ({
+            url: '/api/v1/context/<script>alert(1)</script>?q=<|im_start|>\x00evil',
+            headers: {},
+          }),
+          getResponse: () => ({
+            setHeader: () => {},
+            status: (s: number) => {
+              capturedStatus = s;
+              return {
+                json: (body: any) => {
+                  capturedResponse = body;
+                },
+              };
+            },
+          }),
+        }),
+      } as any;
+
+      filter.catch(new BadRequestException('Invalid input'), mockHost);
+
+      assert.equal(capturedStatus, 400);
+      assert.ok(capturedResponse);
+      assert.ok(!capturedResponse.path.includes('<script>'));
+      assert.ok(!capturedResponse.path.includes('<|im_start|>'));
+      assert.ok(!capturedResponse.path.includes('\x00'));
+      assert.equal(capturedResponse.path, '/api/v1/context/scriptalert(1)/script?q=evil');
+    });
+  });
+
+  // =========================================================================
+  // Blocker 25: Memory hygiene and collection bounds
+  // =========================================================================
+  describe('Blocker 25: Memory hygiene and collection bounds', () => {
+    it('DeviceTokenService purges expired challenges and caps challenge storage', () => {
+      const service = new DeviceTokenService();
+      // Create an expired challenge
+      service.createEnrollmentChallenge('device-old', -1);
+      // Create fresh challenge, which triggers expired cleanup
+      service.createEnrollmentChallenge('device-fresh', 900);
+
+      // Consuming expired challenge fails
+      assert.equal(service.consumeEnrollmentCode('device-old', 'any-code'), false);
+    });
+  });
 });
+
