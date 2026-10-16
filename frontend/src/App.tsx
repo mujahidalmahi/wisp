@@ -11,12 +11,16 @@ import {
 import { useTVRemoteHandler } from './hooks/useTVRemoteHandler';
 import { VideoPlayerSurface } from './components/player/VideoPlayerSurface';
 import { WispOverlayDrawer } from './components/overlay/WispOverlayDrawer';
+import { UnlockedEntity } from './components/overlay/ActiveEntitiesBar';
+import { CatalogSelector, DEMO_PROGRAMS, CatalogProgram } from './components/catalog/CatalogSelector';
 import { TVTheme } from './theme/tvTheme';
 
 export default function App() {
-  const [episodeId] = useState<string>(EnvConfig.defaultEpisodeId);
+  const [selectedProgram, setSelectedProgram] = useState<CatalogProgram>(DEMO_PROGRAMS[0]);
+  const [episodeId, setEpisodeId] = useState<string>(selectedProgram.episodeId);
   const [playbackPositionMs, setPlaybackPositionMs] = useState<number>(35000);
   const [overlayVisible, setOverlayVisible] = useState<boolean>(false);
+  const [catalogVisible, setCatalogVisible] = useState<boolean>(false);
   const [profileMode, setProfileMode] = useState<HouseholdProfileMode>('quick_glance');
 
   const [sceneContext, setSceneContext] = useState<InstantSceneContext | null>(null);
@@ -47,12 +51,26 @@ export default function App() {
 
   useTVRemoteHandler({
     onToggleWispOverlay: handleToggleWispOverlay,
-    onBack: () => setOverlayVisible(false),
+    onBack: () => {
+      if (catalogVisible) {
+        setCatalogVisible(false);
+      } else if (overlayVisible) {
+        setOverlayVisible(false);
+      }
+    },
   });
 
   useEffect(() => {
     loadInstantSceneContext(episodeId, playbackPositionMs);
   }, [episodeId, playbackPositionMs, loadInstantSceneContext]);
+
+  const handleSelectProgram = (prog: CatalogProgram) => {
+    setSelectedProgram(prog);
+    setEpisodeId(prog.episodeId);
+    setPlaybackPositionMs(25000); // Start near beginning of chosen show
+    setResponseCard(null);
+    loadInstantSceneContext(prog.episodeId, 25000);
+  };
 
   const handleSelectChip = async (chip: QuickActionChip) => {
     setLoadingAi(true);
@@ -73,15 +91,30 @@ export default function App() {
     }
   };
 
+  const handleAskAboutEntity = async (entity: UnlockedEntity) => {
+    await handleSelectChip({
+      id: `entity-${entity.name}`,
+      label: `Tell me about ${entity.name}`,
+      actionType: 'entity_explain',
+    });
+  };
+
   return (
     <SafeAreaView style={styles.root}>
       <VideoPlayerSurface
-        programTitle={sceneContext?.metadata.program_title || 'Tears of Steel'}
-        episodeTitle={sceneContext?.metadata.episode_title || 'The Oude Kerk Protocol'}
+        programTitle={sceneContext?.metadata.program_title || selectedProgram.title}
+        episodeTitle={sceneContext?.metadata.episode_title || selectedProgram.episodeTitle}
+        genre={selectedProgram.genre}
         playbackPositionMs={playbackPositionMs}
+        durationMs={selectedProgram.durationSeconds * 1000}
         overlayVisible={overlayVisible}
         onInvokeWisp={handleToggleWispOverlay}
-        onAdvanceTimestamp={(delta) => setPlaybackPositionMs((prev) => prev + delta)}
+        onAdvanceTimestamp={(delta) =>
+          setPlaybackPositionMs((prev) =>
+            Math.max(0, Math.min(selectedProgram.durationSeconds * 1000, prev + delta)),
+          )
+        }
+        onOpenCatalog={() => setCatalogVisible(true)}
       />
 
       <WispOverlayDrawer
@@ -94,6 +127,14 @@ export default function App() {
         profileMode={profileMode}
         onChangeProfileMode={setProfileMode}
         onSelectChip={handleSelectChip}
+        onAskAboutEntity={handleAskAboutEntity}
+      />
+
+      <CatalogSelector
+        visible={catalogVisible}
+        currentEpisodeId={episodeId}
+        onSelectProgram={handleSelectProgram}
+        onClose={() => setCatalogVisible(false)}
       />
     </SafeAreaView>
   );
