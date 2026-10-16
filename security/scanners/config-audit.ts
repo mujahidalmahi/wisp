@@ -122,7 +122,7 @@ export function runConfigurationAudit(rootDir = path.resolve(__dirname, '../../'
 
   const durationMs = Date.now() - start;
   const status =
-    findings.filter((f) => f.severity === Severity.CRITICAL).length > 0
+    findings.filter((f) => f.severity === Severity.CRITICAL || f.severity === Severity.HIGH).length > 0
       ? SecurityStatus.FAIL
       : findings.length > 0
         ? SecurityStatus.WARNING

@@ -84,8 +84,10 @@ export function runDependencyScan(rootDir = path.resolve(__dirname, '../../')): 
   const durationMs = Date.now() - start;
   const status =
     findings.some((f) => f.severity === Severity.CRITICAL || f.severity === Severity.HIGH)
-      ? SecurityStatus.WARNING
-      : SecurityStatus.PASS;
+      ? SecurityStatus.FAIL
+      : findings.length > 0
+        ? SecurityStatus.WARNING
+        : SecurityStatus.PASS;
 
   return {
     suite: 'Dependency & Supply-Chain Security Scanner',

@@ -108,6 +108,10 @@ export class DeviceTokenService implements OnModuleInit {
   revokeDevice(deviceId: string, reason = 'Operator action'): void {
     const cleanId = (deviceId || '').trim();
     if (cleanId) {
+      if (this.revokedDevices.size >= 10000) {
+        const oldest = this.revokedDevices.values().next().value;
+        if (oldest) this.revokedDevices.delete(oldest);
+      }
       this.revokedDevices.add(cleanId);
       this.logger.warn(`Device revoked: ${cleanId} (Reason: ${reason})`);
     }
@@ -132,6 +136,10 @@ export class DeviceTokenService implements OnModuleInit {
    */
   rotateDeviceSecret(deviceId: string): number {
     const cleanId = (deviceId || '').trim();
+    if (this.deviceEpochs.size >= 10000 && !this.deviceEpochs.has(cleanId)) {
+      const oldest = this.deviceEpochs.keys().next().value;
+      if (oldest) this.deviceEpochs.delete(oldest);
+    }
     const nextEpoch = (this.deviceEpochs.get(cleanId) || 1) + 1;
     this.deviceEpochs.set(cleanId, nextEpoch);
     this.logger.log(`Rotated device secret epoch for ${cleanId} to ${nextEpoch}`);
@@ -154,8 +162,23 @@ export class DeviceTokenService implements OnModuleInit {
     if (!cleanId || cleanId.length < 3) {
       throw new UnauthorizedException('Invalid device identifier');
     }
+
+    // Purge expired challenges and enforce map cap to prevent memory leaks
+    const now = Date.now();
+    if (this.enrollmentChallenges.size > 1000) {
+      for (const [key, ch] of this.enrollmentChallenges.entries()) {
+        if (now > ch.expiresAt) {
+          this.enrollmentChallenges.delete(key);
+        }
+      }
+    }
+    if (this.enrollmentChallenges.size >= 5000) {
+      const oldestKey = this.enrollmentChallenges.keys().next().value;
+      if (oldestKey) this.enrollmentChallenges.delete(oldestKey);
+    }
+
     const code = crypto.randomBytes(16).toString('hex');
-    const expiresAt = Date.now() + expiresInSeconds * 1000;
+    const expiresAt = now + expiresInSeconds * 1000;
     this.enrollmentChallenges.set(cleanId, {
       deviceId: cleanId,
       code,
@@ -164,6 +187,7 @@ export class DeviceTokenService implements OnModuleInit {
     });
     return { deviceId: cleanId, enrollmentCode: code, expiresAt };
   }
+
 
   /**
    * Validates and consumes a single-use enrollment code for deviceId.

@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../../modules/supabase/supabase.service';
 import { DeviceTokenService } from '../auth/device-token.service';
+import { extractClientIp } from './client-ip.util';
 
 interface RateLimitRpcResult {
   allowed: boolean;
@@ -105,16 +106,16 @@ export class DatabaseRateLimitGuard implements CanActivate {
           return this.handleInMemoryFallback(rateLimitIdentity, windowSec, maxRequests, response);
         }
 
-        // Validate window_reset_at date
-        const resetMs = new Date(data.window_reset_at).getTime();
-        if (isNaN(resetMs) || !data.window_reset_at) {
-          this.logger.error(`Malformed window_reset_at from rate limit RPC: ${data.window_reset_at}`);
+        // Validate entire RPC response payload schema, ranges, and consistency (Blocker 4)
+        const validated = this.validateRateLimitRpcResult(data, rateLimitIdentity, windowSec);
+        if (!validated) {
+          this.logger.error(`Malformed or inconsistent response from rate limit RPC: ${JSON.stringify(data)}`);
           if (this.isProduction()) {
             throw new HttpException(
               {
                 statusCode: HttpStatus.SERVICE_UNAVAILABLE,
                 error: 'ServiceUnavailable',
-                message: 'Invalid rate limiter window state.',
+                message: 'Invalid rate limiter state received from backend verification.',
               },
               HttpStatus.SERVICE_UNAVAILABLE,
             );
@@ -122,19 +123,20 @@ export class DatabaseRateLimitGuard implements CanActivate {
           return this.handleInMemoryFallback(rateLimitIdentity, windowSec, maxRequests, response);
         }
 
+        const resetMs = new Date(validated.window_reset_at).getTime();
         const resetEpoch = Math.ceil(resetMs / 1000);
         const retryAfterSec = Math.max(1, Math.ceil((resetMs - Date.now()) / 1000));
 
         // Emit standard rate-limit headers
-        response.setHeader('X-RateLimit-Limit', data.max_requests.toString());
-        response.setHeader('X-RateLimit-Remaining', data.remaining.toString());
+        response.setHeader('X-RateLimit-Limit', validated.max_requests.toString());
+        response.setHeader('X-RateLimit-Remaining', validated.remaining.toString());
         response.setHeader('X-RateLimit-Reset', resetEpoch.toString());
 
-        if (!data.allowed) {
+        if (!validated.allowed) {
           response.setHeader('Retry-After', retryAfterSec.toString());
 
           this.logger.warn(
-            `Rate limit exceeded for '${data.device_id}': ${data.current_count}/${data.max_requests} (Retry-After: ${retryAfterSec}s)`,
+            `Rate limit exceeded for '${validated.device_id}': ${validated.current_count}/${validated.max_requests} (Retry-After: ${retryAfterSec}s)`,
           );
 
           throw new HttpException(
@@ -168,7 +170,22 @@ export class DatabaseRateLimitGuard implements CanActivate {
       }
     }
 
-    // 4. In-Memory Fallback for test and unconfigured environments
+    // 4. In production, Supabase MUST be configured for persistent rate limiting (Blocker 3)
+    if (this.isProduction()) {
+      this.logger.error('Database rate limiting is unconfigured in production environment.');
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+          error: 'ServiceUnavailable',
+          message: 'Rate limiting service is unconfigured in production. Request denied for protection.',
+          headline: 'Service Temporarily Unavailable',
+          body: 'Wisp is currently unable to verify rate limits. Please try again later.',
+        },
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    // In-Memory Fallback permitted strictly for non-production / test environments
     return this.handleInMemoryFallback(rateLimitIdentity, windowSec, maxRequests, response);
   }
 
@@ -181,6 +198,15 @@ export class DatabaseRateLimitGuard implements CanActivate {
     const now = Date.now();
     const windowMs = windowSec * 1000;
     const currentWindowStart = Math.floor(now / windowMs) * windowMs;
+
+    // Prune stale windows if map grows large to prevent memory leaks
+    if (this.inMemoryWindows.size > 1000) {
+      for (const [key, val] of this.inMemoryWindows.entries()) {
+        if (now - val.windowStart > windowMs * 2) {
+          this.inMemoryWindows.delete(key);
+        }
+      }
+    }
 
     let tracker = this.inMemoryWindows.get(deviceId);
     if (!tracker || tracker.windowStart !== currentWindowStart) {
@@ -196,6 +222,7 @@ export class DatabaseRateLimitGuard implements CanActivate {
 
     if (response && typeof response.setHeader === 'function') {
       response.setHeader('X-RateLimit-Limit', maxRequests.toString());
+
       response.setHeader('X-RateLimit-Remaining', remaining.toString());
       response.setHeader('X-RateLimit-Reset', resetEpoch.toString());
     }
@@ -220,23 +247,64 @@ export class DatabaseRateLimitGuard implements CanActivate {
     return true;
   }
 
+  private validateRateLimitRpcResult(
+    data: any,
+    expectedIdentity: string,
+    windowSec: number,
+  ): RateLimitRpcResult | null {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return null;
+    }
+    if (typeof data.allowed !== 'boolean') {
+      return null;
+    }
+    if (typeof data.device_id !== 'string' || data.device_id.trim() !== expectedIdentity.trim()) {
+      return null;
+    }
+    if (
+      !Number.isInteger(data.current_count) ||
+      data.current_count < 0 ||
+      !Number.isInteger(data.max_requests) ||
+      data.max_requests <= 0 ||
+      !Number.isInteger(data.remaining) ||
+      data.remaining < 0 ||
+      data.remaining > data.max_requests
+    ) {
+      return null;
+    }
+
+    // Consistency check: remaining must match max - count (clamped at 0)
+    const expectedRemaining = Math.max(0, data.max_requests - data.current_count);
+    if (data.remaining !== expectedRemaining) {
+      return null;
+    }
+    const expectedAllowed = data.current_count <= data.max_requests;
+    if (data.allowed !== expectedAllowed) {
+      return null;
+    }
+
+    // Timestamp validation: valid ISO within expected window
+    if (!data.window_reset_at || typeof data.window_reset_at !== 'string') {
+      return null;
+    }
+    const resetMs = new Date(data.window_reset_at).getTime();
+    if (isNaN(resetMs)) {
+      return null;
+    }
+    const now = Date.now();
+    // Reset timestamp must be bounded: not more than 5s in past, not farther than window + 60s
+    if (resetMs < now - 5000 || resetMs > now + (windowSec + 60) * 1000) {
+      return null;
+    }
+
+    return data as RateLimitRpcResult;
+  }
+
   private isProduction(): boolean {
     return process.env.NODE_ENV === 'production';
   }
 
   private extractClientIp(request: any): string {
-    if (typeof request?.ip === 'string' && request.ip.trim().length > 0) {
-      return request.ip.trim();
-    }
-    const cfIp = request?.headers?.['cf-connecting-ip'];
-    if (typeof cfIp === 'string' && cfIp.trim().length > 0) {
-      return cfIp.trim();
-    }
-    const rawForwarded = request?.headers?.['x-forwarded-for'];
-    if (typeof rawForwarded === 'string' && rawForwarded.length > 0) {
-      const first = rawForwarded.split(',')[0].trim();
-      if (first) return first;
-    }
-    return request?.socket?.remoteAddress || '127.0.0.1';
+    return extractClientIp(request);
   }
 }

@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { sanitizeInputString } from '../security/input-sanitizer';
 
 @Catch()
 export class GlobalHttpExceptionFilter implements ExceptionFilter {
@@ -119,14 +120,18 @@ export class GlobalHttpExceptionFilter implements ExceptionFilter {
     response.setHeader('X-Request-Id', correlationId);
     response.setHeader('X-Response-Time', `${elapsedMs}ms`);
 
+    const rawPath = request.originalUrl || request.url || '';
+    const safePath = sanitizeInputString(rawPath).replace(/[<>"]/g, '');
+
     response.status(status).json({
       statusCode: status,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path: safePath,
       correlationId,
       error: errorName,
       message,
       ...extraFields,
     });
   }
+
 }

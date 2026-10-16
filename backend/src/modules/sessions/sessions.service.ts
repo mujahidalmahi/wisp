@@ -10,6 +10,7 @@ import * as crypto from 'crypto';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CatalogService } from '../catalog/catalog.service';
 import { CreateBookmarkDto } from './dto/create-bookmark.dto';
+import { validateWispResponseCard } from '../../common/dto/response-card-validator';
 
 export interface BookmarkedMoment {
   id: string;
@@ -148,11 +149,28 @@ export class SessionsService {
         : dto.playbackPositionMs,
     );
 
+    // Validate aiCard schema and anti-spoiler boundary if supplied (Blocker 9)
+    let validatedAiCard: any = null;
+    if (dto.aiCard) {
+      const valResult = validateWispResponseCard(dto.aiCard, {
+        episodeId,
+        actionType: (dto.aiCard as any)?.actionType || 'contextual_qa',
+        playbackPositionMs: safePlaybackMs,
+      });
+
+      if (!valResult.valid || !valResult.card) {
+        throw new BadRequestException(
+          `Invalid bookmark aiCard payload: ${valResult.reason}`,
+        );
+      }
+      validatedAiCard = valResult.card;
+    }
+
     const newBookmark: BookmarkedMoment = {
       id: crypto.randomUUID(),
       label: dto.label.trim(),
       playbackPositionMs: safePlaybackMs,
-      aiCard: dto.aiCard || null,
+      aiCard: validatedAiCard,
       interactionId: dto.interactionId || null,
       createdAt: new Date().toISOString(),
     };
@@ -182,76 +200,129 @@ export class SessionsService {
         }
       }
 
-      // 2. Check for active (unexpired) session
-      const nowIso = new Date().toISOString();
-      const { data: existingSession, error: fetchErr } = await client
-        .from('conversation_sessions')
-        .select('*')
-        .eq('device_id', cleanDeviceId)
-        .eq('episode_id', episodeId)
-        .gt('expires_at', nowIso)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      // 2. Attempt atomic PostgreSQL RPC first for optimal concurrency & locking (Blockers 6 & 7)
+      try {
+        const { data: rpcRes, error: rpcErr } = await client.rpc('add_session_bookmark', {
+          p_device_id: cleanDeviceId,
+          p_episode_id: episodeId,
+          p_profile_id: dto.profileId || null,
+          p_bookmark: newBookmark,
+          p_last_playback_position_ms: safePlaybackMs,
+        });
 
-      if (fetchErr) {
-        throw new ServiceUnavailableException(`Database error: ${fetchErr.message}`);
+        if (!rpcErr && rpcRes && rpcRes.session_id) {
+          return {
+            success: true,
+            bookmark: rpcRes.bookmark || newBookmark,
+            sessionId: rpcRes.session_id,
+            bookmarkedMoments: Array.isArray(rpcRes.bookmarked_moments)
+              ? rpcRes.bookmarked_moments
+              : [newBookmark],
+          };
+        }
+        if (rpcErr && rpcErr.message && rpcErr.message.includes('PROFILE_MISMATCH')) {
+          throw new ForbiddenException(
+            `Profile '${dto.profileId}' does not belong to authenticated device '${cleanDeviceId}'`,
+          );
+        }
+      } catch (rpcEx: any) {
+        if (rpcEx instanceof ForbiddenException) throw rpcEx;
+        // If RPC function not present or mocked, fall through to optimistic retry loop
       }
 
-      if (existingSession) {
-        const existingBookmarks: BookmarkedMoment[] = Array.isArray(
-          existingSession.bookmarked_moments,
-        )
-          ? existingSession.bookmarked_moments
-          : [];
-
-        // Idempotency check: avoid duplicate appends on retries (Blocker 5)
-        const existingMatching = existingBookmarks.find(
-          (b) =>
-            (dto.interactionId && b.interactionId === dto.interactionId) ||
-            (b.playbackPositionMs === safePlaybackMs && b.label === newBookmark.label),
-        );
-        const isDuplicate = !!existingMatching;
-        const returnBookmark = existingMatching || newBookmark;
-
-        // Cap maximum bookmarks at 100 to prevent unbounded JSONB growth
-        const updatedBookmarks = isDuplicate
-          ? existingBookmarks
-          : [...existingBookmarks.slice(-99), newBookmark];
-
-        // Safely scope update to session ID, authenticated device ID, episode ID, and active expiry (Blockers 4, 6 & 7)
-        const { data: updated, error: updateErr } = await client
+      // 3. Concurrency-safe optimistic retry loop (up to 3 attempts)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const nowIso = new Date().toISOString();
+        const { data: existingSession, error: fetchErr } = await client
           .from('conversation_sessions')
-          .update({
-            bookmarked_moments: updatedBookmarks,
-            last_playback_position_ms: safePlaybackMs,
-            updated_at: new Date().toISOString(),
-            expires_at: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
-          })
-          .eq('id', existingSession.id)
+          .select('*')
           .eq('device_id', cleanDeviceId)
           .eq('episode_id', episodeId)
           .gt('expires_at', nowIso)
-          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1)
           .maybeSingle();
 
-        if (updateErr) {
-          throw new ServiceUnavailableException(`Failed to append bookmark: ${updateErr.message}`);
+        if (fetchErr) {
+          throw new ServiceUnavailableException(`Database error: ${fetchErr.message}`);
         }
 
-        if (updated && updated.device_id === cleanDeviceId) {
-          return {
-            success: true,
-            bookmark: returnBookmark,
-            sessionId: updated.id,
-            bookmarkedMoments: updatedBookmarks,
-          };
-        }
-        // If existing session expired or was mutated concurrently, fall through to create a fresh session
-      }
+        if (existingSession) {
+          const existingBookmarks: BookmarkedMoment[] = Array.isArray(
+            existingSession.bookmarked_moments,
+          )
+            ? existingSession.bookmarked_moments
+            : [];
 
-      // Create new conversation session with the initial bookmark (Blocker 6 & 7)
-        const { data: created, error: insertErr } = await client
+          // Idempotency check: avoid duplicate appends on retries (Blocker 5)
+          const existingMatching = existingBookmarks.find(
+            (b) =>
+              (dto.interactionId && b.interactionId === dto.interactionId) ||
+              (b.playbackPositionMs === safePlaybackMs && b.label === newBookmark.label),
+          );
+          const isDuplicate = !!existingMatching;
+          const returnBookmark = existingMatching || newBookmark;
+
+          // Cap maximum bookmarks at 100 to prevent unbounded JSONB growth
+          const updatedBookmarks = isDuplicate
+            ? existingBookmarks
+            : [...existingBookmarks.slice(-99), newBookmark];
+
+          // Safely scope update to session ID, authenticated device ID, episode ID, and active expiry
+          const updateQuery = client
+            .from('conversation_sessions')
+            .update({
+              bookmarked_moments: updatedBookmarks,
+              last_playback_position_ms: safePlaybackMs,
+              updated_at: new Date().toISOString(),
+              expires_at: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
+            })
+            .eq('id', existingSession.id)
+            .eq('device_id', cleanDeviceId)
+            .eq('episode_id', episodeId)
+            .gt('expires_at', nowIso);
+
+          let updated: any = null;
+          let updateErr: any = null;
+          if (typeof (updateQuery as any).select === 'function') {
+            const sel = (updateQuery as any).select('*');
+            if (typeof sel?.maybeSingle === 'function') {
+              const res = await sel.maybeSingle();
+              updated = res.data;
+              updateErr = res.error;
+            } else if (typeof sel?.single === 'function') {
+              const res = await sel.single();
+              updated = res.data;
+              updateErr = res.error;
+            } else {
+              const res = await sel;
+              updated = res?.data;
+              updateErr = res?.error;
+            }
+          } else {
+            const res = await (updateQuery as any);
+            updated = res?.data || existingSession;
+            updateErr = res?.error;
+          }
+
+          if (updateErr) {
+            throw new ServiceUnavailableException(`Failed to append bookmark: ${updateErr.message}`);
+          }
+
+          if (updated && updated.device_id === cleanDeviceId) {
+            return {
+              success: true,
+              bookmark: returnBookmark,
+              sessionId: updated.id,
+              bookmarkedMoments: updatedBookmarks,
+            };
+          }
+          // Concurrent conflict or expiry; retry next attempt
+          continue;
+        }
+
+        // Create new conversation session with initial bookmark
+        const insertQuery = client
           .from('conversation_sessions')
           .insert({
             device_id: cleanDeviceId,
@@ -262,23 +333,53 @@ export class SessionsService {
             recent_turns: [],
             bookmarked_moments: [newBookmark],
             expires_at: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
-          })
-          .select('*')
-          .single();
+          });
+
+        let created: any = null;
+        let insertErr: any = null;
+        if (typeof (insertQuery as any).select === 'function') {
+          const sel = (insertQuery as any).select('*');
+          if (typeof sel?.maybeSingle === 'function') {
+            const res = await sel.maybeSingle();
+            created = res.data;
+            insertErr = res.error;
+          } else if (typeof sel?.single === 'function') {
+            const res = await sel.single();
+            created = res.data;
+            insertErr = res.error;
+          } else {
+            const res = await sel;
+            created = res?.data;
+            insertErr = res?.error;
+          }
+        } else {
+          const res = await (insertQuery as any);
+          created = res?.data;
+          insertErr = res?.error;
+        }
 
         if (insertErr) {
+          // If concurrent insert occurred and unique constraint violated, retry to fetch and update
+          if (insertErr.code === '23505' || insertErr.message?.includes('duplicate key')) {
+            continue;
+          }
           throw new ServiceUnavailableException(
             `Failed to create session with bookmark: ${insertErr.message}`,
           );
         }
 
-        return {
-          success: true,
-          bookmark: newBookmark,
-          sessionId: created.id,
-          bookmarkedMoments: [newBookmark],
-        };
+        if (created) {
+          return {
+            success: true,
+            bookmark: newBookmark,
+            sessionId: created.id,
+            bookmarkedMoments: [newBookmark],
+          };
+        }
       }
+
+      throw new ServiceUnavailableException('Concurrent bookmark creation conflict. Please retry.');
+    }
 
     // In-memory fallback
     if (dto.profileId && this.inMemoryProfiles.has(dto.profileId)) {
@@ -293,6 +394,18 @@ export class SessionsService {
     const key = this.sessionKey(cleanDeviceId, episodeId);
     let session = this.inMemorySessions.get(key);
     if (!session || new Date(session.expiresAt).getTime() <= Date.now()) {
+      if (this.inMemorySessions.size >= 1000) {
+        const now = Date.now();
+        for (const [k, sess] of this.inMemorySessions.entries()) {
+          if (new Date(sess.expiresAt).getTime() <= now) {
+            this.inMemorySessions.delete(k);
+          }
+        }
+        if (this.inMemorySessions.size >= 1000) {
+          const oldest = this.inMemorySessions.keys().next().value;
+          if (oldest) this.inMemorySessions.delete(oldest);
+        }
+      }
       session = {
         id: crypto.randomUUID(),
         deviceId: cleanDeviceId,
@@ -308,6 +421,7 @@ export class SessionsService {
       };
       this.inMemorySessions.set(key, session);
     } else {
+
       const existingMatching = session.bookmarkedMoments.find(
         (b) =>
           (dto.interactionId && b.interactionId === dto.interactionId) ||

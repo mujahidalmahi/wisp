@@ -168,10 +168,21 @@ export class ProfilesService {
     const spoilerStrictness = dto.spoilerStrictness || 'strict';
     const voiceTtsEnabled = dto.voiceTtsEnabled ?? false;
     const avatarColor = dto.avatarColor || '#6366f1';
+
+    // Enforce 10-profile maximum per device to prevent storage exhaustion attacks
+    const existingProfiles = await this.getProfilesByDeviceId(cleanDeviceId);
+    const isExistingName = existingProfiles.some(
+      (p) => p.display_name.toLowerCase() === cleanDisplayName.toLowerCase(),
+    );
+    if (!isExistingName && existingProfiles.length >= 10) {
+      throw new BadRequestException('Maximum limit of 10 profiles reached for this device.');
+    }
+
     const isConfigured = this.supabaseService.isConfigured();
     const allowDemoFallback = this.allowDemoFallback(isConfigured);
 
     if (isConfigured) {
+
       const client = this.supabaseService.getClient()!;
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>

@@ -5,16 +5,20 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
 export class CreateBookmarkDto {
   @IsInt()
   @Min(0)
+  @Max(86400000, { message: 'playbackPositionMs cannot exceed 86400000 (24 hours)' })
   playbackPositionMs!: number;
 
   @IsString()
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'label is required' })
+  @MaxLength(200, { message: 'label cannot exceed 200 characters' })
   label!: string;
 
   @IsOptional()
@@ -22,10 +26,11 @@ export class CreateBookmarkDto {
   aiCard?: Record<string, any>;
 
   @IsOptional()
-  @IsUUID('4')
+  @IsUUID('all')
   interactionId?: string;
 
   @IsOptional()
-  @IsUUID('4')
+  @IsUUID('all')
   profileId?: string;
 }
+

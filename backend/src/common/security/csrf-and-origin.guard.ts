@@ -10,6 +10,8 @@ import * as crypto from 'crypto';
 import { CsrfService } from './csrf.service';
 import { resolveAllowedOrigins } from './cors.config';
 import { DeviceTokenService } from '../auth/device-token.service';
+import { extractClientIp } from './client-ip.util';
+import { resolveClientBindingIdentifier } from './csrf-session.util';
 
 @Injectable()
 export class CsrfAndOriginGuard implements CanActivate {
@@ -91,8 +93,14 @@ export class CsrfAndOriginGuard implements CanActivate {
         throw new ForbiddenException('Missing CSRF token for state-changing browser request.');
       }
 
-      const clientIdentifier = this.extractClientIp(request);
-      if (!this.csrfService.verifyToken(csrfToken, clientIdentifier)) {
+      const sessionBinding = resolveClientBindingIdentifier(request);
+      const ipBinding = this.extractClientIp(request);
+      const isTokenValid =
+        this.csrfService.verifyToken(csrfToken, sessionBinding) ||
+        this.csrfService.verifyToken(csrfToken, ipBinding) ||
+        this.csrfService.verifyToken(csrfToken, `ip:${ipBinding}`);
+
+      if (!isTokenValid) {
         throw new ForbiddenException('Invalid or expired CSRF token.');
       }
 
@@ -204,18 +212,6 @@ export class CsrfAndOriginGuard implements CanActivate {
   }
 
   private extractClientIp(request: any): string {
-    if (typeof request?.ip === 'string' && request.ip.trim().length > 0) {
-      return request.ip.trim();
-    }
-    const cfIp = request?.headers?.['cf-connecting-ip'];
-    if (typeof cfIp === 'string' && cfIp.trim().length > 0) {
-      return cfIp.trim();
-    }
-    const rawForwarded = request?.headers?.['x-forwarded-for'];
-    if (typeof rawForwarded === 'string' && rawForwarded.length > 0) {
-      const first = rawForwarded.split(',')[0].trim();
-      if (first) return first;
-    }
-    return request?.socket?.remoteAddress || '127.0.0.1';
+    return extractClientIp(request);
   }
 }

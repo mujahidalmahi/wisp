@@ -38,7 +38,7 @@ export class AiGatewayController {
 
   /**
    * Records viewer helpfulness feedback vote (-1, 0, 1) on an interaction card.
-   * Device ownership is strictly verified.
+   * Device ownership is strictly verified. Supports both PATCH and POST for client compatibility.
    */
   @Patch('interactions/:interactionId/vote')
   @UseGuards(DeviceAuthGuard)
@@ -54,4 +54,16 @@ export class AiGatewayController {
       authenticatedDeviceId,
     );
   }
+
+  @Post('interactions/:interactionId/vote')
+  @UseGuards(DeviceAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async voteInteractionPost(
+    @Param('interactionId', new ParseUUIDPipe({ version: '4' })) interactionId: string,
+    @Body() dto: VoteInteractionDto,
+    @CurrentDevice() authenticatedDeviceId: string,
+  ) {
+    return this.voteInteraction(interactionId, dto, authenticatedDeviceId);
+  }
 }
+
