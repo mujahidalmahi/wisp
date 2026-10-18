@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsInt,
   IsNotEmpty,
@@ -25,6 +26,7 @@ export class HybridRagSearchDto {
 
   @IsOptional()
   @IsArray({ message: 'queryVector must be an array of numbers' })
+  @ArrayMaxSize(2048, { message: 'queryVector cannot exceed 2048 dimensions' })
   @IsNumber({}, { each: true, message: 'Each element in queryVector must be a number' })
   queryVector?: number[];
 

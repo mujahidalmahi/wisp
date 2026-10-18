@@ -12,7 +12,7 @@ import {
   EMBEDDED_DEMO_EPISODES,
 } from '@wisp/ai-engine';
 import { SupabaseService } from '../supabase/supabase.service';
-import { CatalogService } from '../catalog/catalog.service';
+import { CatalogService, resolveEpisodeId } from '../catalog/catalog.service';
 import { ProfilesService } from '../profiles/profiles.service';
 import { HybridRagSearchDto } from './dto/hybrid-rag-search.dto';
 
@@ -108,6 +108,7 @@ export class ContextService {
     playbackPositionMs: number,
     lookbackMs = 120000,
   ): Promise<TemporalProgramContext> {
+    const canonicalEpisodeId = resolveEpisodeId(episodeId);
     const safeMs = Math.max(0, playbackPositionMs);
     const isConfigured = this.supabaseService.isConfigured();
     const allowDemoFallback = this.allowDemoFallback(isConfigured);
@@ -118,7 +119,7 @@ export class ContextService {
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client.rpc('get_spoiler_safe_context', {
-            p_episode_id: episodeId,
+            p_episode_id: canonicalEpisodeId,
             p_playback_ms: safeMs,
             p_lookback_ms: lookbackMs,
           }),
@@ -148,8 +149,8 @@ export class ContextService {
     }
 
     // Standalone fallback path with lookbackMs propagation and episode verification
-    await this.catalogService.getEpisodeById(episodeId);
-    return this.contextSource.getSpoilerSafeContext(episodeId, safeMs, lookbackMs);
+    await this.catalogService.getEpisodeById(canonicalEpisodeId);
+    return this.contextSource.getSpoilerSafeContext(canonicalEpisodeId, safeMs, lookbackMs);
   }
 
   /**
@@ -162,6 +163,7 @@ export class ContextService {
     playbackPositionMs = 0,
     profileId?: string,
   ): Promise<Stage1BootstrapResponse> {
+    const canonicalEpisodeId = resolveEpisodeId(episodeId);
     const cleanDeviceId = deviceId.trim();
     const cleanProfileId = profileId ? profileId.trim() : undefined;
     const safeMs = Math.max(0, playbackPositionMs);
@@ -209,7 +211,7 @@ export class ContextService {
       const client = this.supabaseService.getClient()!;
       try {
         const params: Record<string, any> = {
-          p_episode_id: episodeId,
+          p_episode_id: canonicalEpisodeId,
           p_device_id: cleanDeviceId,
           p_playback_ms: safeMs,
         };
@@ -284,14 +286,14 @@ export class ContextService {
     }
 
     // 3. Resilient In-Memory Fallback Path (only for standalone / unconfigured mode)
-    const ep = await this.catalogService.getEpisodeById(episodeId);
+    const ep = await this.catalogService.getEpisodeById(canonicalEpisodeId);
     const episodeDurationMs = ep?.duration_ms ?? 0;
     const clampedPlaybackMs =
       episodeDurationMs > 0
         ? Math.min(Math.max(0, safeMs), episodeDurationMs)
         : Math.max(0, safeMs);
 
-    const context = await this.inMemoryFallback.getSpoilerSafeContext(episodeId, clampedPlaybackMs);
+    const context = await this.inMemoryFallback.getSpoilerSafeContext(canonicalEpisodeId, clampedPlaybackMs);
     const activeScene = context.active_scene;
 
     // Resolve profile from storage if profileId provided; otherwise return null
@@ -368,6 +370,7 @@ export class ContextService {
    * Strictly bounded by playbackPositionMs (anti-spoiler).
    */
   async hybridRagSearch(episodeId: string, dto: HybridRagSearchDto): Promise<any[]> {
+    const canonicalEpisodeId = resolveEpisodeId(episodeId);
     const safePlaybackMs = Math.max(0, dto.playbackPositionMs ?? 0);
     const limit = Math.max(1, Math.min(20, dto.limit ?? 6));
     const isConfigured = this.supabaseService.isConfigured();
@@ -378,7 +381,7 @@ export class ContextService {
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client.rpc('hybrid_spoiler_safe_rag_search', {
-            p_episode_id: episodeId,
+            p_episode_id: canonicalEpisodeId,
             p_playback_ms: safePlaybackMs,
             p_query_text: dto.queryText,
             p_query_vector: dto.queryVector ?? null,
@@ -407,8 +410,9 @@ export class ContextService {
     }
 
     // In-memory fallback
-    await this.catalogService.getEpisodeById(episodeId);
-    return this.fallbackHybridRagSearch(episodeId, safePlaybackMs, dto.queryText, limit);
+    this.logger.warn('Executing hybrid RAG search via in-memory lexical fallback');
+    await this.catalogService.getEpisodeById(canonicalEpisodeId);
+    return this.fallbackHybridRagSearch(canonicalEpisodeId, safePlaybackMs, dto.queryText, limit);
   }
 
   private fallbackHybridRagSearch(
@@ -562,6 +566,7 @@ export class ContextService {
    * Strictly blocks future episodes.
    */
   async getCrossEpisodeContext(episodeId: string, playbackMs: number): Promise<any> {
+    const canonicalEpisodeId = resolveEpisodeId(episodeId);
     const safePlaybackMs = Math.max(0, playbackMs ?? 0);
     const isConfigured = this.supabaseService.isConfigured();
     const allowDemoFallback = this.allowDemoFallback(isConfigured);
@@ -571,7 +576,7 @@ export class ContextService {
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client.rpc('get_cross_episode_spoiler_safe_context', {
-            p_episode_id: episodeId,
+            p_episode_id: canonicalEpisodeId,
             p_playback_ms: safePlaybackMs,
           }),
         );
@@ -597,8 +602,8 @@ export class ContextService {
     }
 
     // In-memory fallback
-    await this.catalogService.getEpisodeById(episodeId);
-    const currentEpisodeContext = await this.getSpoilerSafeContext(episodeId, safePlaybackMs);
+    await this.catalogService.getEpisodeById(canonicalEpisodeId);
+    const currentEpisodeContext = await this.getSpoilerSafeContext(canonicalEpisodeId, safePlaybackMs);
     return {
       found: true,
       prior_episodes: [],
@@ -616,6 +621,7 @@ export class ContextService {
     profileMode = 'quick_glance',
     limit = 5,
   ): Promise<any[]> {
+    const canonicalEpisodeId = resolveEpisodeId(episodeId);
     const safePlaybackMs = Math.max(0, playbackMs ?? 0);
     const safeLimit = Math.max(1, Math.min(20, limit ?? 5));
     const isConfigured = this.supabaseService.isConfigured();
@@ -626,7 +632,7 @@ export class ContextService {
       try {
         const { data, error } = await this.supabaseService.executeWithRetry(async () =>
           client.rpc('get_episode_post_watch_quiz', {
-            p_episode_id: episodeId,
+            p_episode_id: canonicalEpisodeId,
             p_playback_ms: safePlaybackMs,
             p_profile_mode: profileMode,
             p_limit: safeLimit,
@@ -654,7 +660,7 @@ export class ContextService {
     }
 
     // In-memory fallback: Return curated trivia if playbackMs allows
-    await this.catalogService.getEpisodeById(episodeId);
+    await this.catalogService.getEpisodeById(canonicalEpisodeId);
     const demoQuizzes: Record<string, any[]> = {
       'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1': [
         {
@@ -712,7 +718,7 @@ export class ContextService {
       ],
     };
 
-    const quizzes = demoQuizzes[episodeId] || [];
+    const quizzes = demoQuizzes[canonicalEpisodeId] || demoQuizzes[episodeId] || [];
     return quizzes
       .filter((q) => q.unlock_time_ms <= safePlaybackMs)
       .slice(0, safeLimit);

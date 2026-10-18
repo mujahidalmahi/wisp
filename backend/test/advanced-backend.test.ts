@@ -10,6 +10,7 @@ import {
   ForbiddenException,
   HttpStatus,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { of } from 'rxjs';
@@ -134,6 +135,15 @@ describe('Phase 3: Advanced Backend, Observability & Anti-Spoiler Firewall', () 
       });
       const invalidErrs = await validate(invalid);
       assert.ok(invalidErrs.length >= 2);
+
+      // Invalid: queryVector exceeds 2048 dimensions (DoS prevention)
+      const oversizedVector = plainToInstance(HybridRagSearchDto, {
+        queryText: 'Vector test',
+        playbackPositionMs: 1000,
+        queryVector: new Array(2049).fill(0.1),
+      });
+      const vectorErrs = await validate(oversizedVector);
+      assert.ok(vectorErrs.some((e) => e.property === 'queryVector'));
     });
 
     it('executes hybrid RAG search and enforces deterministic temporal boundary', async () => {
@@ -322,9 +332,18 @@ describe('Phase 3: Advanced Backend, Observability & Anti-Spoiler Firewall', () 
       const fixedTooMany = enforceSpoilerFirewall(tooManyChips, 100000);
       assert.equal(fixedTooMany.suggestedActions.length, 4);
       assert.deepEqual(fixedTooMany.suggestedActions, ['A', 'B', 'C', 'D']);
+      assert.equal(fixedTooMany.followUpChips.length, 4);
+      assert.equal(fixedTooMany.followUpChips[0].label, 'A');
+
+      // followUpChips populated with QuickActionChip format
+      assert.ok(Array.isArray(fixedNoChips.followUpChips));
+      assert.ok(fixedNoChips.followUpChips.length >= 2 && fixedNoChips.followUpChips.length <= 4);
+      assert.ok(fixedNoChips.followUpChips[0].id);
+      assert.ok(fixedNoChips.followUpChips[0].label);
+      assert.ok(fixedNoChips.followUpChips[0].actionType);
     });
 
-    it('interceptor executes seamlessly in NestJS pipeline', async () => {
+    it('interceptor executes seamlessly in NestJS pipeline and clamps prewarmed_cards', async () => {
       const interceptor = new SpoilerFirewallInterceptor();
       const mockExecutionContext: any = {
         switchToHttp: () => ({
@@ -348,6 +367,31 @@ describe('Phase 3: Advanced Backend, Observability & Anti-Spoiler Firewall', () 
 
       assert.equal((result as any).spoilerSafeUpToMs, 120000);
       assert.equal((result as any).suggestedActions.length, 3);
+      assert.equal((result as any).followUpChips.length, 3);
+
+      // Verify Stage-1 Bootstrap nested prewarmed_cards clamping
+      const mockBootstrapHandler: any = {
+        handle: () =>
+          of({
+            safe_playback_ms: 120000,
+            active_scene: null,
+            prewarmed_cards: [
+              {
+                action_type: 'scene_explain',
+                card: {
+                  headline: 'Future Anomaly',
+                  spoilerSafeUpToMs: 250000,
+                  suggestedActions: [],
+                },
+              },
+            ],
+          }),
+      };
+      const bootstrapResult: any = await new Promise((resolve) => {
+        interceptor.intercept(mockExecutionContext, mockBootstrapHandler).subscribe(resolve);
+      });
+      assert.equal(bootstrapResult.prewarmed_cards[0].card.spoilerSafeUpToMs, 120000);
+      assert.ok(bootstrapResult.prewarmed_cards[0].card.followUpChips.length >= 2);
     });
   });
 
@@ -478,6 +522,33 @@ describe('Phase 3: Advanced Backend, Observability & Anti-Spoiler Firewall', () 
       assert.ok(typeof purgeResult.purged_conversation_sessions === 'number');
       assert.ok(typeof purgeResult.purged_rate_limit_windows === 'number');
       assert.ok(purgeResult.executed_at);
+
+      // Fails closed with 503 in production if operator token is unset
+      const originalEnv = process.env.NODE_ENV;
+      const originalOpToken = process.env.INTERNAL_OPERATOR_TOKEN;
+      try {
+        process.env.NODE_ENV = 'production';
+        delete process.env.INTERNAL_OPERATOR_TOKEN;
+        delete process.env.OPERATOR_TOKEN;
+        const unconfiguredObsController = new ObservabilityController(observabilityService);
+        await assert.rejects(
+          async () => unconfiguredObsController.purgeMaintenance(res),
+          ServiceUnavailableException,
+        );
+      } finally {
+        process.env.NODE_ENV = originalEnv;
+        if (originalOpToken) process.env.INTERNAL_OPERATOR_TOKEN = originalOpToken;
+      }
+    });
+
+    it('resolves human-readable episode slug aliases without 404', async () => {
+      const ep1 = await catalogService.getEpisodeById('tos-ep1');
+      assert.equal(ep1.id, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1');
+      assert.equal(ep1.title, 'The Amsterdam Calibration');
+
+      const bootstrap = await contextService.getFireTvBootstrap('sintel-ep1', 'dev-firetv-999', 5000);
+      assert.ok(bootstrap);
+      assert.equal(bootstrap.safe_playback_ms, 5000);
     });
   });
 });

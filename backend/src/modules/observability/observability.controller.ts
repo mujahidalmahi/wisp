@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Post,
   Res,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Response } from 'express';
@@ -71,13 +72,20 @@ export class ObservabilityController {
   ) {
     res.setHeader('Cache-Control', 'private, no-cache, no-transform');
 
+    const isProduction =
+      (this.configService?.get<string>('NODE_ENV') || process.env.NODE_ENV) === 'production';
+
     const expectedToken =
       this.configService?.get<string>('INTERNAL_OPERATOR_TOKEN') ||
       this.configService?.get<string>('OPERATOR_TOKEN') ||
       process.env.INTERNAL_OPERATOR_TOKEN ||
       process.env.OPERATOR_TOKEN;
 
-    if (expectedToken && expectedToken.trim().length > 0) {
+    if (!expectedToken || expectedToken.trim().length === 0) {
+      if (isProduction) {
+        throw new ServiceUnavailableException('Operator credentials not configured');
+      }
+    } else {
       const providedToken =
         (typeof operatorToken === 'string' && operatorToken.trim().length > 0
           ? operatorToken.trim()
