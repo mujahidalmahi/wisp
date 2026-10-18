@@ -144,4 +144,61 @@ describe('Frontend: Fire TV Remote D-Pad & Focus Navigation Verification', () =>
       'WispOverlayDrawer must display instant cache telemetry badge',
     );
   });
+
+  it('supports playback speed scaling (S shortcut), stream specs telemetry, and audio description cues', () => {
+    assert.ok(
+      remoteHookSource.includes("case 's':"),
+      'Remote hook must map keyboard shortcut s for playback speed',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('playbackSpeed'),
+      'VideoPlayerSurface must accept playbackSpeed prop',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('onCyclePlaybackSpeed'),
+      'VideoPlayerSurface must expose onCyclePlaybackSpeed prop',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('streamSpecsRow'),
+      'VideoPlayerSurface must render technical stream telemetry specs',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('subtitleAudioCueBadge'),
+      'VideoPlayerSurface must render audio description / sound effect cues',
+    );
+  });
+
+  it('provides gamified household trivia streak and point scoring in InteractiveQuizCard', () => {
+    const quizSource = fs.readFileSync(
+      path.resolve('frontend/src/components/overlay/InteractiveQuizCard.tsx'),
+      'utf8',
+    );
+    assert.ok(
+      quizSource.includes('totalPoints'),
+      'InteractiveQuizCard must track totalPoints',
+    );
+    assert.ok(
+      quizSource.includes('streak'),
+      'InteractiveQuizCard must track correct answer streak',
+    );
+    assert.ok(
+      quizSource.includes('streakBadge'),
+      'InteractiveQuizCard must render streakBadge for living room gamification',
+    );
+  });
+
+  it('provides D-pad entity category filter tabs in ActiveEntitiesBar', () => {
+    const entitiesSource = fs.readFileSync(
+      path.resolve('frontend/src/components/overlay/ActiveEntitiesBar.tsx'),
+      'utf8',
+    );
+    assert.ok(
+      entitiesSource.includes('activeFilter'),
+      'ActiveEntitiesBar must track activeFilter state',
+    );
+    assert.ok(
+      entitiesSource.includes('filterTab'),
+      'ActiveEntitiesBar must render filterTab buttons',
+    );
+  });
 });

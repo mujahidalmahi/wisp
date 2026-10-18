@@ -26,6 +26,7 @@ export default function App() {
   const [catalogVisible, setCatalogVisible] = useState<boolean>(false);
   const [alexaModalVisible, setAlexaModalVisible] = useState<boolean>(false);
   const [remoteGuideVisible, setRemoteGuideVisible] = useState<boolean>(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState<number>(1.0);
   const [profileMode, setProfileMode] = useState<HouseholdProfileMode>('quick_glance');
 
   const [sceneContext, setSceneContext] = useState<InstantSceneContext | null>(null);
@@ -60,7 +61,16 @@ export default function App() {
     setIsPlaying((prev) => !prev);
   }, []);
 
-  // Continuous playback timer simulation (1s progression)
+  const handleCyclePlaybackSpeed = useCallback(() => {
+    setPlaybackSpeed((prev) => {
+      if (prev === 0.75) return 1.0;
+      if (prev === 1.0) return 1.25;
+      if (prev === 1.25) return 1.5;
+      return 0.75;
+    });
+  }, []);
+
+  // Continuous playback timer simulation (scaled by playbackSpeed)
   useEffect(() => {
     if (!isPlaying) return;
 
@@ -71,18 +81,19 @@ export default function App() {
           setIsPlaying(false);
           return maxMs;
         }
-        return prev + 1000;
+        return Math.min(maxMs, prev + Math.round(1000 * playbackSpeed));
       });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isPlaying, selectedProgram.durationSeconds]);
+  }, [isPlaying, playbackSpeed, selectedProgram.durationSeconds]);
 
   useTVRemoteHandler({
     onToggleWispOverlay: handleToggleWispOverlay,
     onToggleCatalog: () => setCatalogVisible((prev) => !prev),
     onToggleAlexaVoice: () => setAlexaModalVisible((prev) => !prev),
     onToggleRemoteGuide: () => setRemoteGuideVisible((prev) => !prev),
+    onTogglePlaybackSpeed: handleCyclePlaybackSpeed,
     onPlayPause: handleTogglePlayPause,
     onSeek: (deltaMs: number) => {
       setPlaybackPositionMs((prev) =>
@@ -166,6 +177,7 @@ export default function App() {
         overlayVisible={overlayVisible}
         isPlaying={isPlaying}
         sceneMarkers={selectedProgram.sceneMarkers}
+        playbackSpeed={playbackSpeed}
         recentTranscript={sceneContext?.recent_transcript}
         onInvokeWisp={handleToggleWispOverlay}
         onAdvanceTimestamp={(delta) =>
@@ -177,6 +189,7 @@ export default function App() {
         onTogglePlayPause={handleTogglePlayPause}
         onOpenAlexaVoice={() => setAlexaModalVisible(true)}
         onOpenRemoteGuide={() => setRemoteGuideVisible(true)}
+        onCyclePlaybackSpeed={handleCyclePlaybackSpeed}
       />
 
       <WispOverlayDrawer

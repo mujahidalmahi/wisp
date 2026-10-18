@@ -63,6 +63,12 @@ const REMOTE_GUIDE_ITEMS: KeyGuideItem[] = [
     action: 'Voice Query Simulator',
     context: 'Opens spoken voice query selector for hands-free zero-typing',
   },
+  {
+    remoteKey: 'Speed Rate ⚡',
+    keyboardKey: 'S',
+    action: 'Cycle Playback Speed',
+    context: 'Swaps between 0.75x, 1.0x, 1.25x, and 1.5x temporal rate',
+  },
 ];
 
 export const RemoteControlGuideModal: React.FC<Props> = ({ visible, onClose }) => {

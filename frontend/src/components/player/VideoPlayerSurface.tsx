@@ -12,6 +12,7 @@ interface Props {
   overlayVisible: boolean;
   isPlaying?: boolean;
   sceneMarkers?: SceneMarker[];
+  playbackSpeed?: number;
   recentTranscript?: Array<{
     start_time_ms: number;
     end_time_ms: number;
@@ -25,6 +26,7 @@ interface Props {
   onTogglePlayPause?: () => void;
   onOpenAlexaVoice?: () => void;
   onOpenRemoteGuide?: () => void;
+  onCyclePlaybackSpeed?: () => void;
 }
 
 export const VideoPlayerSurface: React.FC<Props> = ({
@@ -36,6 +38,7 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   overlayVisible,
   isPlaying = true,
   sceneMarkers,
+  playbackSpeed = 1.0,
   recentTranscript,
   onInvokeWisp,
   onAdvanceTimestamp,
@@ -43,6 +46,7 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   onTogglePlayPause,
   onOpenAlexaVoice,
   onOpenRemoteGuide,
+  onCyclePlaybackSpeed,
 }) => {
   const [isCatalogFocused, setIsCatalogFocused] = useState<boolean>(false);
   const [isWispFocused, setIsWispFocused] = useState<boolean>(false);
@@ -52,6 +56,7 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   const [isAlexaFocused, setIsAlexaFocused] = useState<boolean>(false);
   const [isGuideFocused, setIsGuideFocused] = useState<boolean>(false);
   const [isCcFocused, setIsCcFocused] = useState<boolean>(false);
+  const [isSpeedFocused, setIsSpeedFocused] = useState<boolean>(false);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState<boolean>(true);
 
   const sec = Math.floor(playbackPositionMs / 1000);
@@ -95,6 +100,19 @@ export const VideoPlayerSurface: React.FC<Props> = ({
           <Text style={styles.episodeTitle}>
             {episodeTitle} • {formattedTime} / {formattedTotal}
           </Text>
+          <View style={styles.streamSpecsRow}>
+            <Text style={styles.streamSpecText}>4K UHD</Text>
+            <Text style={styles.streamSpecDivider}>•</Text>
+            <Text style={styles.streamSpecText}>HDR10</Text>
+            <Text style={styles.streamSpecDivider}>•</Text>
+            <Text style={styles.streamSpecText}>Dolby 5.1</Text>
+            <Text style={styles.streamSpecDivider}>•</Text>
+            <Text style={styles.streamSpecText}>60 FPS</Text>
+            <Text style={styles.streamSpecDivider}>•</Text>
+            <Text style={[styles.streamSpecText, { color: TVTheme.colors.spoilerSafeBadge }]}>
+              Buffer: 100%
+            </Text>
+          </View>
         </View>
 
         {!overlayVisible && (
@@ -142,6 +160,29 @@ export const VideoPlayerSurface: React.FC<Props> = ({
                 💬 {subtitlesEnabled ? 'CC ON' : 'CC OFF'}
               </Text>
             </Pressable>
+
+            {onCyclePlaybackSpeed && (
+              <Pressable
+                onPress={onCyclePlaybackSpeed}
+                onFocus={() => setIsSpeedFocused(true)}
+                onBlur={() => setIsSpeedFocused(false)}
+                style={[
+                  styles.hudActionButton,
+                  playbackSpeed !== 1.0 && styles.hudActionButtonActive,
+                  isSpeedFocused && styles.hudActionButtonFocused,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.hudActionText,
+                    playbackSpeed !== 1.0 && styles.hudActionTextActive,
+                    isSpeedFocused && styles.hudActionTextFocused,
+                  ]}
+                >
+                  ⚡ {playbackSpeed}x
+                </Text>
+              </Pressable>
+            )}
 
             {onOpenRemoteGuide && (
               <Pressable
@@ -203,6 +244,11 @@ export const VideoPlayerSurface: React.FC<Props> = ({
             <View style={styles.subtitleSpeakerBadge}>
               <Text style={styles.subtitleSpeakerText}>{activeSubtitle.speaker}</Text>
             </View>
+            {activeSubtitle.visual_cue && (
+              <View style={styles.subtitleAudioCueBadge}>
+                <Text style={styles.subtitleAudioCueText}>♪ [{activeSubtitle.visual_cue}]</Text>
+              </View>
+            )}
             <Text style={styles.subtitleDialogueText}>
               "{activeSubtitle.dialogue}"
             </Text>
@@ -610,5 +656,35 @@ const styles = StyleSheet.create({
   },
   chapterPinPassed: {
     backgroundColor: '#FFFFFF',
+  },
+  streamSpecsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  streamSpecText: {
+    color: TVTheme.colors.textMuted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  streamSpecDivider: {
+    color: '#475569',
+    fontSize: 12,
+  },
+  subtitleAudioCueBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+  },
+  subtitleAudioCueText: {
+    color: '#FCD34D',
+    fontSize: 14,
+    fontStyle: 'italic',
+    fontWeight: '600',
   },
 });

@@ -17,6 +17,8 @@ interface Props {
 export const InteractiveQuizCard: React.FC<Props> = ({ quiz, onAnswerSelected }) => {
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [streak, setStreak] = useState<number>(0);
+  const [totalPoints, setTotalPoints] = useState<number>(0);
 
   useEffect(() => {
     setSelectedIndex(null);
@@ -27,6 +29,12 @@ export const InteractiveQuizCard: React.FC<Props> = ({ quiz, onAnswerSelected })
     if (selectedIndex !== null) return; // Prevent changing answer after selection
     setSelectedIndex(idx);
     const isCorrect = idx === quiz.correctIndex;
+    if (isCorrect) {
+      setStreak((prev) => prev + 1);
+      setTotalPoints((prev) => prev + 100);
+    } else {
+      setStreak(0);
+    }
     onAnswerSelected?.(idx, isCorrect);
   };
 
@@ -35,10 +43,22 @@ export const InteractiveQuizCard: React.FC<Props> = ({ quiz, onAnswerSelected })
 
   return (
     <View style={styles.container}>
-      {/* Quiz Header Badge */}
+      {/* Quiz Header Badge & Gamified Household Streak */}
       <View style={styles.badgeRow}>
         <View style={styles.quizBadge}>
           <Text style={styles.quizBadgeText}>TRIVIA • POST-WATCH CHALLENGE</Text>
+        </View>
+        <View style={styles.scoreRow}>
+          {totalPoints > 0 && (
+            <View style={styles.scoreBadge}>
+              <Text style={styles.scoreBadgeText}>🏆 {totalPoints} PTS</Text>
+            </View>
+          )}
+          {streak > 1 && (
+            <View style={styles.streakBadge}>
+              <Text style={styles.streakBadgeText}>🔥 {streak} STREAK</Text>
+            </View>
+          )}
         </View>
         {isAnswered && (
           <View style={[styles.resultBadge, isCorrect ? styles.correctBadge : styles.incorrectBadge]}>
@@ -143,6 +163,37 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1.5,
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  scoreBadge: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+  },
+  scoreBadgeText: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  streakBadge: {
+    backgroundColor: 'rgba(239, 68, 68, 0.18)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  streakBadgeText: {
+    color: '#F87171',
+    fontSize: 12,
+    fontWeight: '800',
   },
   resultBadge: {
     paddingHorizontal: 12,

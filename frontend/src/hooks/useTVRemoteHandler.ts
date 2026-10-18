@@ -9,6 +9,7 @@ export interface TVRemoteActions {
   onToggleCatalog?: () => void;
   onToggleAlexaVoice?: () => void;
   onToggleRemoteGuide?: () => void;
+  onTogglePlaybackSpeed?: () => void;
   onSeek?: (deltaMs: number) => void;
 }
 
@@ -19,6 +20,7 @@ export interface TVRemoteActions {
  * - C: Toggle Catalog selector
  * - V: Toggle Alexa Voice assistant simulator
  * - ?: Toggle Remote Control Guide
+ * - S: Cycle Playback Speed (0.75x, 1.0x, 1.25x, 1.5x)
  * - Space: Play / Pause
  * - Left/Right: Seek -10s / +10s
  * - Esc: Back / Dismiss
@@ -75,6 +77,11 @@ export function useTVRemoteHandler(actions: TVRemoteActions) {
         case 'V':
           e.preventDefault();
           actions.onToggleAlexaVoice?.();
+          break;
+        case 's':
+        case 'S':
+          e.preventDefault();
+          actions.onTogglePlaybackSpeed?.();
           break;
         case '?':
           e.preventDefault();

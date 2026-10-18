@@ -21,6 +21,8 @@ export const ActiveEntitiesBar: React.FC<Props> = ({ entities, onAskAboutEntity 
   );
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [isAskFocused, setIsAskFocused] = useState<boolean>(false);
+  const [activeFilter, setActiveFilter] = useState<'ALL' | 'CHARACTERS' | 'LORE'>('ALL');
+  const [focusedFilter, setFocusedFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (entities && entities.length > 0) {
@@ -32,6 +34,21 @@ export const ActiveEntitiesBar: React.FC<Props> = ({ entities, onAskAboutEntity 
 
   if (!entities || entities.length === 0) return null;
 
+  const filteredEntities = entities.filter((e) => {
+    if (activeFilter === 'ALL') return true;
+    const isChar =
+      (e.type || '').toLowerCase().includes('character') ||
+      (e.type || '').toLowerCase().includes('person') ||
+      (e.type || '').toLowerCase().includes('scientist') ||
+      (e.type || '').toLowerCase().includes('warrior') ||
+      (e.type || '').toLowerCase().includes('pilot');
+    if (activeFilter === 'CHARACTERS') return isChar;
+    if (activeFilter === 'LORE') return !isChar;
+    return true;
+  });
+
+  const displayEntities = filteredEntities.length > 0 ? filteredEntities : entities;
+
   return (
     <View style={styles.container}>
       <View style={styles.sectionHeader}>
@@ -39,9 +56,44 @@ export const ActiveEntitiesBar: React.FC<Props> = ({ entities, onAskAboutEntity 
         <Text style={styles.sectionSubtitle}>D-PAD SELECT TO INSPECT</Text>
       </View>
 
+      {/* Entity Category Filter Tabs */}
+      <View style={styles.filterRow}>
+        {(['ALL', 'CHARACTERS', 'LORE'] as const).map((filterKey) => {
+          const isActive = activeFilter === filterKey;
+          const isFocused = focusedFilter === filterKey;
+          return (
+            <Pressable
+              key={filterKey}
+              onPress={() => setActiveFilter(filterKey)}
+              onFocus={() => setFocusedFilter(filterKey)}
+              onBlur={() => setFocusedFilter(null)}
+              style={[
+                styles.filterTab,
+                isActive && styles.filterTabActive,
+                isFocused && styles.filterTabFocused,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.filterTabText,
+                  isActive && styles.filterTabTextActive,
+                  isFocused && styles.filterTabTextFocused,
+                ]}
+              >
+                {filterKey === 'ALL'
+                  ? `All (${entities.length})`
+                  : filterKey === 'CHARACTERS'
+                  ? 'Characters'
+                  : 'Lore / Objects'}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
       {/* Horizontal Entity Chips */}
       <View style={styles.entityRow}>
-        {entities.map((entity, idx) => {
+        {displayEntities.map((entity, idx) => {
           const isSelected = selectedEntity?.name === entity.name;
           const isFocused = focusedIndex === idx;
 
@@ -147,6 +199,39 @@ const styles = StyleSheet.create({
     color: TVTheme.colors.textMuted,
     fontSize: 11,
     fontWeight: '600',
+  },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  filterTab: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(30, 41, 59, 0.6)',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  filterTabActive: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    borderColor: TVTheme.colors.accentCyan,
+  },
+  filterTabFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+  },
+  filterTabText: {
+    color: TVTheme.colors.textMuted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  filterTabTextActive: {
+    color: '#38BDF8',
+  },
+  filterTabTextFocused: {
+    color: TVTheme.colors.focusRing,
   },
   entityRow: {
     flexDirection: 'row',
