@@ -176,10 +176,34 @@ export class AiGatewayService {
           this.validateCachedResponseCard(cachedPayload, dto)
         ) {
           const latencyMs = Date.now() - startHit;
+          let interactionId: string | undefined;
+
+          // Record telemetry for cache hit
+          try {
+            const { data: recId } = await this.supabaseService.executeRpc<string>(
+              'record_wisp_interaction',
+              {
+                p_profile_id: dto.profileId || null,
+                p_episode_id: dto.episodeId,
+                p_playback_position_ms: dto.playbackPositionMs,
+                p_action_type: dto.actionType,
+                p_user_prompt: dto.prompt || null,
+                p_ai_provider: cachedPayload.providerUsed || 'cache',
+                p_latency_ms: latencyMs,
+                p_cache_hit: true,
+                p_response_card: cachedPayload,
+              },
+            );
+            if (recId) interactionId = recId;
+          } catch (recErr: any) {
+            this.logger.debug?.(`Record cached interaction note: ${recErr?.message}`);
+          }
+
           return {
             ...(cachedPayload as any),
             cached: true,
             latencyMs,
+            ...(interactionId ? { interactionId } : {}),
           } as WispResponseCardDto;
         }
       } catch (err: any) {
@@ -193,10 +217,13 @@ export class AiGatewayService {
         inMem.expiresAt > Date.now() &&
         this.validateCachedResponseCard(inMem.payload, dto)
       ) {
+        const inMemId = crypto.randomUUID();
+        this.registerInMemoryInteraction(inMemId, authenticatedDeviceId, dto.profileId);
         return {
           ...inMem.payload,
           cached: true,
           latencyMs: 1,
+          interactionId: inMemId,
         };
       }
     }
@@ -256,6 +283,28 @@ export class AiGatewayService {
       } catch (err: any) {
         this.logger.warn(`Failed to upsert to ai_response_cache: ${err?.message}`);
       }
+
+      // Record interaction telemetry into interaction_history
+      try {
+        const { data: interactionId, error: recErr } =
+          await this.supabaseService.executeRpc<string>('record_wisp_interaction', {
+            p_profile_id: dto.profileId || null,
+            p_episode_id: dto.episodeId,
+            p_playback_position_ms: dto.playbackPositionMs,
+            p_action_type: dto.actionType,
+            p_user_prompt: dto.prompt || null,
+            p_ai_provider: responseCard.providerUsed || 'groq',
+            p_latency_ms: originLatencyMs,
+            p_cache_hit: false,
+            p_response_card: responseCard,
+          });
+
+        if (!recErr && interactionId) {
+          responseCard.interactionId = interactionId;
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to record interaction telemetry: ${err?.message}`);
+      }
     } else {
       const now = Date.now();
       if (this.inMemoryAiCache.size >= 1000) {
@@ -273,8 +322,12 @@ export class AiGatewayService {
         payload: responseCard,
         expiresAt: now + 86400 * 1000,
       });
-    }
 
+      // Register interaction in memory for vote testing
+      const inMemId = crypto.randomUUID();
+      this.registerInMemoryInteraction(inMemId, authenticatedDeviceId, dto.profileId);
+      responseCard.interactionId = inMemId;
+    }
 
     return responseCard;
   }
