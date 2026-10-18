@@ -13,6 +13,8 @@ import { VideoPlayerSurface } from './components/player/VideoPlayerSurface';
 import { WispOverlayDrawer } from './components/overlay/WispOverlayDrawer';
 import { UnlockedEntity } from './components/overlay/ActiveEntitiesBar';
 import { CatalogSelector, DEMO_PROGRAMS, CatalogProgram } from './components/catalog/CatalogSelector';
+import { AlexaVoiceModal } from './components/modals/AlexaVoiceModal';
+import { RemoteControlGuideModal } from './components/modals/RemoteControlGuideModal';
 import { TVTheme } from './theme/tvTheme';
 
 export default function App() {
@@ -22,6 +24,8 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [overlayVisible, setOverlayVisible] = useState<boolean>(false);
   const [catalogVisible, setCatalogVisible] = useState<boolean>(false);
+  const [alexaModalVisible, setAlexaModalVisible] = useState<boolean>(false);
+  const [remoteGuideVisible, setRemoteGuideVisible] = useState<boolean>(false);
   const [profileMode, setProfileMode] = useState<HouseholdProfileMode>('quick_glance');
 
   const [sceneContext, setSceneContext] = useState<InstantSceneContext | null>(null);
@@ -77,6 +81,8 @@ export default function App() {
   useTVRemoteHandler({
     onToggleWispOverlay: handleToggleWispOverlay,
     onToggleCatalog: () => setCatalogVisible((prev) => !prev),
+    onToggleAlexaVoice: () => setAlexaModalVisible((prev) => !prev),
+    onToggleRemoteGuide: () => setRemoteGuideVisible((prev) => !prev),
     onPlayPause: handleTogglePlayPause,
     onSeek: (deltaMs: number) => {
       setPlaybackPositionMs((prev) =>
@@ -84,7 +90,11 @@ export default function App() {
       );
     },
     onBack: () => {
-      if (catalogVisible) {
+      if (alexaModalVisible) {
+        setAlexaModalVisible(false);
+      } else if (remoteGuideVisible) {
+        setRemoteGuideVisible(false);
+      } else if (catalogVisible) {
         setCatalogVisible(false);
       } else if (overlayVisible) {
         setOverlayVisible(false);
@@ -126,6 +136,11 @@ export default function App() {
     }
   };
 
+  const handleSelectVoiceQuery = async (chip: QuickActionChip) => {
+    setOverlayVisible(true);
+    await handleSelectChip(chip);
+  };
+
   const handleRetry = () => {
     if (lastChip) {
       handleSelectChip(lastChip);
@@ -150,6 +165,8 @@ export default function App() {
         durationMs={selectedProgram.durationSeconds * 1000}
         overlayVisible={overlayVisible}
         isPlaying={isPlaying}
+        sceneMarkers={selectedProgram.sceneMarkers}
+        recentTranscript={sceneContext?.recent_transcript}
         onInvokeWisp={handleToggleWispOverlay}
         onAdvanceTimestamp={(delta) =>
           setPlaybackPositionMs((prev) =>
@@ -158,6 +175,8 @@ export default function App() {
         }
         onOpenCatalog={() => setCatalogVisible(true)}
         onTogglePlayPause={handleTogglePlayPause}
+        onOpenAlexaVoice={() => setAlexaModalVisible(true)}
+        onOpenRemoteGuide={() => setRemoteGuideVisible(true)}
       />
 
       <WispOverlayDrawer
@@ -181,6 +200,17 @@ export default function App() {
         currentEpisodeId={episodeId}
         onSelectProgram={handleSelectProgram}
         onClose={() => setCatalogVisible(false)}
+      />
+
+      <AlexaVoiceModal
+        visible={alexaModalVisible}
+        onSelectQuery={handleSelectVoiceQuery}
+        onClose={() => setAlexaModalVisible(false)}
+      />
+
+      <RemoteControlGuideModal
+        visible={remoteGuideVisible}
+        onClose={() => setRemoteGuideVisible(false)}
       />
     </SafeAreaView>
   );

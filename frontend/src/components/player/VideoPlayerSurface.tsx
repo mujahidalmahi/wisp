@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { TVTheme } from '../../theme/tvTheme';
+import { SceneMarker } from '../../config/catalog';
 
 interface Props {
   programTitle: string;
@@ -10,10 +11,20 @@ interface Props {
   durationMs?: number;
   overlayVisible: boolean;
   isPlaying?: boolean;
+  sceneMarkers?: SceneMarker[];
+  recentTranscript?: Array<{
+    start_time_ms: number;
+    end_time_ms: number;
+    speaker: string;
+    dialogue: string;
+    visual_cue?: string;
+  }>;
   onInvokeWisp: () => void;
   onAdvanceTimestamp: (deltaMs: number) => void;
   onOpenCatalog?: () => void;
   onTogglePlayPause?: () => void;
+  onOpenAlexaVoice?: () => void;
+  onOpenRemoteGuide?: () => void;
 }
 
 export const VideoPlayerSurface: React.FC<Props> = ({
@@ -24,16 +35,24 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   durationMs = 734000,
   overlayVisible,
   isPlaying = true,
+  sceneMarkers,
+  recentTranscript,
   onInvokeWisp,
   onAdvanceTimestamp,
   onOpenCatalog,
   onTogglePlayPause,
+  onOpenAlexaVoice,
+  onOpenRemoteGuide,
 }) => {
   const [isCatalogFocused, setIsCatalogFocused] = useState<boolean>(false);
   const [isWispFocused, setIsWispFocused] = useState<boolean>(false);
   const [isRewindFocused, setIsRewindFocused] = useState<boolean>(false);
   const [isForwardFocused, setIsForwardFocused] = useState<boolean>(false);
   const [isPlayPauseFocused, setIsPlayPauseFocused] = useState<boolean>(false);
+  const [isAlexaFocused, setIsAlexaFocused] = useState<boolean>(false);
+  const [isGuideFocused, setIsGuideFocused] = useState<boolean>(false);
+  const [isCcFocused, setIsCcFocused] = useState<boolean>(false);
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState<boolean>(true);
 
   const sec = Math.floor(playbackPositionMs / 1000);
   const formattedTime = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(
@@ -46,6 +65,13 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   ).padStart(2, '0')}`;
 
   const progressPercent = Math.min(100, Math.max(0, (playbackPositionMs / durationMs) * 100));
+
+  // Find active spoken dialogue segment matching current playhead
+  const activeSubtitle = recentTranscript?.find(
+    (seg) =>
+      playbackPositionMs >= seg.start_time_ms &&
+      playbackPositionMs <= seg.end_time_ms + 1000, // Grace margin
+  );
 
   return (
     <View style={styles.viewport}>
@@ -71,25 +97,94 @@ export const VideoPlayerSurface: React.FC<Props> = ({
           </Text>
         </View>
 
-        {!overlayVisible && onOpenCatalog && (
-          <Pressable
-            onPress={onOpenCatalog}
-            onFocus={() => setIsCatalogFocused(true)}
-            onBlur={() => setIsCatalogFocused(false)}
-            style={[
-              styles.catalogButton,
-              isCatalogFocused && styles.catalogButtonFocused,
-            ]}
-          >
-            <Text
+        {!overlayVisible && (
+          <View style={styles.hudTopRightActions}>
+            {onOpenAlexaVoice && (
+              <Pressable
+                onPress={onOpenAlexaVoice}
+                onFocus={() => setIsAlexaFocused(true)}
+                onBlur={() => setIsAlexaFocused(false)}
+                style={[
+                  styles.hudActionButton,
+                  styles.alexaButton,
+                  isAlexaFocused && styles.hudActionButtonFocused,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.hudActionText,
+                    styles.alexaButtonText,
+                    isAlexaFocused && styles.hudActionTextFocused,
+                  ]}
+                >
+                  🎙️ Alexa Voice
+                </Text>
+              </Pressable>
+            )}
+
+            <Pressable
+              onPress={() => setSubtitlesEnabled((prev) => !prev)}
+              onFocus={() => setIsCcFocused(true)}
+              onBlur={() => setIsCcFocused(false)}
               style={[
-                styles.catalogButtonText,
-                isCatalogFocused && styles.catalogButtonTextFocused,
+                styles.hudActionButton,
+                subtitlesEnabled && styles.hudActionButtonActive,
+                isCcFocused && styles.hudActionButtonFocused,
               ]}
             >
-              📚 Switch Program
-            </Text>
-          </Pressable>
+              <Text
+                style={[
+                  styles.hudActionText,
+                  subtitlesEnabled && styles.hudActionTextActive,
+                  isCcFocused && styles.hudActionTextFocused,
+                ]}
+              >
+                💬 {subtitlesEnabled ? 'CC ON' : 'CC OFF'}
+              </Text>
+            </Pressable>
+
+            {onOpenRemoteGuide && (
+              <Pressable
+                onPress={onOpenRemoteGuide}
+                onFocus={() => setIsGuideFocused(true)}
+                onBlur={() => setIsGuideFocused(false)}
+                style={[
+                  styles.hudActionButton,
+                  isGuideFocused && styles.hudActionButtonFocused,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.hudActionText,
+                    isGuideFocused && styles.hudActionTextFocused,
+                  ]}
+                >
+                  [?] Keys
+                </Text>
+              </Pressable>
+            )}
+
+            {onOpenCatalog && (
+              <Pressable
+                onPress={onOpenCatalog}
+                onFocus={() => setIsCatalogFocused(true)}
+                onBlur={() => setIsCatalogFocused(false)}
+                style={[
+                  styles.catalogButton,
+                  isCatalogFocused && styles.catalogButtonFocused,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.catalogButtonText,
+                    isCatalogFocused && styles.catalogButtonTextFocused,
+                  ]}
+                >
+                  📚 Switch Program
+                </Text>
+              </Pressable>
+            )}
+          </View>
         )}
       </View>
 
@@ -101,15 +196,41 @@ export const VideoPlayerSurface: React.FC<Props> = ({
             Active Video Frame @ {formattedTime} • Spoiler Gate Enforced
           </Text>
         </View>
+
+        {/* Live Closed Captioning / Subtitles Display (AD/CC) */}
+        {subtitlesEnabled && activeSubtitle && !overlayVisible && (
+          <View style={styles.subtitleBanner}>
+            <View style={styles.subtitleSpeakerBadge}>
+              <Text style={styles.subtitleSpeakerText}>{activeSubtitle.speaker}</Text>
+            </View>
+            <Text style={styles.subtitleDialogueText}>
+              "{activeSubtitle.dialogue}"
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Bottom Bar & Timeline */}
       {!overlayVisible && (
         <View style={styles.bottomSection}>
-          {/* Temporal Progress Bar */}
+          {/* Temporal Progress Bar with Chapter Pins */}
           <View style={styles.progressBarBackground}>
             <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
             <View style={[styles.progressScrubberKnob, { left: `${progressPercent}%` }]} />
+            {sceneMarkers?.map((marker, idx) => {
+              const pinLeft = Math.min(100, Math.max(0, (marker.timeMs / durationMs) * 100));
+              const isPassed = playbackPositionMs >= marker.timeMs;
+              return (
+                <View
+                  key={idx}
+                  style={[
+                    styles.chapterPin,
+                    { left: `${pinLeft}%` },
+                    isPassed && styles.chapterPinPassed,
+                  ]}
+                />
+              );
+            })}
           </View>
 
           <View style={styles.bottomBar}>
@@ -401,5 +522,93 @@ const styles = StyleSheet.create({
   scrubButtonTextFocused: {
     color: TVTheme.colors.textPrimary,
     fontWeight: '800',
+  },
+  hudTopRightActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  hudActionButton: {
+    backgroundColor: 'rgba(30, 41, 59, 0.85)',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  hudActionButtonActive: {
+    borderColor: '#38BDF8',
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+  },
+  hudActionButtonFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    borderWidth: 2,
+    backgroundColor: 'rgba(245, 158, 11, 0.25)',
+    transform: [{ scale: 1.05 }],
+  },
+  hudActionText: {
+    color: TVTheme.colors.textSecondary,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  hudActionTextActive: {
+    color: '#38BDF8',
+  },
+  hudActionTextFocused: {
+    color: TVTheme.colors.textPrimary,
+    fontWeight: '800',
+  },
+  alexaButton: {
+    borderColor: '#0284C7',
+    backgroundColor: 'rgba(2, 132, 199, 0.2)',
+  },
+  alexaButtonText: {
+    color: '#38BDF8',
+  },
+  subtitleBanner: {
+    position: 'absolute',
+    bottom: 24,
+    backgroundColor: 'rgba(15, 23, 42, 0.92)',
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    maxWidth: '80%',
+    shadowColor: '#000',
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+  },
+  subtitleSpeakerBadge: {
+    backgroundColor: '#334155',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  subtitleSpeakerText: {
+    color: TVTheme.colors.focusRing,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  subtitleDialogueText: {
+    color: '#F8FAFC',
+    fontSize: 18,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  chapterPin: {
+    position: 'absolute',
+    top: -2,
+    width: 4,
+    height: 10,
+    borderRadius: 2,
+    backgroundColor: '#64748B',
+    marginLeft: -2,
+  },
+  chapterPinPassed: {
+    backgroundColor: '#FFFFFF',
   },
 });

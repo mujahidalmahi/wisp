@@ -29,6 +29,18 @@ export interface InstantSceneContext {
     spoiler_safe_summary: string;
     quick_action_chips: QuickActionChip[];
   };
+  prior_scenes?: Array<{
+    scene_index: number;
+    scene_title: string;
+    summary: string;
+  }>;
+  recent_transcript?: Array<{
+    start_time_ms: number;
+    end_time_ms: number;
+    speaker: string;
+    dialogue: string;
+    visual_cue?: string;
+  }>;
   unlocked_entities: Array<{
     name: string;
     type: string;

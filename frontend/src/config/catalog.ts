@@ -1,3 +1,8 @@
+export interface SceneMarker {
+  timeMs: number;
+  label: string;
+}
+
 export interface CatalogProgram {
   programId: string;
   episodeId: string;
@@ -8,6 +13,7 @@ export interface CatalogProgram {
   synopsis: string;
   tagline: string;
   videoStreamUrl?: string;
+  sceneMarkers?: SceneMarker[];
 }
 
 export const DEMO_PROGRAMS: CatalogProgram[] = [
@@ -23,6 +29,11 @@ export const DEMO_PROGRAMS: CatalogProgram[] = [
     tagline: 'Memory is the ultimate battleground.',
     videoStreamUrl:
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+    sceneMarkers: [
+      { timeMs: 0, label: 'Scene 1: The Bridge Argument' },
+      { timeMs: 120000, label: 'Scene 2: Oude Kerk Hologram Dome' },
+      { timeMs: 360000, label: 'Scene 3: Swarm Approach' },
+    ],
   },
   {
     programId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
@@ -36,6 +47,11 @@ export const DEMO_PROGRAMS: CatalogProgram[] = [
     tagline: 'Light across thirteen billion years.',
     videoStreamUrl:
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4',
+    sceneMarkers: [
+      { timeMs: 0, label: 'Scene 1: Deep Field Gravitational Lensing' },
+      { timeMs: 180000, label: 'Scene 2: Infrared Spectroscopy Analysis' },
+      { timeMs: 360000, label: 'Scene 3: Primordial Galaxy Reionization' },
+    ],
   },
   {
     programId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3',
@@ -49,5 +65,10 @@ export const DEMO_PROGRAMS: CatalogProgram[] = [
     tagline: 'Every passenger holds a secret.',
     videoStreamUrl:
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+    sceneMarkers: [
+      { timeMs: 0, label: 'Scene 1: Snowbound Corridor Vanishing' },
+      { timeMs: 240000, label: 'Scene 2: Compartment 4B Interrogation' },
+      { timeMs: 540000, label: 'Scene 3: The Cipher Key Unmasked' },
+    ],
   },
 ];

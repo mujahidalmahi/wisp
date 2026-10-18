@@ -7,6 +7,8 @@ export interface TVRemoteActions {
   onPlayPause?: () => void;
   onBack?: () => void;
   onToggleCatalog?: () => void;
+  onToggleAlexaVoice?: () => void;
+  onToggleRemoteGuide?: () => void;
   onSeek?: (deltaMs: number) => void;
 }
 
@@ -15,6 +17,8 @@ export interface TVRemoteActions {
  * as well as desktop/emulator keyboard equivalents:
  * - M: Toggle Wisp overlay
  * - C: Toggle Catalog selector
+ * - V: Toggle Alexa Voice assistant simulator
+ * - ?: Toggle Remote Control Guide
  * - Space: Play / Pause
  * - Left/Right: Seek -10s / +10s
  * - Esc: Back / Dismiss
@@ -66,6 +70,15 @@ export function useTVRemoteHandler(actions: TVRemoteActions) {
         case 'C':
           e.preventDefault();
           actions.onToggleCatalog?.();
+          break;
+        case 'v':
+        case 'V':
+          e.preventDefault();
+          actions.onToggleAlexaVoice?.();
+          break;
+        case '?':
+          e.preventDefault();
+          actions.onToggleRemoteGuide?.();
           break;
         case ' ':
           e.preventDefault();

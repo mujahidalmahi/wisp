@@ -28,9 +28,11 @@ describe('Frontend: Fire TV Remote D-Pad & Focus Navigation Verification', () =>
     assert.ok(remoteHookSource.includes("case 'fastForward':"));
   });
 
-  it('maps desktop and emulator keyboard shortcuts (M, C, Space, ArrowLeft, ArrowRight, Escape)', () => {
+  it('maps desktop and emulator keyboard shortcuts (M, C, V, ?, Space, ArrowLeft, ArrowRight, Escape)', () => {
     assert.ok(remoteHookSource.includes("case 'm':"));
     assert.ok(remoteHookSource.includes("case 'c':"));
+    assert.ok(remoteHookSource.includes("case 'v':"));
+    assert.ok(remoteHookSource.includes("case '?':"));
     assert.ok(remoteHookSource.includes("case ' ':"));
     assert.ok(remoteHookSource.includes("case 'ArrowLeft':"));
     assert.ok(remoteHookSource.includes("case 'ArrowRight':"));
@@ -64,6 +66,59 @@ describe('Frontend: Fire TV Remote D-Pad & Focus Navigation Verification', () =>
     assert.ok(
       playerSurfaceSource.includes('styles.pausedBadge'),
       'VideoPlayerSurface must provide paused indicator badge',
+    );
+  });
+
+  it('supports closed captioning (CC) subtitle rendering and timeline scene chapter pins in VideoPlayerSurface', () => {
+    assert.ok(
+      playerSurfaceSource.includes('subtitlesEnabled'),
+      'VideoPlayerSurface must manage subtitlesEnabled state',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('subtitleBanner'),
+      'VideoPlayerSurface must provide subtitleBanner for AD/CC accessibility',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('chapterPin'),
+      'VideoPlayerSurface must render chapter marker pins on scrubber bar',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('sceneMarkers'),
+      'VideoPlayerSurface must accept sceneMarkers prop',
+    );
+  });
+
+  it('provides AlexaVoiceModal with curated zero-typing voice prompts and cyan glow styling', () => {
+    const alexaSource = fs.readFileSync(
+      path.resolve('frontend/src/components/modals/AlexaVoiceModal.tsx'),
+      'utf8',
+    );
+    assert.ok(
+      alexaSource.includes('CURATED_VOICE_QUERIES'),
+      'AlexaVoiceModal must define CURATED_VOICE_QUERIES',
+    );
+    assert.ok(
+      alexaSource.includes('alexaGlowBar'),
+      'AlexaVoiceModal must feature signature cyan glow bar',
+    );
+    assert.ok(
+      alexaSource.includes('onSelectQuery'),
+      'AlexaVoiceModal must invoke onSelectQuery when user triggers query',
+    );
+  });
+
+  it('provides RemoteControlGuideModal mapping Fire TV hardware keys to keyboard equivalents', () => {
+    const guideSource = fs.readFileSync(
+      path.resolve('frontend/src/components/modals/RemoteControlGuideModal.tsx'),
+      'utf8',
+    );
+    assert.ok(
+      guideSource.includes('REMOTE_GUIDE_ITEMS'),
+      'RemoteControlGuideModal must define REMOTE_GUIDE_ITEMS',
+    );
+    assert.ok(
+      guideSource.includes('remoteBadge'),
+      'RemoteControlGuideModal must display styled remote key badges',
     );
   });
 

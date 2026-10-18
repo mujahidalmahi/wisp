@@ -69,4 +69,20 @@ describe('Fire TV Client: 3-Genre Demo Catalog Invariants', () => {
     assert.equal(cosmos?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2');
     assert.equal(midnight?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3');
   });
+
+  it('defines valid timeline scene chapter markers within program duration', () => {
+    for (const prog of DEMO_PROGRAMS) {
+      assert.ok(
+        Array.isArray(prog.sceneMarkers) && prog.sceneMarkers.length >= 2,
+        `Program ${prog.title} must have at least 2 sceneMarkers`,
+      );
+      for (const marker of prog.sceneMarkers) {
+        assert.ok(marker.label.length > 0, 'Marker must have label');
+        assert.ok(
+          marker.timeMs >= 0 && marker.timeMs <= prog.durationSeconds * 1000,
+          `Marker ${marker.label} (${marker.timeMs}ms) must fall within [0, ${prog.durationSeconds * 1000}ms]`,
+        );
+      }
+    }
+  });
 });
