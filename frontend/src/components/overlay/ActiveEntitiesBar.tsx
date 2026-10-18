@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { TVTheme } from '../../theme/tvTheme';
 
@@ -17,10 +17,18 @@ interface Props {
 
 export const ActiveEntitiesBar: React.FC<Props> = ({ entities, onAskAboutEntity }) => {
   const [selectedEntity, setSelectedEntity] = useState<UnlockedEntity | null>(
-    entities.find((e) => e.in_current_scene) || entities[0] || null,
+    entities?.find((e) => e.in_current_scene) || entities?.[0] || null,
   );
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [isAskFocused, setIsAskFocused] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (entities && entities.length > 0) {
+      setSelectedEntity(entities.find((e) => e.in_current_scene) || entities[0] || null);
+    } else {
+      setSelectedEntity(null);
+    }
+  }, [entities]);
 
   if (!entities || entities.length === 0) return null;
 
@@ -223,7 +231,7 @@ const styles = StyleSheet.create({
   },
   scenePresenceText: {
     color: TVTheme.colors.spoilerSafeBadge,
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '700',
   },
   entityDescription: {

@@ -51,6 +51,12 @@ export default function App() {
 
   useTVRemoteHandler({
     onToggleWispOverlay: handleToggleWispOverlay,
+    onToggleCatalog: () => setCatalogVisible((prev) => !prev),
+    onSeek: (deltaMs: number) => {
+      setPlaybackPositionMs((prev) =>
+        Math.max(0, Math.min(selectedProgram.durationSeconds * 1000, prev + deltaMs)),
+      );
+    },
     onBack: () => {
       if (catalogVisible) {
         setCatalogVisible(false);

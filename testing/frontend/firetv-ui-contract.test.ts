@@ -40,10 +40,10 @@ describe('Fire TV 10-Foot UI: Design Tokens & Safe Zone Contracts', () => {
 });
 
 describe('Fire TV Client: 3-Genre Demo Catalog Invariants', () => {
-  it('seeds all 3 hackathon genres (Sci-Fi, Fantasy/Mystery, Science Documentary)', () => {
+  it('seeds all 3 hackathon genres (Sci-Fi, Mystery / Thriller, Science Documentary)', () => {
     const genres = DEMO_PROGRAMS.map((p) => p.genre);
     assert.ok(genres.includes('Sci-Fi'), 'Must contain Sci-Fi genre');
-    assert.ok(genres.includes('Fantasy / Mystery'), 'Must contain Fantasy / Mystery genre');
+    assert.ok(genres.includes('Mystery / Thriller'), 'Must contain Mystery / Thriller genre');
     assert.ok(genres.includes('Science Documentary'), 'Must contain Science Documentary genre');
   });
 
@@ -58,11 +58,11 @@ describe('Fire TV Client: 3-Genre Demo Catalog Invariants', () => {
 
   it('strictly matches catalog episode IDs with database seed schema (Issue 1)', () => {
     const tears = DEMO_PROGRAMS.find((p) => p.title === 'Tears of Steel');
-    const sintel = DEMO_PROGRAMS.find((p) => p.title.includes('Sintel'));
-    const cosmos = DEMO_PROGRAMS.find((p) => p.title === 'Cosmos Odyssey');
+    const cosmos = DEMO_PROGRAMS.find((p) => p.title.includes('Cosmic Origins'));
+    const midnight = DEMO_PROGRAMS.find((p) => p.title.includes('The Midnight Cipher'));
 
     assert.equal(tears?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1');
-    assert.equal(sintel?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3');
-    assert.equal(cosmos?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4');
+    assert.equal(cosmos?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2');
+    assert.equal(midnight?.episodeId, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3');
   });
 });

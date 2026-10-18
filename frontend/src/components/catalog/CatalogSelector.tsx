@@ -19,6 +19,7 @@ export const CatalogSelector: React.FC<Props> = ({
   onClose,
 }) => {
   const [focusedId, setFocusedId] = useState<string | null>(null);
+  const [isCloseFocused, setIsCloseFocused] = useState(false);
 
   if (!visible) return null;
 
@@ -33,8 +34,15 @@ export const CatalogSelector: React.FC<Props> = ({
               Select a genre to test temporal context, anti-spoiler locks & live AI
             </Text>
           </View>
-          <Pressable onPress={onClose} style={styles.closeButton}>
-            <Text style={styles.closeButtonText}>✕ Close (Back)</Text>
+          <Pressable
+            onPress={onClose}
+            onFocus={() => setIsCloseFocused(true)}
+            onBlur={() => setIsCloseFocused(false)}
+            style={[styles.closeButton, isCloseFocused && styles.closeButtonFocused]}
+          >
+            <Text style={[styles.closeButtonText, isCloseFocused && styles.closeButtonTextFocused]}>
+              ✕ Close (Back)
+            </Text>
           </Pressable>
         </View>
 
@@ -131,11 +139,22 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 16,
     borderRadius: 8,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  closeButtonFocused: {
+    borderColor: '#F59E0B',
+    backgroundColor: '#334155',
+    transform: [{ scale: 1.05 }],
   },
   closeButtonText: {
     color: TVTheme.colors.textSecondary,
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
+  },
+  closeButtonTextFocused: {
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   grid: {
     flexDirection: 'row',
@@ -169,7 +188,7 @@ const styles = StyleSheet.create({
   },
   genreBadgeText: {
     color: TVTheme.colors.accentCyan,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '700',
     textTransform: 'uppercase',
   },
@@ -187,14 +206,14 @@ const styles = StyleSheet.create({
   },
   taglineText: {
     color: TVTheme.colors.focusRing,
-    fontSize: 13,
+    fontSize: 15,
     fontStyle: 'italic',
     marginBottom: 10,
   },
   synopsisText: {
     color: TVTheme.colors.textMuted,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 22,
     marginBottom: 16,
   },
   cardFooter: {
@@ -207,7 +226,7 @@ const styles = StyleSheet.create({
   },
   durationText: {
     color: TVTheme.colors.textMuted,
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '600',
   },
   nowPlayingBadge: {
@@ -218,7 +237,7 @@ const styles = StyleSheet.create({
   },
   nowPlayingText: {
     color: TVTheme.colors.spoilerSafeBadge,
-    fontSize: 10,
+    fontSize: 14,
     fontWeight: '800',
   },
 });

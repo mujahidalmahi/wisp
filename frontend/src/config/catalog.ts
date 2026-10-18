@@ -3,7 +3,7 @@ export interface CatalogProgram {
   episodeId: string;
   title: string;
   episodeTitle: string;
-  genre: 'Sci-Fi' | 'Fantasy / Mystery' | 'Science Documentary';
+  genre: 'Sci-Fi' | 'Mystery / Thriller' | 'Science Documentary';
   durationSeconds: number;
   synopsis: string;
   tagline: string;
@@ -18,29 +18,29 @@ export const DEMO_PROGRAMS: CatalogProgram[] = [
     genre: 'Sci-Fi',
     durationSeconds: 734,
     synopsis:
-      'In a dystopian Amsterdam, roboticists reconstruct key emotional memories to avert global apocalypse.',
+      'In a dystopian future Amsterdam, a group of warriors and scientists gather at the Oude Kerk to stage a desperate memory reenactment that could save humanity from sentient machines.',
     tagline: 'Memory is the ultimate battleground.',
   },
   {
     programId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2',
-    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
-    title: "Sintel: Dragon's Call",
-    episodeTitle: 'The Lonely Spear',
-    genre: 'Fantasy / Mystery',
-    durationSeconds: 912,
+    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+    title: 'Cosmic Origins: Deep Field',
+    episodeTitle: 'Light Across 13 Billion Years',
+    genre: 'Science Documentary',
+    durationSeconds: 600,
     synopsis:
-      'A solitary desert huntress traverses blizzard mountains to rescue her scaled companion.',
-    tagline: 'Some bonds transcend fire and ice.',
+      'An exploration of gravitational lensing, infrared spectroscopy, and early galaxy formation captured by the James Webb Space Telescope.',
+    tagline: 'Light across thirteen billion years.',
   },
   {
     programId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3',
-    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4',
-    title: 'Cosmos Odyssey',
-    episodeTitle: 'Standing Up in the Milky Way',
-    genre: 'Science Documentary',
-    durationSeconds: 2700,
+    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
+    title: 'The Midnight Cipher',
+    episodeTitle: 'Compartment 4B',
+    genre: 'Mystery / Thriller',
+    durationSeconds: 900,
     synopsis:
-      'A cinematic voyage through the Cosmic Calendar, mapping 13.8 billion years of astrophysics.',
-    tagline: 'We are a way for the cosmos to know itself.',
+      'Aboard a snowbound transcontinental train, an encrypted diplomatic pouch vanishes—and every passenger in Car 4 holds a conflicting alibi.',
+    tagline: 'Every passenger holds a secret.',
   },
 ];

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { TVTheme } from '../../theme/tvTheme';
 
@@ -17,6 +17,11 @@ interface Props {
 export const InteractiveQuizCard: React.FC<Props> = ({ quiz, onAnswerSelected }) => {
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSelectedIndex(null);
+    setFocusedIndex(null);
+  }, [quiz?.question]);
 
   const handleSelectOption = (idx: number) => {
     if (selectedIndex !== null) return; // Prevent changing answer after selection
