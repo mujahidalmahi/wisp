@@ -216,5 +216,14 @@
 - **Actual Behavior:** Passing a single callback function to RxJS `tap(() => { ... })` only hooks into successful next emissions; when an endpoint throws an exception (e.g. 400 Bad Request, 401 Unauthorized, 429 Throttled, or 500 Server Error), the interceptor callback never fires, omitting failed requests from access logs. Additionally, raw unverified device headers interpolated directly into log lines expose log collectors to CRLF injection (`\r\n`) and log record forgery (CWE-117).
 - **Workaround Implemented:** Upgraded `tap()` to pass a full observer object `{ next: () => ..., error: (err) => ... }` so failed responses are logged with status code and error messages, and sanitized control characters `/[\r\n\x00-\x1F\x7F]/g` with length bounding (64 chars) while prioritizing verified device claims `(req as any).device?.id`.
 - **Actionable Recommendation:** Provide a built-in NestJS logging interceptor utility with automated CRLF stripping and dual next/error stream observation out of the box.
+---
 
+### [FL-014] Fire TV Remote Focus Ring Disappearance on Conditional / Post-Answer UI States
+- **Date:** 2026-10-16
+- **Component / SDK:** Fire OS Focus Engine / React Native TV Pressable
+- **Severity:** Medium
+- **Expected Behavior:** Pressable components styled with conditional result borders (such as quiz option selection or entity inspection) should maintain an amber focus ring (`#F59E0B`) when navigated via D-pad after state mutation.
+- **Actual Behavior:** When conditional answer evaluation styles (`optionCorrect`, `optionIncorrect`, `optionDimmed`) were applied, state gates like `!isAnswered` suppressed the active `isFocused` focus ring, rendering the cursor invisible to viewers navigating post-answer.
+- **Workaround Implemented:** Decoupled `isFocused` styling so that high-contrast focus rings (`#F59E0B`, width 2) override dimmed or static border states, and added explicit `onFocus`/`onBlur` tracking across HUD controls (`catalogButton`, `scrubButton`).
+- **Actionable Recommendation:** Provide higher-level TV button primitives with an `isFocused` higher-priority overlay layer that cannot be inadvertently overwritten by custom component state styling.
 
