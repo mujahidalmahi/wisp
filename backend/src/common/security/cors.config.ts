@@ -83,7 +83,7 @@ export function buildCorsOptions(): CorsOptions {
         false,
       );
     },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: CORS_ALLOWED_HEADERS,
     exposedHeaders: [
       'X-RateLimit-Limit',
@@ -91,6 +91,7 @@ export function buildCorsOptions(): CorsOptions {
       'X-RateLimit-Reset',
       'Retry-After',
       'X-Request-Id',
+      'X-Correlation-Id',
       'X-Response-Time',
       'X-Wisp-Temporal-Floor-Ms',
     ],

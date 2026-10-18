@@ -35,6 +35,7 @@ export class RequestCorrelationInterceptor implements NestInterceptor {
     req.startTimeHr = startTimeHr;
 
     res.setHeader('X-Request-Id', correlationId);
+    res.setHeader('X-Correlation-Id', correlationId);
 
     const rawDeviceId =
       (req as any).device?.id ||
@@ -42,7 +43,7 @@ export class RequestCorrelationInterceptor implements NestInterceptor {
       (req.headers['x-device-id'] as string) ||
       '-';
     const cleanDeviceId = String(rawDeviceId).replace(/[\r\n\x00-\x1F\x7F]/g, '').slice(0, 64);
-    const cleanUrl = (req.originalUrl || req.url || '').replace(/[\r\n\x00-\x1F\x7F]/g, '');
+    const cleanUrl = (req.originalUrl || req.url || '').replace(/[\r\n\x00-\x1F\x7F]/g, '').slice(0, 256);
 
     return next.handle().pipe(
       tap({
@@ -59,7 +60,7 @@ export class RequestCorrelationInterceptor implements NestInterceptor {
           const elapsedNs = process.hrtime.bigint() - startTimeHr;
           const elapsedMs = Number(elapsedNs) / 1_000_000;
           const status = err?.status || err?.statusCode || 500;
-          const cleanErrorMessage = String(err?.message || 'Internal Error').replace(/[\r\n\x00-\x1F\x7F]/g, '');
+          const cleanErrorMessage = String(err?.message || 'Internal Error').replace(/[\r\n\x00-\x1F\x7F]/g, '').slice(0, 256);
 
           this.logger.warn(
             `${req.method} ${cleanUrl} ${status} ${elapsedMs.toFixed(1)}ms [${correlationId}] device=${cleanDeviceId} error="${cleanErrorMessage}"`,
