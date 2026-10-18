@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { QuickActionChip } from '../../types/wisp';
 import { TVTheme } from '../../theme/tvTheme';
@@ -12,6 +12,10 @@ interface Props {
 export const QuickActionChips: React.FC<Props> = ({ chips, onSelectChip, disabled }) => {
   const [focusedId, setFocusedId] = useState<string | null>(chips[0]?.id ?? null);
 
+  useEffect(() => {
+    setFocusedId(chips[0]?.id ?? null);
+  }, [chips]);
+
   return (
     <View style={styles.container}>
       {chips.map((chip, idx) => {
@@ -22,6 +26,7 @@ export const QuickActionChips: React.FC<Props> = ({ chips, onSelectChip, disable
             hasTVPreferredFocus={idx === 0}
             disabled={disabled}
             onFocus={() => setFocusedId(chip.id)}
+            onBlur={() => setFocusedId(null)}
             onPress={() => onSelectChip(chip)}
             style={[styles.chip, isFocused && styles.chipFocused]}
           >

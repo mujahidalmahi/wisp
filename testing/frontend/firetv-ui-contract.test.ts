@@ -47,12 +47,16 @@ describe('Fire TV Client: 3-Genre Demo Catalog Invariants', () => {
     assert.ok(genres.includes('Science Documentary'), 'Must contain Science Documentary genre');
   });
 
-  it('validates every catalog program has valid identifiers and non-zero duration', () => {
+  it('validates every catalog program has valid identifiers, non-zero duration, and public-domain stream URL', () => {
     for (const prog of DEMO_PROGRAMS) {
       assert.ok(prog.programId.length > 0, `Program ${prog.title} missing programId`);
       assert.ok(prog.episodeId.length > 0, `Program ${prog.title} missing episodeId`);
       assert.ok(prog.durationSeconds > 60, `Program ${prog.title} duration must be > 60s`);
       assert.ok(prog.synopsis.length > 10, `Program ${prog.title} must have descriptive synopsis`);
+      assert.ok(
+        prog.videoStreamUrl && prog.videoStreamUrl.startsWith('https://') && prog.videoStreamUrl.endsWith('.mp4'),
+        `Program ${prog.title} must have valid HTTPS MP4 stream URL`,
+      );
     }
   });
 

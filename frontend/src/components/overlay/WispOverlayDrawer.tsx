@@ -1,5 +1,5 @@
-import React from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import {
   HouseholdProfileMode,
   InstantSceneContext,
@@ -17,12 +17,15 @@ interface Props {
   playbackPositionMs: number;
   sceneContext: InstantSceneContext | null;
   responseCard: WispResponseCard | null;
+  lastInquiryPrompt?: string | null;
   loadingAi: boolean;
   errorMessage: string | null;
   profileMode: HouseholdProfileMode;
   onChangeProfileMode: (mode: HouseholdProfileMode) => void;
   onSelectChip: (chip: QuickActionChip) => void;
   onAskAboutEntity?: (entity: UnlockedEntity) => void;
+  onBackToScene?: () => void;
+  onRetry?: () => void;
 }
 
 export const WispOverlayDrawer: React.FC<Props> = ({
@@ -30,13 +33,19 @@ export const WispOverlayDrawer: React.FC<Props> = ({
   playbackPositionMs,
   sceneContext,
   responseCard,
+  lastInquiryPrompt,
   loadingAi,
   errorMessage,
   profileMode,
   onChangeProfileMode,
   onSelectChip,
   onAskAboutEntity,
+  onBackToScene,
+  onRetry,
 }) => {
+  const [isBackToSceneFocused, setIsBackToSceneFocused] = useState(false);
+  const [isRetryFocused, setIsRetryFocused] = useState(false);
+
   if (!visible) return null;
 
   const formatTimestamp = (ms: number) => {
@@ -95,6 +104,50 @@ export const WispOverlayDrawer: React.FC<Props> = ({
         {errorMessage && (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>{errorMessage}</Text>
+            {onRetry && (
+              <Pressable
+                onPress={onRetry}
+                onFocus={() => setIsRetryFocused(true)}
+                onBlur={() => setIsRetryFocused(false)}
+                style={[styles.retryButton, isRetryFocused && styles.retryButtonFocused]}
+              >
+                <Text style={[styles.retryButtonText, isRetryFocused && styles.retryButtonTextFocused]}>
+                  🔄 Retry Question
+                </Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+
+        {/* Navigation back to scene lore when responseCard is active */}
+        {responseCard && onBackToScene && !loadingAi && (
+          <View style={styles.responseTopRow}>
+            {lastInquiryPrompt && (
+              <View style={styles.inquiryBadge}>
+                <Text style={styles.inquiryLabel}>INQUIRY</Text>
+                <Text style={styles.inquiryText} numberOfLines={1}>
+                  "{lastInquiryPrompt}"
+                </Text>
+              </View>
+            )}
+            <Pressable
+              onPress={onBackToScene}
+              onFocus={() => setIsBackToSceneFocused(true)}
+              onBlur={() => setIsBackToSceneFocused(false)}
+              style={[
+                styles.backToSceneButton,
+                isBackToSceneFocused && styles.backToSceneButtonFocused,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.backToSceneText,
+                  isBackToSceneFocused && styles.backToSceneTextFocused,
+                ]}
+              >
+                ← Scene Lore
+              </Text>
+            </Pressable>
           </View>
         )}
 
@@ -107,6 +160,11 @@ export const WispOverlayDrawer: React.FC<Props> = ({
               <Text style={styles.providerTelemetryText}>
                 Provider: {responseCard.providerUsed} • {responseCard.latencyMs}ms
               </Text>
+              {responseCard.cached && (
+                <View style={styles.cachedBadge}>
+                  <Text style={styles.cachedBadgeText}>⚡ INSTANT CACHE</Text>
+                </View>
+              )}
             </View>
           </View>
         )}
@@ -121,14 +179,23 @@ export const WispOverlayDrawer: React.FC<Props> = ({
                 • {bp}
               </Text>
             ))}
-            <Text style={styles.providerMeta}>
-              Provider: {responseCard.providerUsed} • {responseCard.latencyMs}ms
-            </Text>
+            <View style={styles.providerRow}>
+              <Text style={styles.providerMeta}>
+                Provider: {responseCard.providerUsed} • {responseCard.latencyMs}ms
+              </Text>
+              {responseCard.cached && (
+                <View style={styles.cachedBadge}>
+                  <Text style={styles.cachedBadgeText}>⚡ INSTANT CACHE</Text>
+                </View>
+              )}
+            </View>
           </View>
         )}
 
         {/* Zero-Typing D-Pad Quick Action Chips */}
-        <Text style={styles.sectionLabel}>ASK ABOUT THIS MOMENT (D-PAD SELECT)</Text>
+        <Text style={styles.sectionLabel}>
+          {responseCard ? 'FOLLOW-UP ACTIONS (D-PAD SELECT)' : 'ASK ABOUT THIS MOMENT (D-PAD SELECT)'}
+        </Text>
         <QuickActionChips
           chips={activeChips}
           onSelectChip={onSelectChip}
@@ -265,5 +332,97 @@ const styles = StyleSheet.create({
     color: TVTheme.colors.textMuted,
     fontSize: 13,
     fontWeight: '600',
+  },
+  retryButton: {
+    marginTop: 10,
+    backgroundColor: '#DC2626',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignSelf: 'flex-start',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  retryButtonFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    transform: [{ scale: 1.03 }],
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  retryButtonTextFocused: {
+    color: TVTheme.colors.focusRing,
+  },
+  responseTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    gap: 10,
+  },
+  inquiryBadge: {
+    flex: 1,
+    backgroundColor: 'rgba(30, 41, 59, 0.8)',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: TVTheme.colors.focusRing,
+  },
+  inquiryLabel: {
+    color: TVTheme.colors.focusRing,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  inquiryText: {
+    color: TVTheme.colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  backToSceneButton: {
+    backgroundColor: 'rgba(51, 65, 85, 0.7)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: '#475569',
+  },
+  backToSceneButtonFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    transform: [{ scale: 1.05 }],
+  },
+  backToSceneText: {
+    color: TVTheme.colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  backToSceneTextFocused: {
+    color: '#FFFFFF',
+  },
+  providerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 12,
+  },
+  cachedBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: TVTheme.colors.spoilerSafeBadge,
+    marginLeft: 8,
+  },
+  cachedBadgeText: {
+    color: TVTheme.colors.spoilerSafeBadge,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
 });

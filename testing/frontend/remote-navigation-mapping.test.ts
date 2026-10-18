@@ -43,8 +43,50 @@ describe('Frontend: Fire TV Remote D-Pad & Focus Navigation Verification', () =>
       'First QuickActionChip must claim initial D-pad focus when overlay mounts',
     );
     assert.ok(
+      chipsComponentSource.includes('onBlur={() => setFocusedId(null)}'),
+      'QuickActionChips must clear focused state onBlur to prevent stuck focus rings',
+    );
+    assert.ok(
+      chipsComponentSource.includes('setFocusedId(chips[0]?.id ?? null)'),
+      'QuickActionChips must reset focusedId when chips prop updates',
+    );
+    assert.ok(
       playerSurfaceSource.includes('{!overlayVisible && ('),
       'Player trigger bar must hide when overlay is open to prevent D-pad focus stealing',
+    );
+  });
+
+  it('exposes Play/Pause controls and live playback indicators in VideoPlayerSurface', () => {
+    assert.ok(
+      playerSurfaceSource.includes('onTogglePlayPause'),
+      'VideoPlayerSurface must expose onTogglePlayPause prop',
+    );
+    assert.ok(
+      playerSurfaceSource.includes('styles.pausedBadge'),
+      'VideoPlayerSurface must provide paused indicator badge',
+    );
+  });
+
+  it('provides active inquiry display, back-to-scene action, cache badges, and retry button in WispOverlayDrawer', () => {
+    const drawerSource = fs.readFileSync(
+      path.resolve('frontend/src/components/overlay/WispOverlayDrawer.tsx'),
+      'utf8',
+    );
+    assert.ok(
+      drawerSource.includes('lastInquiryPrompt'),
+      'WispOverlayDrawer must support rendering lastInquiryPrompt',
+    );
+    assert.ok(
+      drawerSource.includes('onBackToScene'),
+      'WispOverlayDrawer must provide onBackToScene navigation',
+    );
+    assert.ok(
+      drawerSource.includes('onRetry'),
+      'WispOverlayDrawer must provide onRetry error recovery action',
+    );
+    assert.ok(
+      drawerSource.includes('INSTANT CACHE'),
+      'WispOverlayDrawer must display instant cache telemetry badge',
     );
   });
 });

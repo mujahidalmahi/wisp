@@ -16,7 +16,10 @@ export class WispApiClient {
   ): Promise<InstantSceneContext> {
     const url = `${EnvConfig.apiBaseUrl}/context/${episodeId}?playbackMs=${Math.floor(playbackMs)}`;
     try {
-      const response = await fetch(url);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 3000);
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
       if (response.ok) {
         return (await response.json()) as InstantSceneContext;
       }
@@ -31,17 +34,31 @@ export class WispApiClient {
 
   static async queryWispAi(payload: WispQueryRequest): Promise<WispResponseCard> {
     const url = `${EnvConfig.apiBaseUrl}/wisp/query`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), EnvConfig.requestTimeoutMs);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Wisp AI request failed (${response.status}): ${errorText}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Wisp AI request failed (${response.status}): ${errorText}`);
+      }
+
+      return (await response.json()) as WispResponseCard;
+    } catch (err: any) {
+      clearTimeout(timer);
+      if (err.name === 'AbortError') {
+        throw new Error(
+          `Wisp AI request timed out after ${EnvConfig.requestTimeoutMs / 1000}s. Please check backend connectivity.`,
+        );
+      }
+      throw err;
     }
-
-    return (await response.json()) as WispResponseCard;
   }
 }

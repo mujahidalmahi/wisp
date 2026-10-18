@@ -19,12 +19,15 @@ export default function App() {
   const [selectedProgram, setSelectedProgram] = useState<CatalogProgram>(DEMO_PROGRAMS[0]);
   const [episodeId, setEpisodeId] = useState<string>(selectedProgram.episodeId);
   const [playbackPositionMs, setPlaybackPositionMs] = useState<number>(35000);
+  const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [overlayVisible, setOverlayVisible] = useState<boolean>(false);
   const [catalogVisible, setCatalogVisible] = useState<boolean>(false);
   const [profileMode, setProfileMode] = useState<HouseholdProfileMode>('quick_glance');
 
   const [sceneContext, setSceneContext] = useState<InstantSceneContext | null>(null);
   const [responseCard, setResponseCard] = useState<WispResponseCard | null>(null);
+  const [lastInquiryPrompt, setLastInquiryPrompt] = useState<string | null>(null);
+  const [lastChip, setLastChip] = useState<QuickActionChip | null>(null);
   const [loadingAi, setLoadingAi] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -49,9 +52,32 @@ export default function App() {
     });
   }, [episodeId, playbackPositionMs, loadInstantSceneContext]);
 
+  const handleTogglePlayPause = useCallback(() => {
+    setIsPlaying((prev) => !prev);
+  }, []);
+
+  // Continuous playback timer simulation (1s progression)
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    const timer = setInterval(() => {
+      setPlaybackPositionMs((prev) => {
+        const maxMs = selectedProgram.durationSeconds * 1000;
+        if (prev >= maxMs) {
+          setIsPlaying(false);
+          return maxMs;
+        }
+        return prev + 1000;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isPlaying, selectedProgram.durationSeconds]);
+
   useTVRemoteHandler({
     onToggleWispOverlay: handleToggleWispOverlay,
     onToggleCatalog: () => setCatalogVisible((prev) => !prev),
+    onPlayPause: handleTogglePlayPause,
     onSeek: (deltaMs: number) => {
       setPlaybackPositionMs((prev) =>
         Math.max(0, Math.min(selectedProgram.durationSeconds * 1000, prev + deltaMs)),
@@ -75,11 +101,15 @@ export default function App() {
     setEpisodeId(prog.episodeId);
     setPlaybackPositionMs(25000); // Start near beginning of chosen show
     setResponseCard(null);
+    setLastInquiryPrompt(null);
+    setLastChip(null);
   };
 
   const handleSelectChip = async (chip: QuickActionChip) => {
     setLoadingAi(true);
     setErrorMessage(null);
+    setLastInquiryPrompt(chip.label);
+    setLastChip(chip);
     try {
       const card = await WispApiClient.queryWispAi({
         episodeId,
@@ -93,6 +123,12 @@ export default function App() {
       setErrorMessage(err?.message || 'AI provider request failed');
     } finally {
       setLoadingAi(false);
+    }
+  };
+
+  const handleRetry = () => {
+    if (lastChip) {
+      handleSelectChip(lastChip);
     }
   };
 
@@ -113,6 +149,7 @@ export default function App() {
         playbackPositionMs={playbackPositionMs}
         durationMs={selectedProgram.durationSeconds * 1000}
         overlayVisible={overlayVisible}
+        isPlaying={isPlaying}
         onInvokeWisp={handleToggleWispOverlay}
         onAdvanceTimestamp={(delta) =>
           setPlaybackPositionMs((prev) =>
@@ -120,6 +157,7 @@ export default function App() {
           )
         }
         onOpenCatalog={() => setCatalogVisible(true)}
+        onTogglePlayPause={handleTogglePlayPause}
       />
 
       <WispOverlayDrawer
@@ -127,12 +165,15 @@ export default function App() {
         playbackPositionMs={playbackPositionMs}
         sceneContext={sceneContext}
         responseCard={responseCard}
+        lastInquiryPrompt={lastInquiryPrompt}
         loadingAi={loadingAi}
         errorMessage={errorMessage}
         profileMode={profileMode}
         onChangeProfileMode={setProfileMode}
         onSelectChip={handleSelectChip}
         onAskAboutEntity={handleAskAboutEntity}
+        onBackToScene={() => setResponseCard(null)}
+        onRetry={handleRetry}
       />
 
       <CatalogSelector

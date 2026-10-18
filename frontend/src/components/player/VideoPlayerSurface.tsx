@@ -9,9 +9,11 @@ interface Props {
   playbackPositionMs: number;
   durationMs?: number;
   overlayVisible: boolean;
+  isPlaying?: boolean;
   onInvokeWisp: () => void;
   onAdvanceTimestamp: (deltaMs: number) => void;
   onOpenCatalog?: () => void;
+  onTogglePlayPause?: () => void;
 }
 
 export const VideoPlayerSurface: React.FC<Props> = ({
@@ -21,14 +23,17 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   playbackPositionMs,
   durationMs = 734000,
   overlayVisible,
+  isPlaying = true,
   onInvokeWisp,
   onAdvanceTimestamp,
   onOpenCatalog,
+  onTogglePlayPause,
 }) => {
   const [isCatalogFocused, setIsCatalogFocused] = useState<boolean>(false);
   const [isWispFocused, setIsWispFocused] = useState<boolean>(false);
   const [isRewindFocused, setIsRewindFocused] = useState<boolean>(false);
   const [isForwardFocused, setIsForwardFocused] = useState<boolean>(false);
+  const [isPlayPauseFocused, setIsPlayPauseFocused] = useState<boolean>(false);
 
   const sec = Math.floor(playbackPositionMs / 1000);
   const formattedTime = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(
@@ -53,9 +58,11 @@ export const VideoPlayerSurface: React.FC<Props> = ({
                 <Text style={styles.genreBadgeText}>{genre}</Text>
               </View>
             )}
-            <View style={styles.liveBadge}>
-              <View style={styles.liveDot} />
-              <Text style={styles.liveBadgeText}>TEMPORAL PLAYHEAD</Text>
+            <View style={[styles.liveBadge, !isPlaying && styles.pausedBadge]}>
+              <View style={[styles.liveDot, !isPlaying && styles.pausedDot]} />
+              <Text style={[styles.liveBadgeText, !isPlaying && styles.pausedBadgeText]}>
+                {isPlaying ? 'LIVE PLAYBACK' : 'PAUSED'}
+              </Text>
             </View>
           </View>
           <Text style={styles.programTitle}>{programTitle}</Text>
@@ -120,6 +127,27 @@ export const VideoPlayerSurface: React.FC<Props> = ({
             </Pressable>
 
             <View style={styles.controlsGroup}>
+              {onTogglePlayPause && (
+                <Pressable
+                  onPress={onTogglePlayPause}
+                  onFocus={() => setIsPlayPauseFocused(true)}
+                  onBlur={() => setIsPlayPauseFocused(false)}
+                  style={[
+                    styles.scrubButton,
+                    isPlayPauseFocused && styles.scrubButtonFocused,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.scrubButtonText,
+                      isPlayPauseFocused && styles.scrubButtonTextFocused,
+                    ]}
+                  >
+                    {isPlaying ? '⏸ Pause (Space)' : '▶ Play (Space)'}
+                  </Text>
+                </Pressable>
+              )}
+
               <Pressable
                 onPress={() => onAdvanceTimestamp(-30000)}
                 onFocus={() => setIsRewindFocused(true)}
@@ -224,9 +252,20 @@ const styles = StyleSheet.create({
   },
   liveBadgeText: {
     color: TVTheme.colors.spoilerSafeBadge,
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1,
+  },
+  pausedBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+    borderColor: TVTheme.colors.focusRing,
+    borderWidth: 1,
+  },
+  pausedDot: {
+    backgroundColor: TVTheme.colors.focusRing,
+  },
+  pausedBadgeText: {
+    color: TVTheme.colors.focusRing,
   },
   programTitle: {
     color: TVTheme.colors.textPrimary,

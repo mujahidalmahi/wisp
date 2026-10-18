@@ -14,41 +14,53 @@ const MODES: Array<{ mode: HouseholdProfileMode; label: string }> = [
   { mode: 'family_friendly', label: 'Family Mode' },
 ];
 
+const MODE_DESCRIPTIONS: Record<HouseholdProfileMode, string> = {
+  quick_glance: '⚡ Crisp spoiler-free overview for instant checking',
+  deep_lore: '📜 Deep canonical context, backstories & character motives',
+  family_friendly: '🛡️ Simplified, all-ages explanations with zero graphic spoilers',
+};
+
 export const ProfileModeSelector: React.FC<Props> = ({ activeMode, onChangeMode }) => {
   const [focusedMode, setFocusedMode] = useState<HouseholdProfileMode | null>(null);
 
   return (
-    <View style={styles.row}>
-      {MODES.map((item) => {
-        const isActive = activeMode === item.mode;
-        const isFocused = focusedMode === item.mode;
-        return (
-          <Pressable
-            key={item.mode}
-            onFocus={() => setFocusedMode(item.mode)}
-            onBlur={() => setFocusedMode(null)}
-            onPress={() => onChangeMode(item.mode)}
-            style={[
-              styles.pill,
-              isActive && styles.pillActive,
-              isFocused && styles.pillFocused,
-            ]}
-          >
-            <Text style={[styles.pillText, isActive && styles.pillTextActive]}>
-              {item.label}
-            </Text>
-          </Pressable>
-        );
-      })}
+    <View style={styles.container}>
+      <View style={styles.row}>
+        {MODES.map((item) => {
+          const isActive = activeMode === item.mode;
+          const isFocused = focusedMode === item.mode;
+          return (
+            <Pressable
+              key={item.mode}
+              onFocus={() => setFocusedMode(item.mode)}
+              onBlur={() => setFocusedMode(null)}
+              onPress={() => onChangeMode(item.mode)}
+              style={[
+                styles.pill,
+                isActive && styles.pillActive,
+                isFocused && styles.pillFocused,
+              ]}
+            >
+              <Text style={[styles.pillText, isActive && styles.pillTextActive]}>
+                {item.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Text style={styles.modeDescription}>{MODE_DESCRIPTIONS[activeMode]}</Text>
     </View>
   );
 };
 
 const styles = StyleSheet.create({
+  container: {
+    marginBottom: 16,
+  },
   row: {
     flexDirection: 'row',
     gap: 10,
-    marginBottom: 16,
+    marginBottom: 8,
   },
   pill: {
     paddingVertical: 8,
@@ -71,5 +83,11 @@ const styles = StyleSheet.create({
   },
   pillTextActive: {
     color: TVTheme.colors.textPrimary,
+  },
+  modeDescription: {
+    color: TVTheme.colors.accentCyan,
+    fontSize: 13,
+    fontStyle: 'italic',
+    lineHeight: 18,
   },
 });

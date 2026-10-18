@@ -63,3 +63,14 @@
 - **Workaround Implemented:** Decoupled `isFocused` styling so that high-contrast focus rings (`#F59E0B`, width 2) override dimmed or static border states, and added explicit `onFocus`/`onBlur` tracking across HUD controls (`catalogButton`, `scrubButton`).
 - **Actionable Recommendation:** Provide higher-level TV button primitives with an `isFocused` higher-priority overlay layer that cannot be inadvertently overwritten by custom component state styling.
 
+---
+
+### [FL-005] Fire TV Virtual Device Emulation: CLI Orientation Default & ADB Daemon Drop
+- **Date:** 2026-10-18
+- **Component / SDK:** Amazon / Android Virtual Device Manager (`avdmanager`), Android Emulator (`emulator.exe`), ADB Daemon
+- **Severity:** Medium
+- **Expected Behavior:** Creating a 1080p TV AVD via `avdmanager create avd -n FireTV_1080p -d "tv_1080p"` should initialize with a landscape 1080p profile (`1920x1080`, `hw.initialOrientation=landscape`) and maintain persistent ADB socket connectivity for testing without physical Fire TV hardware per Amazon developer documentation.
+- **Actual Behavior:** The default profile created by `avdmanager` wrote `hw.initialOrientation=portrait` and `target=android-0` into `config.ini`, causing orientation mismatches. Furthermore, when launching the emulator via non-interactive automated test environments on Windows, transient shell sessions terminating the background ADB server left the virtual device in `offline` state indefinitely (`error: device offline`).
+- **Workaround Implemented:** Programmatically patched `config.ini` with `hw.initialOrientation=landscape`, `hw.gpu.enabled=yes`, `hw.keyboard=yes`, `target=android-36.1`, and `hw.ramSize=2048M`, and started a persistent foreground ADB server (`adb -P 5037 nodaemon server`) before launching the emulator. The virtual Fire TV 1080p device booted successfully (`sys.boot_completed=1`) and verified full 1080p density (320 dpi).
+- **Actionable Recommendation for Amazon / Maintainers:** Provide a dedicated Fire TV CLI tool or predefined hardware profile descriptor (`firetv-4k-max.xml`) in the Amazon developer portal that generates turnkey landscape AVD configurations with appropriate heap and GPU defaults out-of-the-box.
+
