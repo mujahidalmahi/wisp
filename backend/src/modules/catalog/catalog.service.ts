@@ -56,6 +56,22 @@ export interface PaginatedPrograms {
   };
 }
 
+export const EPISODE_SLUG_ALIASES: Record<string, string> = {
+  'tos-ep1': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+  'tears-of-steel-ep1': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1',
+  'tos-ep2': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+  'tears-of-steel-ep2': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2',
+  'sintel-ep1': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
+  'cosmos-ep1': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4',
+  'cosmos-laundromat-ep1': 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4',
+};
+
+export function resolveEpisodeId(idOrSlug: string): string {
+  if (!idOrSlug || typeof idOrSlug !== 'string') return idOrSlug;
+  const normalized = idOrSlug.trim().toLowerCase();
+  return EPISODE_SLUG_ALIASES[normalized] || idOrSlug;
+}
+
 export const FALLBACK_PROGRAMS: ProgramWithEpisodes[] = [
   {
     id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
@@ -445,6 +461,7 @@ export class CatalogService {
   }
 
   async getEpisodeById(episodeId: string): Promise<EpisodeDetails> {
+    const canonicalId = resolveEpisodeId(episodeId);
     const isConfigured = this.supabaseService.isConfigured();
     const isProduction = process.env.NODE_ENV === 'production';
     const allowDemoFallback = !isConfigured || (!isProduction && process.env.ENABLE_DEMO_FALLBACK === 'true');
@@ -459,13 +476,13 @@ export class CatalogService {
             .select(
               'id, program_id, season_number, episode_number, title, summary, duration_ms, video_stream_url, thumbnail_url, intro_end_ms, credits_start_ms, default_bucket_sec, is_published, programs(title, slug)',
             )
-            .eq('id', episodeId)
+            .eq('id', canonicalId)
             .eq('is_published', true)
             .single(),
         );
 
         if (error) {
-          if (error.code === 'PGRST116') {
+          if (error.code === 'PGRST116' || error.code === '22P02') {
             // Explicit Not Found in production database (Item 5)
             throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
           }
@@ -520,7 +537,7 @@ export class CatalogService {
 
     // In-memory fallback
     for (const prog of FALLBACK_PROGRAMS) {
-      const ep = prog.episodes.find((e) => e.id === episodeId && e.is_published);
+      const ep = prog.episodes.find((e) => (e.id === canonicalId || e.id === episodeId) && e.is_published);
       if (ep) {
         return {
           ...ep,

@@ -123,6 +123,9 @@ export class ContextService {
         );
 
         if (error) {
+          if (error.code === 'PGRST116' || error.code === 'P0002' || error.code === '22P02') {
+            throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
+          }
           this.logger.error(`Database RPC get_spoiler_safe_context failed: ${error.message}`);
           if (!allowDemoFallback) {
             throw new ServiceUnavailableException(`Database context query failed: ${error.message}`);
@@ -255,7 +258,7 @@ export class ContextService {
         }
 
         if (error) {
-          if (error.code === 'PGRST116' || error.code === 'P0002') {
+          if (error.code === 'PGRST116' || error.code === 'P0002' || error.code === '22P02') {
             throw new NotFoundException(`Playable episode with ID '${episodeId}' not found`);
           }
           this.logger.error(`get_firetv_stage1_bootstrap RPC failed: ${error.message}`);

@@ -16,7 +16,11 @@ import { ContextController } from '../dist/modules/context/context.controller.js
 import { ProfilesController } from '../dist/modules/profiles/profiles.controller.js';
 import { SupabaseService } from '../dist/modules/supabase/supabase.service.js';
 import { HealthController } from '../dist/modules/health/health.controller.js';
+import { of, throwError } from 'rxjs';
 import { ParseSlugPipe } from '../dist/common/pipes/parse-slug.pipe.js';
+import { ParseEpisodeIdPipe } from '../dist/common/pipes/parse-episode-id.pipe.js';
+import { RequestCorrelationInterceptor } from '../dist/common/interceptors/correlation.interceptor.js';
+import { CORS_ALLOWED_HEADERS, getCorsConfig } from '../dist/common/security/cors.config.js';
 import { DeviceAuthGuard } from '../dist/common/guards/device-auth.guard.js';
 import { DeviceTokenService } from '../dist/common/auth/device-token.service.js';
 import { AuthController } from '../dist/modules/auth/auth.controller.js';
@@ -2304,6 +2308,127 @@ describe('Phase 1 Basic Backend: Catalog Pagination Contract & Episode Shape Inv
     assert.equal(capturedLookback, 240000);
   });
 });
+
+describe('Phase 1 Basic Backend: PR Review Hardening (Security, Pipes & Observability)', () => {
+  it('ParseEpisodeIdPipe accepts valid UUIDs and human-readable slugs', () => {
+    const pipe = new ParseEpisodeIdPipe();
+    assert.equal(pipe.transform('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1'), 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1');
+    assert.equal(pipe.transform('sintel-ep1'), 'sintel-ep1');
+    assert.equal(pipe.transform('tos-ep1'), 'tos-ep1');
+    assert.equal(pipe.transform('ep-db-1'), 'ep-db-1');
+  });
+
+  it('ParseEpisodeIdPipe rejects invalid characters, injections, and excessive length with 400', () => {
+    const pipe = new ParseEpisodeIdPipe();
+    assert.throws(() => pipe.transform("'; DROP TABLE episodes; --"), /Invalid episode ID format/);
+    assert.throws(() => pipe.transform('<script>alert(1)</script>'), /Invalid episode ID format/);
+    assert.throws(() => pipe.transform('ep 1 with spaces'), /Invalid episode ID format/);
+    assert.throws(() => pipe.transform('a'.repeat(65)), /cannot exceed 64 characters/);
+    assert.throws(() => pipe.transform(''), /Episode ID parameter is required/);
+  });
+
+  it('RequestCorrelationInterceptor sanitizes CRLF injection from deviceId and url (CWE-117)', () => {
+    const interceptor = new RequestCorrelationInterceptor();
+    const logs: string[] = [];
+    (interceptor as any).logger = {
+      log: (msg: string) => logs.push(msg),
+      warn: (msg: string) => logs.push(msg),
+    };
+
+    const req: any = {
+      headers: {
+        'x-wisp-device-id': 'attacker-device\r\nFORGED LOG ENTRY [ADMIN]',
+      },
+      url: '/api/v1/context/ep1\r\nINJECTED',
+      method: 'GET',
+    };
+    const res: any = {
+      setHeader: () => {},
+      statusCode: 200,
+    };
+    const context: any = {
+      switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
+    };
+
+    const obs$ = interceptor.intercept(context, {
+      handle: () => of({ success: true }),
+    });
+    obs$.subscribe();
+
+    assert.equal(logs.length, 1);
+    assert.ok(!logs[0].includes('\r'));
+    assert.ok(!logs[0].includes('\n'));
+    assert.ok(logs[0].includes('attacker-deviceFORGED LOG ENTRY [ADMIN]'));
+    assert.ok(logs[0].includes('/api/v1/context/ep1INJECTED'));
+  });
+
+  it('RequestCorrelationInterceptor prioritizes verified device token identity over raw header', () => {
+    const interceptor = new RequestCorrelationInterceptor();
+    const logs: string[] = [];
+    (interceptor as any).logger = {
+      log: (msg: string) => logs.push(msg),
+      warn: () => {},
+    };
+
+    const req: any = {
+      device: { id: 'verified-crypto-device-id' },
+      headers: { 'x-wisp-device-id': 'unverified-spoofed-header' },
+      url: '/api/v1/context/test',
+      method: 'GET',
+    };
+    const res: any = { setHeader: () => {}, statusCode: 200 };
+    const context: any = {
+      switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
+    };
+
+    const obs$ = interceptor.intercept(context, {
+      handle: () => of({ success: true }),
+    });
+    obs$.subscribe();
+
+    assert.equal(logs.length, 1);
+    assert.ok(logs[0].includes('device=verified-crypto-device-id'));
+    assert.ok(!logs[0].includes('unverified-spoofed-header'));
+  });
+
+  it('RequestCorrelationInterceptor captures and logs failed requests via tap error handler', () => {
+    const interceptor = new RequestCorrelationInterceptor();
+    const warnings: string[] = [];
+    (interceptor as any).logger = {
+      log: () => {},
+      warn: (msg: string) => warnings.push(msg),
+    };
+
+    const req: any = {
+      headers: { 'x-wisp-device-id': 'dev-1' },
+      url: '/api/v1/context/invalid',
+      method: 'GET',
+    };
+    const res: any = { setHeader: () => {}, statusCode: 400 };
+    const context: any = {
+      switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
+    };
+
+    const obs$ = interceptor.intercept(context, {
+      handle: () => throwError(() => ({ status: 404, message: 'Playable episode not found\r\nFORGE' })),
+    });
+    obs$.subscribe({ error: () => {} });
+
+    assert.equal(warnings.length, 1);
+    assert.ok(warnings[0].includes('404'));
+    assert.ok(warnings[0].includes('error="Playable episode not foundFORGE"'));
+    assert.ok(!warnings[0].includes('\r'));
+    assert.ok(!warnings[0].includes('\n'));
+  });
+
+  it('CORS configuration includes X-Correlation-Id and X-Request-Id in allowedHeaders', () => {
+    assert.ok(CORS_ALLOWED_HEADERS.includes('X-Correlation-Id'));
+    assert.ok(CORS_ALLOWED_HEADERS.includes('X-Request-Id'));
+    const cors = getCorsConfig();
+    assert.ok((cors.allowedHeaders as string[]).includes('X-Correlation-Id'));
+  });
+});
+
 
 
 

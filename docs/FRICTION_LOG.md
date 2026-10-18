@@ -194,3 +194,27 @@
 - **Actual Behavior:** Binding CSRF tokens solely to `clientIp` caused frequent false-positive CSRF rejections for Fire TV devices connected to dynamic 4G/5G mobile hotspots or Carrier-Grade NAT (CGNAT) pools where egress IPs rotate between requests. Additionally, without session cookies, untrusted direct HTTP requests could forge forwarding headers (`X-Forwarded-For`) to manipulate IP-bound tokens.
 - **Workaround Implemented:** Introduced server-managed `wisp_csrf_session` HttpOnly cookies to bind CSRF tokens to stable browser/client sessions (`session:<sessionId>`), falling back to trusted socket client IPs (`ip:<clientIp>`) only when cookies are disabled. Enforced strict proxy boundaries (`TRUST_PROXY`) so forwarding headers are never trusted on direct connections.
 - **Actionable Recommendation for Maintainers:** When designing CSRF token binding for consumer TV and web applications, anchor tokens to cryptographically random, server-managed HttpOnly session cookies rather than raw client IP addresses.
+
+---
+
+### [FL-013] `@nestjs/throttler` v6 Method Decorator Typing Rejects Array Options in Favor of Named Storage Dictionary
+- **Date:** 2026-10-09
+- **Component / SDK:** NestJS Throttler (`@nestjs/throttler` v6) / TypeScript Strict Mode
+- **Severity:** Low
+- **Expected Behavior:** Declaring custom method-level rate limits via `@Throttle([{ ttl: 60000, limit: 12 }])` should compile and apply per-route overrides matching the `ThrottlerModule.forRoot([...])` array syntax.
+- **Actual Behavior:** TypeScript emits `TS2345: Argument of type '{ ttl: number; limit: number; }[]' is not assignable to parameter of type 'Record<string, ThrottlerMethodOrControllerOptions>'. Index signature for type 'string' is missing in type '{ ttl: number; limit: number; }[]'`. In v6, while `forRoot` accepts an array of named configurations, the method decorator `@Throttle(...)` expects a dictionary keyed by named tracker (e.g., `{ default: { limit: 12, ttl: 60000 } }`).
+- **Workaround Implemented:** Updated the route-level throttle definition in `AiGatewayController` to `@Throttle({ default: { limit: 12, ttl: 60000 } })`, targeting the default in-memory throttler registered in `AppModule`.
+- **Actionable Recommendation:** NestJS Throttler documentation and upgrade guides should explicitly contrast the root module array registration syntax with the method decorator named dictionary signature.
+
+---
+
+### [FL-010] Unhandled Error Telemetry Blind Spot and Log Forgery (CWE-117) in NestJS Request Interceptors
+- **Date:** 2026-10-16
+- **Component / SDK:** NestJS Interceptors / RxJS `tap` / Centralized Observability (CloudWatch / Datadog)
+- **Severity:** Medium
+- **Expected Behavior:** An HTTP request telemetry interceptor using `tap()` should capture complete request/response telemetry across all HTTP status codes, and unverified client request headers like `X-Wisp-Device-Id` should be safe to interpolate into log messages.
+- **Actual Behavior:** Passing a single callback function to RxJS `tap(() => { ... })` only hooks into successful next emissions; when an endpoint throws an exception (e.g. 400 Bad Request, 401 Unauthorized, 429 Throttled, or 500 Server Error), the interceptor callback never fires, omitting failed requests from access logs. Additionally, raw unverified device headers interpolated directly into log lines expose log collectors to CRLF injection (`\r\n`) and log record forgery (CWE-117).
+- **Workaround Implemented:** Upgraded `tap()` to pass a full observer object `{ next: () => ..., error: (err) => ... }` so failed responses are logged with status code and error messages, and sanitized control characters `/[\r\n\x00-\x1F\x7F]/g` with length bounding (64 chars) while prioritizing verified device claims `(req as any).device?.id`.
+- **Actionable Recommendation:** Provide a built-in NestJS logging interceptor utility with automated CRLF stripping and dual next/error stream observation out of the box.
+
+

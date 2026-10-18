@@ -2,7 +2,6 @@ import {
   Controller,
   Get,
   Param,
-  ParseUUIDPipe,
   Query,
   Res,
   UseGuards,
@@ -13,6 +12,7 @@ import { GetContextQueryDto } from './dto/get-context-query.dto';
 import { GetBootstrapQueryDto } from './dto/get-bootstrap-query.dto';
 import { DeviceAuthGuard } from '../../common/guards/device-auth.guard';
 import { CurrentDevice } from '../../common/decorators/current-device.decorator';
+import { ParseEpisodeIdPipe } from '../../common/pipes/parse-episode-id.pipe';
 
 @Controller('context')
 @UseGuards(DeviceAuthGuard)
@@ -25,7 +25,7 @@ export class ContextController {
    */
   @Get(':episodeId')
   async getInstantSceneContext(
-    @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
+    @Param('episodeId', ParseEpisodeIdPipe) episodeId: string,
     @Query() query: GetContextQueryDto,
     @CurrentDevice() _authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,
@@ -46,7 +46,7 @@ export class ContextController {
    */
   @Get(':episodeId/bootstrap')
   async getFireTvBootstrap(
-    @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
+    @Param('episodeId', ParseEpisodeIdPipe) episodeId: string,
     @Query() query: GetBootstrapQueryDto,
     @CurrentDevice() authenticatedDeviceId: string,
     @Res({ passthrough: true }) res: Response,

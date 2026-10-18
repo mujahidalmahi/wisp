@@ -78,8 +78,14 @@ export function runSecretScan(rootDir = path.resolve(__dirname, '../../')): Secr
         walk(fullPath);
       } else if (entry.isFile()) {
         const relPath = path.relative(rootDir, fullPath).replace(/\\/g, '/');
-        // Skip template example files
-        if (ALLOWED_EXAMPLE_FILES.has(relPath) || relPath.endsWith('.env.example')) {
+        // Skip template example files and local gitignored environment files
+        if (
+          ALLOWED_EXAMPLE_FILES.has(relPath) ||
+          relPath.endsWith('.env.example') ||
+          relPath.endsWith('/.env') ||
+          relPath === '.env' ||
+          relPath.includes('.env.local')
+        ) {
           continue;
         }
 
