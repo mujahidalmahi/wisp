@@ -196,4 +196,56 @@ export const EMBEDDED_DEMO_EPISODES: Record<string, RawEpisodeDataset> = {
       },
     ],
   },
+  'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3': {
+    episodeId: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3',
+    programTitle: 'The Midnight Cipher',
+    genre: 'Mystery / Thriller',
+    episodeTitle: 'Compartment 4B',
+    seasonNumber: 1,
+    episodeNumber: 1,
+    scenes: [
+      {
+        sceneIndex: 1,
+        startTimeMs: 0,
+        endTimeMs: 900000,
+        sceneTitle: 'Compartment 4B',
+        locationName: 'Transcontinental Express, Alpine Pass',
+        spoilerSafeSummary:
+          'Inspector Vance discovers a stopped pocket watch and a torn telegraph cipher moments before the train enters the alpine tunnel.',
+        quickActionChips: [
+          { id: 'myst-1', label: 'Who is Inspector Vance?', actionType: 'entity_explain' },
+          { id: 'myst-2', label: 'What is the torn telegraph cipher?', actionType: 'scene_explain' },
+          { id: 'myst-3', label: 'Quiz me on the suspects', actionType: 'post_watch_quiz' },
+        ],
+      },
+    ],
+    transcriptSegments: [
+      {
+        startTimeMs: 10000,
+        endTimeMs: 35000,
+        speaker: 'Inspector Vance',
+        dialogue:
+          'The watch stopped at precisely eleven-fourteen. Which means the pouch was taken before we entered the gorge.',
+        visualCue: 'Inspector Vance holds the pocket watch up to the frosted compartment window.',
+      },
+    ],
+    entities: [
+      {
+        slug: 'inspector-vance',
+        name: 'Inspector Vance',
+        type: 'character',
+        baseDescription:
+          'Veteran detective traveling on the snowbound transcontinental express investigating the missing diplomatic pouch.',
+        appearances: [
+          {
+            startTimeMs: 0,
+            endTimeMs: 900000,
+            revealTimeMs: 0,
+            progressiveFact:
+              'Inspector Vance noticed the pocket watch stopped before the train crossed the Swiss frontier.',
+          },
+        ],
+      },
+    ],
+  },
 };
