@@ -2,12 +2,12 @@ import {
   Controller,
   Get,
   Param,
-  ParseUUIDPipe,
   Query,
 } from '@nestjs/common';
 import { CatalogService } from './catalog.service';
 import { GetProgramsQueryDto } from './dto/get-programs-query.dto';
 import { ParseSlugPipe } from '../../common/pipes/parse-slug.pipe';
+import { ParseEpisodeIdPipe } from '../../common/pipes/parse-episode-id.pipe';
 
 @Controller('catalog')
 export class CatalogController {
@@ -25,7 +25,7 @@ export class CatalogController {
 
   @Get('episodes/:episodeId')
   async getEpisodeById(
-    @Param('episodeId', new ParseUUIDPipe({ version: '4' })) episodeId: string,
+    @Param('episodeId', ParseEpisodeIdPipe) episodeId: string,
   ) {
     return this.catalogService.getEpisodeById(episodeId);
   }
