@@ -133,7 +133,7 @@ npm run android:firetv
 | [**`docs/ARCHITECTURE.md`**](./docs/ARCHITECTURE.md) | End-to-end data flow, temporal anti-spoiler architecture, and AI provider routing matrix. |
 | [**`docs/DATABASE_ARCHITECTURE.md`**](./docs/DATABASE_ARCHITECTURE.md) | Production 16-table PostgreSQL schema, GiST temporal exclusion constraints, pure-SQL hybrid RRF search, zero-trust RLS matrix, and 8-suite test harness. |
 | [**`docs/AI_ENGINE_GUIDE.md`**](./docs/AI_ENGINE_GUIDE.md) | Developer guide for building standalone AI features and model adapters in `@wisp/ai-engine`. |
-| [**`docs/API_SPEC.md`**](./docs/API_SPEC.md) | REST API contracts (`/health`, `/context/:episodeId`, `/wisp/features`, `/wisp/query`) & programmatic SDK. |
+| [**`docs/API_SPEC.md`**](./docs/API_SPEC.md) | Production REST API contracts (19 endpoints across 6 controllers: Health, AI Gateway, Auth, Catalog, Context, Profiles), 15 PostgreSQL RPCs, and `@wisp/ai-engine` SDK. |
 | [**`docs/FIRE_TV_UX_GUIDE.md`**](./docs/FIRE_TV_UX_GUIDE.md) | 10-foot typography scales, 5% overscan safe zones, and Fire TV remote D-pad key mappings. |
 | [**`docs/FRICTION_LOG.md`**](./docs/FRICTION_LOG.md) | Engineering Friction Log documenting expected vs. actual behavior and workarounds (**10% judging bonus**). |
 | [**`docs/PRODUCT_FEEDBACK.md`**](./docs/PRODUCT_FEEDBACK.md) | Evaluation of Fire TV React Native tooling, `@wisp/ai-engine`, NestJS, Supabase, and Cloudflare. |
