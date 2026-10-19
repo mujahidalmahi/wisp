@@ -3,7 +3,8 @@ export type WispActionType =
   | 'entity_explain'
   | 'scene_explain'
   | 'episode_recap'
-  | 'post_watch_quiz';
+  | 'post_watch_quiz'
+  | (string & {});
 
 export type HouseholdProfileMode = 'quick_glance' | 'deep_lore' | 'family_friendly';
 
@@ -47,6 +48,7 @@ export interface WispQueryRequest {
 }
 
 export interface WispResponseCard {
+  interactionId?: string;
   headline: string;
   body: string;
   bulletPoints?: string[];
@@ -56,10 +58,18 @@ export interface WispResponseCard {
   cached: boolean;
   latencyMs: number;
   followUpChips: QuickActionChip[];
+  userVote?: -1 | 0 | 1;
   quizPayload?: {
     question: string;
     options: string[];
     correctIndex: number;
     explanation: string;
   };
+}
+
+export interface DeviceAuthToken {
+  deviceId: string;
+  token: string;
+  deviceSecret: string;
+  expiresAt: number;
 }

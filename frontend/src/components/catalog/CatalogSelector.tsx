@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { TVTheme } from '../../theme/tvTheme';
-
+import { useTVResponsive } from '../../hooks/useTVResponsive';
 import { CatalogProgram, DEMO_PROGRAMS } from '../../config/catalog';
 export { CatalogProgram, DEMO_PROGRAMS };
 
 interface Props {
   visible: boolean;
   currentEpisodeId: string;
+  programs?: CatalogProgram[];
   onSelectProgram: (program: CatalogProgram) => void;
   onClose: () => void;
 }
@@ -15,17 +16,20 @@ interface Props {
 export const CatalogSelector: React.FC<Props> = ({
   visible,
   currentEpisodeId,
+  programs = DEMO_PROGRAMS,
   onSelectProgram,
   onClose,
 }) => {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [isCloseFocused, setIsCloseFocused] = useState(false);
 
+  const { catalogMaxWidth } = useTVResponsive();
+
   if (!visible) return null;
 
   return (
     <View style={styles.backdrop}>
-      <View style={styles.modal}>
+      <View style={[styles.modal, { maxWidth: catalogMaxWidth }]}>
         {/* Header */}
         <View style={styles.header}>
           <View>
@@ -41,58 +45,64 @@ export const CatalogSelector: React.FC<Props> = ({
             style={[styles.closeButton, isCloseFocused && styles.closeButtonFocused]}
           >
             <Text style={[styles.closeButtonText, isCloseFocused && styles.closeButtonTextFocused]}>
-              ✕ Close (Back)
+              ✕ Close (Back / Esc)
             </Text>
           </Pressable>
         </View>
 
-        {/* Program Cards Grid */}
-        <View style={styles.grid}>
-          {DEMO_PROGRAMS.map((item, idx) => {
-            const isSelected = item.episodeId === currentEpisodeId;
-            const isFocused = focusedId === item.episodeId;
+        {/* Program Cards Grid with Horizontal Scrolling */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContainer}
+        >
+          <View style={styles.grid}>
+            {programs.map((item, idx) => {
+              const isSelected = item.episodeId === currentEpisodeId;
+              const isFocused = focusedId === item.episodeId;
 
-            return (
-              <Pressable
-                key={item.episodeId}
-                hasTVPreferredFocus={idx === 0}
-                onFocus={() => setFocusedId(item.episodeId)}
-                onBlur={() => setFocusedId(null)}
-                onPress={() => {
-                  onSelectProgram(item);
-                  onClose();
-                }}
-                style={[
-                  styles.card,
-                  isSelected && styles.cardSelected,
-                  isFocused && styles.cardFocused,
-                ]}
-              >
-                <View style={styles.genreBadge}>
-                  <Text style={styles.genreBadgeText}>{item.genre}</Text>
-                </View>
+              return (
+                <Pressable
+                  key={item.episodeId}
+                  hasTVPreferredFocus={idx === 0}
+                  onFocus={() => setFocusedId(item.episodeId)}
+                  onBlur={() => setFocusedId(null)}
+                  onPress={() => {
+                    onSelectProgram(item);
+                    onClose();
+                  }}
+                  style={[
+                    styles.card,
+                    isSelected && styles.cardSelected,
+                    isFocused && styles.cardFocused,
+                  ]}
+                >
+                  <View style={styles.genreBadge}>
+                    <Text style={styles.genreBadgeText}>{item.genre}</Text>
+                  </View>
 
-                <Text style={styles.titleText}>{item.title}</Text>
-                <Text style={styles.episodeText}>{item.episodeTitle}</Text>
-                <Text style={styles.taglineText}>"{item.tagline}"</Text>
-                <Text style={styles.synopsisText} numberOfLines={3}>
-                  {item.synopsis}
-                </Text>
-
-                <View style={styles.cardFooter}>
-                  <Text style={styles.durationText}>
-                    ⏱ {Math.floor(item.durationSeconds / 60)} min runtime
+                  <Text style={styles.titleText}>{item.title}</Text>
+                  <Text style={styles.episodeText}>{item.episodeTitle}</Text>
+                  <Text style={styles.taglineText}>"{item.tagline}"</Text>
+                  <Text style={styles.synopsisText} numberOfLines={4}>
+                    {item.synopsis}
                   </Text>
-                  {isSelected && (
-                    <View style={styles.nowPlayingBadge}>
-                      <Text style={styles.nowPlayingText}>NOW PLAYING</Text>
-                    </View>
-                  )}
-                </View>
-              </Pressable>
-            );
-          })}
-        </View>
+
+                  <View style={styles.cardFooter}>
+                    <Text style={styles.durationText}>
+                      ⏱ {Math.floor(item.durationSeconds / 60)} min runtime
+                    </Text>
+                    {isSelected && (
+                      <View style={styles.nowPlayingBadge}>
+                        <Text style={styles.nowPlayingText}>NOW PLAYING</Text>
+                      </View>
+                    )}
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        </ScrollView>
       </View>
     </View>
   );
@@ -101,7 +111,7 @@ export const CatalogSelector: React.FC<Props> = ({
 const styles = StyleSheet.create({
   backdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(9, 11, 16, 0.88)',
+    backgroundColor: 'rgba(10, 10, 12, 0.94)',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: TVTheme.spacing.overscanHorizontal,
@@ -110,12 +120,11 @@ const styles = StyleSheet.create({
   },
   modal: {
     width: '100%',
-    maxWidth: 1040,
     backgroundColor: TVTheme.colors.cardSurface,
     borderRadius: 24,
     padding: 32,
-    borderWidth: 1,
-    borderColor: '#334155',
+    borderWidth: 1.5,
+    borderColor: TVTheme.colors.cardBorder,
   },
   header: {
     flexDirection: 'row',
@@ -125,119 +134,130 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     color: TVTheme.colors.focusRing,
-    fontSize: 26,
+    fontSize: TVTheme.typography.cardHeadline,
     fontWeight: '800',
     letterSpacing: 2,
   },
   modalSubtitle: {
     color: TVTheme.colors.textSecondary,
-    fontSize: 16,
-    marginTop: 4,
+    fontSize: TVTheme.typography.subtitle,
+    marginTop: 6,
+    fontWeight: '600',
   },
   closeButton: {
-    backgroundColor: '#1E293B',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 8,
+    backgroundColor: TVTheme.colors.cardSurface,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 10,
     borderWidth: 2,
-    borderColor: 'transparent',
+    borderColor: TVTheme.colors.cardBorder,
   },
   closeButtonFocused: {
-    borderColor: '#F59E0B',
-    backgroundColor: '#334155',
-    transform: [{ scale: 1.05 }],
+    borderColor: TVTheme.colors.focusRing,
+    backgroundColor: 'rgba(245, 158, 11, 0.25)',
+    transform: [{ scale: TVTheme.animation.focusScale }],
+    ...TVTheme.glow.focusRingShadow,
   },
   closeButtonText: {
     color: TVTheme.colors.textSecondary,
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: TVTheme.typography.buttonText,
+    fontWeight: '700',
   },
   closeButtonTextFocused: {
     color: '#FFFFFF',
-    fontWeight: '700',
+    fontWeight: '800',
+  },
+  scrollContainer: {
+    paddingVertical: 8,
   },
   grid: {
     flexDirection: 'row',
-    gap: 18,
+    gap: 20,
   },
   card: {
-    flex: 1,
-    backgroundColor: '#0F172A',
-    borderRadius: 16,
-    padding: 20,
+    width: 320,
+    backgroundColor: TVTheme.colors.cardSurface,
+    borderRadius: 18,
+    padding: 22,
     borderWidth: 2,
-    borderColor: 'transparent',
+    borderColor: TVTheme.colors.cardBorder,
     justifyContent: 'space-between',
   },
   cardSelected: {
-    borderColor: TVTheme.colors.accentCyan,
-    backgroundColor: 'rgba(30, 58, 138, 0.25)',
+    borderColor: TVTheme.colors.cardBorderFocused,
+    backgroundColor: TVTheme.colors.cardFocused,
   },
   cardFocused: {
     borderColor: TVTheme.colors.focusRing,
     backgroundColor: TVTheme.colors.cardFocused,
-    transform: [{ scale: 1.03 }],
+    borderWidth: 2.5,
+    transform: [{ scale: TVTheme.animation.focusScale }],
+    ...TVTheme.glow.focusRingShadow,
   },
   genreBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 6,
-    marginBottom: 12,
+    borderWidth: 1.5,
+    borderColor: TVTheme.colors.focusRing,
+    marginBottom: 14,
   },
   genreBadgeText: {
-    color: TVTheme.colors.accentCyan,
-    fontSize: 14,
-    fontWeight: '700',
+    color: TVTheme.colors.focusRing,
+    fontSize: TVTheme.typography.badge,
+    fontWeight: '800',
     textTransform: 'uppercase',
   },
   titleText: {
     color: TVTheme.colors.textPrimary,
-    fontSize: 22,
+    fontSize: TVTheme.typography.cardHeadline,
     fontWeight: '800',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   episodeText: {
     color: TVTheme.colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
+    fontSize: TVTheme.typography.subtitle,
+    fontWeight: '700',
+    marginBottom: 10,
   },
   taglineText: {
     color: TVTheme.colors.focusRing,
-    fontSize: 15,
+    fontSize: TVTheme.typography.buttonText,
     fontStyle: 'italic',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   synopsisText: {
     color: TVTheme.colors.textMuted,
-    fontSize: 15,
-    lineHeight: 22,
-    marginBottom: 16,
+    fontSize: TVTheme.typography.buttonText,
+    lineHeight: 26,
+    marginBottom: 18,
   },
   cardFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: '#1E293B',
-    paddingTop: 12,
+    borderTopColor: TVTheme.colors.cardBorder,
+    paddingTop: 14,
   },
   durationText: {
     color: TVTheme.colors.textMuted,
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: TVTheme.typography.badge,
+    fontWeight: '700',
   },
   nowPlayingBadge: {
-    backgroundColor: 'rgba(16, 185, 129, 0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
+    backgroundColor: 'rgba(16, 185, 129, 0.25)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: TVTheme.colors.spoilerSafeBadge,
   },
   nowPlayingText: {
     color: TVTheme.colors.spoilerSafeBadge,
-    fontSize: 14,
+    fontSize: TVTheme.typography.badge,
     fontWeight: '800',
   },
 });
