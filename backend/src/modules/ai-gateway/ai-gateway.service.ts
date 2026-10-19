@@ -1,6 +1,6 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { WispAiEngine } from '@wisp/ai-engine';
+import { InMemoryCatalogContextSource, WispAiEngine } from '@wisp/ai-engine';
 import { ContextService } from '../context/context.service';
 import {
   HouseholdProfileMode,
@@ -13,22 +13,29 @@ export class AiGatewayService {
   private readonly engine: WispAiEngine;
 
   constructor(
-    private readonly configService: ConfigService,
-    private readonly contextService: ContextService,
+    @Optional() private readonly configService?: ConfigService,
+    @Optional() private readonly contextService?: ContextService,
   ) {
+    const getEnv = (key: string) =>
+      this.configService?.get<string>(key) || process.env[key];
+
+    const contextSource =
+      this.contextService?.getHybridContextSource() ||
+      new InMemoryCatalogContextSource();
+
     this.engine = new WispAiEngine(
       {
-        groqApiKey: this.configService.get<string>('GROQ_API_KEY'),
-        groqModel: this.configService.get<string>('GROQ_MODEL'),
-        geminiApiKey: this.configService.get<string>('GEMINI_API_KEY'),
-        geminiModel: this.configService.get<string>('GEMINI_MODEL'),
-        openRouterApiKey: this.configService.get<string>('OPENROUTER_API_KEY'),
-        openRouterModel: this.configService.get<string>('OPENROUTER_MODEL'),
-        ollamaBaseUrl: this.configService.get<string>('OLLAMA_BASE_URL'),
-        ollamaModel: this.configService.get<string>('OLLAMA_MODEL'),
+        groqApiKey: getEnv('GROQ_API_KEY'),
+        groqModel: getEnv('GROQ_MODEL'),
+        geminiApiKey: getEnv('GEMINI_API_KEY'),
+        geminiModel: getEnv('GEMINI_MODEL'),
+        openRouterApiKey: getEnv('OPENROUTER_API_KEY'),
+        openRouterModel: getEnv('OPENROUTER_MODEL'),
+        ollamaBaseUrl: getEnv('OLLAMA_BASE_URL'),
+        ollamaModel: getEnv('OLLAMA_MODEL'),
         enableCache: true,
       },
-      this.contextService.getHybridContextSource(),
+      contextSource,
     );
   }
 

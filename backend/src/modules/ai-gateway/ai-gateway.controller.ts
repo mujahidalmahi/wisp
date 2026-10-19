@@ -1,10 +1,14 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, Post, Optional } from '@nestjs/common';
 import { AiGatewayService } from './ai-gateway.service';
 import { WispQueryRequestDto, WispResponseCardDto } from '../../common/dto/wisp-query.dto';
 
 @Controller('wisp')
 export class AiGatewayController {
-  constructor(private readonly aiGatewayService: AiGatewayService) {}
+  private readonly aiGatewayService: AiGatewayService;
+
+  constructor(@Optional() aiGatewayService?: AiGatewayService) {
+    this.aiGatewayService = aiGatewayService || new AiGatewayService();
+  }
 
   @Get('features')
   listFeatures() {

@@ -1,9 +1,13 @@
-import { Controller, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
+import { Controller, Get, Param, ParseIntPipe, Query, Optional } from '@nestjs/common';
 import { ContextService } from './context.service';
 
 @Controller('context')
 export class ContextController {
-  constructor(private readonly contextService: ContextService) {}
+  private readonly contextService: ContextService;
+
+  constructor(@Optional() contextService?: ContextService) {
+    this.contextService = contextService || new ContextService();
+  }
 
   /**
    * Stage-1 Instant UI endpoint: returns the pre-computed scene header and

@@ -1,0 +1,3 @@
+@echo off
+echo Starting Fire TV 1080p Emulator GUI...
+start "" "%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe" -avd FireTV_1080p

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import {
   HybridContextSource,
   InMemoryCatalogContextSource,
@@ -13,10 +13,10 @@ export class ContextService {
   private readonly logger = new Logger(ContextService.name);
   private readonly contextSource: HybridContextSource;
 
-  constructor(private readonly supabaseService: SupabaseService) {
+  constructor(@Optional() private readonly supabaseService?: SupabaseService) {
     this.contextSource = new HybridContextSource(
       async (episodeId, playbackPositionMs, lookbackMs) => {
-        const client = this.supabaseService.getClient();
+        const client = this.supabaseService?.getClient();
         if (!client) return null;
 
         const { data, error } = await client.rpc('get_spoiler_safe_context', {
