@@ -83,10 +83,51 @@ Candidate chunks are pre-filtered by the hard anti-spoiler gate (`end_time_ms <=
 
 ### 4.4 Zero-Trust Row-Level Security (RLS) & RPC Gateway
 1. **Direct Access Revoked:** Public and authenticated client roles have direct `SELECT`, `INSERT`, `UPDATE`, and `DELETE` access revoked across all 10 spoiler-sensitive and telemetry tables.
-2. **Security Definer RPCs:** All client data consumption traverses hardened `SECURITY DEFINER` stored procedures (`get_firetv_stage1_bootstrap`, `get_spoiler_safe_context`, `hybrid_spoiler_safe_rag_search`, `get_paginated_programs`).
+2. **Security Definer RPCs:** All database operations traverse a hardened two-tier gateway of 15 stored procedures:
+   * **8 Client-Facing (`SECURITY DEFINER`):** `get_firetv_stage1_bootstrap`, `get_spoiler_safe_context`, `hybrid_spoiler_safe_rag_search`, `get_paginated_programs`, `record_device_interaction`, `upsert_viewing_profile`, `get_cached_ai_response`, `save_cached_ai_response`.
+   * **7 Service-Role Restricted (Backend-Only):** `delete_viewing_profile` (with sole-profile retention guard), `sync_episode_scenes`, `sync_episode_transcript`, `sync_episode_entities`, `sync_episode_relationships`, `sync_temporal_embeddings`, `check_rate_limit`.
 3. **Hardware Device Isolation:** User profiles, conversation sessions, and interaction history are strictly isolated per Fire TV device through verified JWT claims (`current_trusted_device_id()`).
 
 ### 4.5 Triggers & Observability Telemetry
 * **4 Trigger Functions / 14 Triggers:** Automate `updated_at`, validate child temporal bounds against `episodes.duration_ms`, prevent unsafe episode duration shrinking, and clamp any runtime AI response spoiler floor anomalies to `playback_position_ms` with automatic audit logging.
 * **5 Dedicated Observability Views:** Track temporal coverage, provider performance, exact continuous latency percentiles (P50, P95, P99 via `percentile_cont()`), scene engagement hotspots, and 15-second bucket cache efficiency.
 
+---
+
+## 5. Application API Architecture & Controller Matrix (NestJS)
+
+The Wisp Application API (`backend/`) is built on **NestJS** and serves as the secure boundary between the 10-foot Fire TV client, the Cloudflare edge layer, the Supabase PostgreSQL database, and the `@wisp/ai-engine`. For full request/response schemas, DTOs, and error models, see [**`docs/API_SPEC.md`**](./API_SPEC.md).
+
+```mermaid
+graph TD
+    Client[Fire TV 10-Foot Client] -->|Bearer JWT + Headers| Guard[DeviceAuthGuard & DeviceRateLimitGuard]
+    Guard --> Pipe[Global ValidationPipe with class-validator]
+    Pipe --> Router{NestJS Controller Router}
+
+    Router --> C1[HealthController<br/>/api/v1/health]
+    Router --> C2[AiGatewayController<br/>/api/v1/wisp]
+    Router --> C3[AuthController<br/>/api/v1/auth]
+    Router --> C4[CatalogController<br/>/api/v1/catalog]
+    Router --> C5[ContextController<br/>/api/v1/context]
+    Router --> C6[ProfilesController<br/>/api/v1/profiles]
+
+    C2 --> Engine[@wisp/ai-engine<br/>Feature Pipelines & Router]
+    C3 --> JWT[HMAC-SHA256 Token Engine]
+    C4 & C5 & C6 --> DB[(Supabase PostgreSQL<br/>15 RPCs & RLS Gateway)]
+```
+
+### 5.1 Controller Organization (19 REST Endpoints)
+
+| Controller | Route Prefix | Endpoints | Architectural Role |
+| :--- | :--- | :--- | :--- |
+| **`HealthController`** | `/api/v1/health` | `GET /`, `GET /readiness` | Edge ping liveness (<10ms) and authenticated deep database connectivity readiness verification. |
+| **`AiGatewayController`** | `/api/v1/wisp` | `GET /features`, `POST /query` | AI feature discovery and end-to-end contextual query execution through `@wisp/ai-engine`. |
+| **`AuthController`** | `/api/v1/auth` | `POST /enroll`, `POST /device-token`, `POST /pre-authorize`, `POST /revoke`, `POST /rotate-secret` | Zero-typing hardware device enrollment, JWT issuance, session management, and secret rotation. |
+| **`CatalogController`** | `/api/v1/catalog` | `GET /programs`, `GET /programs/:slug`, `GET /episodes/:episodeId` | Program browsing with keyset cursor pagination (`get_paginated_programs` RPC) and episode metadata. |
+| **`ContextController`** | `/api/v1/context` | `GET /:episodeId`, `GET /:episodeId/bootstrap` | Stage-1 Fire TV instant bootstrap (<100ms) and temporal spoiler-safe scene context. |
+| **`ProfilesController`** | `/api/v1/profiles` | `GET /`, `POST /`, `PATCH /:profileId`, `POST /:profileId/touch`, `DELETE /:profileId` | Household profile switching (`Quick Glance`, `Deep Lore`, `Family Mode`), activity tracking, and sole-profile deletion guard. |
+
+### 5.2 Security & Operational Invariants
+1. **Device Isolation Enforcement:** All stateful endpoints extract and verify `device_id` from the cryptographically verified JWT payload, preventing cross-device data leakage.
+2. **Strict Schema Validation:** Incoming request bodies are validated against strongly typed TypeScript DTOs using `class-validator` and `class-transformer` with `{ whitelist: true, forbidNonWhitelisted: true }`.
+3. **Fail-Fast Error Handling:** Database constraints and RPC exceptions are mapped to standard HTTP error codes (`400 Bad Request`, `401 Unauthorized`, `403 Forbidden`, `404 Not Found`, `429 Too Many Requests`, `503 Service Unavailable`).

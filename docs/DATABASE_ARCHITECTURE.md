@@ -67,6 +67,19 @@ To guarantee that plot twists are mathematically impossible to leak:
 * **Layer 1 (Database Source of Truth):** PostgreSQL enforces strict temporal predicate filtering (`end_time_ms <= p_playback_ms` and `reveal_time_ms <= p_playback_ms`) inside stored procedures (`SECURITY DEFINER` RPCs). Direct table access is completely revoked from public, untrusted roles.
 * **Layer 2 (In-Memory Fail-Safe):** The application layer (`@wisp/ai-engine/src/context/temporal-filter.ts`) applies an identical pure-TypeScript boundary filter prior to prompt construction, ensuring defense-in-depth even during offline or fallback operation.
 
+### 1.4 Schema Migration Ledger & Forward Upgrade Architecture
+The database is versioned across seven (7) forward-compatible migrations located in [`supabase/migrations/`](../supabase/migrations/):
+
+| Migration File | Primary Focus | Key DDL & Architectural Invariants Landed |
+| :--- | :--- | :--- |
+| [`0001_initial_wisp_schema.sql`](../supabase/migrations/0001_initial_wisp_schema.sql) | Base Relational & Temporal Engine | 16 normalized tables; custom ENUMs (`household_profile_mode`, `spoiler_strictness_level`, `wisp_action_type_enum`); GiST exclusion constraint (`excl_scene_contexts_no_overlap`); covering B-tree indexes; generated weighted `tsvector` full-text search; variable-length `float4[]` vector storage. |
+| [`0002_temporal_context_functions.sql`](../supabase/migrations/0002_temporal_context_functions.sql) | Anti-Spoiler Context & Rate Limiting RPCs | Initial stored procedures: `get_spoiler_safe_context`, `search_spoiler_safe_transcript`, `get_episode_post_watch_quiz`, `get_or_touch_ai_cache`, `upsert_ai_response_cache`, `check_device_rate_limit`, `record_wisp_interaction`. |
+| [`0003_security_rls_and_triggers.sql`](../supabase/migrations/0003_security_rls_and_triggers.sql) | Zero-Trust RLS, JWT Claims & Triggers | Preflight dependency assertions; RLS enabled on all 16 tables; JWT device claim resolvers (`current_trusted_device_id`, `current_trusted_profile_id`); 4 trigger functions across 14 tables (temporal boundary guards, duration shrink prevention, and runtime spoiler floor clamping). |
+| [`0004_analytics_views_and_observability.sql`](../supabase/migrations/0004_analytics_views_and_observability.sql) | Observability Views & Health RPC | 5 secured views (`v_episode_temporal_coverage`, `v_ai_provider_performance`, `v_latency_percentiles_by_provider` with `percentile_cont`, `v_scene_engagement_hotspots`, `v_cache_efficiency_summary`); `get_database_health_and_metrics` and `purge_expired_cache_and_rate_limits` RPCs. |
+| [`0005_hybrid_rag_and_cross_episode_context.sql`](../supabase/migrations/0005_hybrid_rag_and_cross_episode_context.sql) | Pure-SQL Vector Similarity & RRF RAG | Pure-SQL `cosine_similarity_float4`; Reciprocal Rank Fusion `hybrid_spoiler_safe_rag_search`; `get_cross_episode_spoiler_safe_context`; single-roundtrip Fire TV overlay bootstrap `get_firetv_stage1_bootstrap`. |
+| [`0006_atomic_profile_deletion.sql`](../supabase/migrations/0006_atomic_profile_deletion.sql) | Transactional Profile Deletion | Distributed-safe `delete_viewing_profile` RPC with `pg_advisory_xact_lock`, row-level `FOR UPDATE` locking across device profiles, sole-profile retention safety, and strict `service_role` grant. |
+| [`0007_typed_catalog_pagination.sql`](../supabase/migrations/0007_typed_catalog_pagination.sql) | Typed Catalog Cursor Pagination | `get_paginated_programs` RPC with typed SQL evaluation, replacing raw PostgREST filter string interpolation with SQL-level parameterization. |
+
 ---
 
 ## 2. 16-Table Schema & Entity-Relationship Architecture
@@ -111,22 +124,27 @@ erDiagram
 #### Subsystem A: Catalog & Media Hierarchy
 
 ##### 1. `programs`
-Represents the top-level intellectual property (show, documentary, mini-series, or movie).
+Represents top-level television series, films, and documentaries available in the Wisp catalog.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Columns:**
-  * `title` (`TEXT NOT NULL`): Program title.
-  * `synopsis` (`TEXT NOT NULL`): Overall synopsis.
-  * `genre` (`TEXT NOT NULL`): Program genre (e.g., `'Sci-Fi'`, `'Science Doc'`, `'Mystery'`).
-  * `content_rating` (`TEXT NOT NULL DEFAULT 'TV-14'`): Parental advisory rating.
-  * `total_seasons` (`INT NOT NULL DEFAULT 1`): Total season count.
-  * `is_active` (`BOOLEAN NOT NULL DEFAULT true`): Administrative visibility toggle.
-  * `is_published` (`BOOLEAN NOT NULL DEFAULT true`): Catalog publishing flag.
+  * `slug` (`TEXT UNIQUE NOT NULL CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')`): Kebab-case URL identifier.
+  * `title` (`TEXT NOT NULL CHECK (char_length(btrim(title)) >= 1)`): Program title.
+  * `genre` (`TEXT NOT NULL CHECK (char_length(btrim(genre)) >= 1)`): Program genre (e.g., `'Sci-Fi'`, `'Science Documentary'`, `'Mystery'`).
+  * `synopsis` (`TEXT NOT NULL CHECK (char_length(btrim(synopsis)) >= 10)`): Overall program synopsis.
+  * `release_year` (`INTEGER CHECK (release_year IS NULL OR (release_year BETWEEN 1900 AND 2100))`): Initial release year.
+  * `rating` (`TEXT NOT NULL DEFAULT 'TV-PG' CHECK (rating IN ('TV-Y', 'TV-Y7', 'TV-G', 'TV-PG', 'TV-14', 'TV-MA', 'G', 'PG', 'PG-13', 'R', 'NR'))`): Content advisory rating.
+  * `content_advisories` (`TEXT[] NOT NULL DEFAULT '{}'::text[]`): Specific advisory tags (e.g., `{"violence", "mild language"}`).
+  * `original_language` (`TEXT NOT NULL DEFAULT 'en'`): ISO-639-1 primary language code.
+  * `total_seasons` (`INTEGER NOT NULL DEFAULT 1 CHECK (total_seasons >= 1)`): Total seasons produced.
+  * `poster_url` (`TEXT`): Portrait poster image URL.
+  * `backdrop_url` (`TEXT`): 16:9 landscape backdrop image URL.
+  * `license_info` (`TEXT NOT NULL DEFAULT 'CC-BY / Public Domain'`): Content licensing metadata.
+  * `is_active` (`BOOLEAN NOT NULL DEFAULT true`): Catalog visibility toggle.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Indexes:**
-  * `idx_programs_active_published` on `(is_active, is_published)` (B-Tree).
-  * `idx_programs_genre` on `(genre)` (B-Tree).
-  * `idx_programs_created_at_id` on `(created_at DESC, id DESC)` (B-Tree cursor pagination index).
+  * `idx_programs_genre_active` on `(genre, is_active)` WHERE `is_active = true` (B-Tree).
+  * `idx_programs_title_trgm` USING gin on `(title gin_trgm_ops)` (GIN Trigram).
 * **Triggers:** `trg_programs_set_updated_at` (`trg_fn_set_updated_at`).
 
 ##### 2. `episodes`
@@ -135,21 +153,26 @@ Represents an individual playable media asset belonging to a program.
 * **Foreign Keys:**
   * `program_id` $\rightarrow$ `programs(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `season_number` (`INT NOT NULL DEFAULT 1`)
-  * `episode_number` (`INT NOT NULL DEFAULT 1`)
-  * `title` (`TEXT NOT NULL`)
-  * `synopsis` (`TEXT NOT NULL DEFAULT ''`)
-  * `duration_ms` (`BIGINT NOT NULL`): Total video runtime in milliseconds (`CHECK (duration_ms > 0)`).
-  * `video_stream_url` (`TEXT NOT NULL DEFAULT ''`): Cloudflare R2 / HLS playback stream URL.
-  * `is_published` (`BOOLEAN NOT NULL DEFAULT true`)
+  * `season_number` (`INTEGER NOT NULL DEFAULT 1 CHECK (season_number >= 1)`)
+  * `episode_number` (`INTEGER NOT NULL DEFAULT 1 CHECK (episode_number >= 1)`)
+  * `title` (`TEXT NOT NULL CHECK (char_length(btrim(title)) >= 1)`)
+  * `summary` (`TEXT NOT NULL CHECK (char_length(btrim(summary)) >= 10)`)
+  * `duration_ms` (`BIGINT NOT NULL CHECK (duration_ms > 0)`): Total video runtime in milliseconds.
+  * `intro_end_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (intro_end_ms >= 0 AND intro_end_ms <= duration_ms)`): Intro sequence boundary.
+  * `credits_start_ms` (`BIGINT CHECK (credits_start_ms IS NULL OR (credits_start_ms >= 0 AND credits_start_ms <= duration_ms))`): End credits start timestamp (triggers post-watch trivia chip).
+  * `default_bucket_sec` (`INTEGER NOT NULL DEFAULT 15 CHECK (default_bucket_sec BETWEEN 5 AND 60)`): AI response cache bucket normalization size in seconds.
+  * `video_stream_url` (`TEXT NOT NULL CHECK (char_length(btrim(video_stream_url)) >= 8)`): HLS / Cloudflare R2 / MP4 video stream URL.
+  * `subtitle_vtt_url` (`TEXT`): WebVTT subtitle stream URL.
+  * `thumbnail_sprite_url` (`TEXT`): Fast-forward scrubbing thumbnail sprite sheet URL.
+  * `is_published` (`BOOLEAN NOT NULL DEFAULT true`): Availability flag.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Constraints:**
   * `uq_episodes_program_season_episode` UNIQUE `(program_id, season_number, episode_number)`.
-  * `chk_episodes_duration_positive` CHECK `(duration_ms > 0)`.
+  * `episodes_intro_end_ms_bounds_check` CHECK `(intro_end_ms >= 0 AND intro_end_ms <= duration_ms)`.
+  * `episodes_credits_start_ms_bounds_check` CHECK `(credits_start_ms IS NULL OR (credits_start_ms >= 0 AND credits_start_ms <= duration_ms))`.
 * **Indexes:**
-  * `idx_episodes_program_id` on `(program_id)` (B-Tree).
-  * `idx_episodes_program_season_ep` on `(program_id, season_number, episode_number)` (B-Tree).
+  * `idx_episodes_program_lookup` on `(program_id, season_number, episode_number)` INCLUDE `(title, duration_ms, is_published)` (B-Tree covering index).
 * **Triggers:**
   * `trg_episodes_set_updated_at` (`trg_fn_set_updated_at`).
   * `trg_episodes_prevent_duration_shrink` (`trg_fn_prevent_unsafe_episode_duration_shrink`).
@@ -160,23 +183,25 @@ Partitions an episode into discrete narrative scenes. Houses pre-computed Stage-
 * **Foreign Keys:**
   * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `scene_number` (`INT NOT NULL CHECK (scene_number >= 1)`)
+  * `scene_index` (`INTEGER NOT NULL CHECK (scene_index >= 1)`): 1-based sequential scene index.
   * `start_time_ms` (`BIGINT NOT NULL CHECK (start_time_ms >= 0)`)
   * `end_time_ms` (`BIGINT NOT NULL CHECK (end_time_ms > start_time_ms)`)
-  * `time_range` (`INT8RANGE GENERATED ALWAYS AS (int8range(start_time_ms, end_time_ms, '[]')) STORED`): **Inclusive bounds** representation for range collision checks.
-  * `scene_title` (`TEXT NOT NULL`)
-  * `summary` (`TEXT NOT NULL`)
-  * `quick_action_chips` (`JSONB NOT NULL DEFAULT '[]'::jsonb`): 3–4 D-pad selectable prompt chips.
-  * `key_events` (`TEXT[] NOT NULL DEFAULT '{}'::text[]`)
-  * `visual_anchors` (`TEXT[] NOT NULL DEFAULT '{}'::text[]`)
+  * `time_range` (`INT8RANGE GENERATED ALWAYS AS (int8range(start_time_ms, end_time_ms, '[]')) STORED`): **Inclusive bounds** range representation used for $O(\log N)$ GiST point containment queries (`playback_ms <@ time_range`).
+  * `scene_title` (`TEXT NOT NULL CHECK (char_length(btrim(scene_title)) >= 1)`)
+  * `location_name` (`TEXT`): Setting or geographical environment.
+  * `mood_tag` (`TEXT NOT NULL DEFAULT 'narrative'`): Atmospheric tone tag (`'tense'`, `'mysterious'`, `'action'`).
+  * `narrative_tension_score` (`SMALLINT NOT NULL DEFAULT 5 CHECK (narrative_tension_score BETWEEN 1 AND 10)`): Tension rating for AI tone calibration.
+  * `spoiler_safe_summary` (`TEXT NOT NULL CHECK (char_length(btrim(spoiler_safe_summary)) >= 5)`): High-level spoiler-free summary of active scene.
+  * `quick_action_chips` (`JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(quick_action_chips) = 'array')`): 2–4 D-pad selectable prompt chips for zero-typing 10-foot interaction.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Constraints:**
-  * `chk_scene_contexts_time_order` CHECK `(start_time_ms < end_time_ms)`.
-  * `excl_scene_contexts_no_overlap` **EXCLUDE USING gist (`episode_id` WITH =, `time_range` WITH &&)**: Guarantees zero overlapping temporal scenes within the same episode.
+  * UNIQUE `(episode_id, scene_index)`.
+  * `excl_scene_contexts_no_overlap` **EXCLUDE USING gist (`episode_id` WITH =, `time_range` WITH &&)**: Mathematically guarantees zero overlapping temporal scenes within the same episode.
 * **Indexes:**
-  * `idx_scene_contexts_episode_range` on `(episode_id, start_time_ms, end_time_ms)` (B-Tree).
-  * `idx_scene_contexts_gist_timerange` USING gist on `(episode_id, time_range)`.
+  * `idx_scene_contexts_temporal` on `(episode_id, start_time_ms, end_time_ms)` INCLUDE `(scene_index, scene_title, location_name, mood_tag, narrative_tension_score, spoiler_safe_summary, quick_action_chips)` (Covering index for Index-Only Scans).
+  * `idx_scene_contexts_timerange_gist` USING gist on `(episode_id, time_range)`.
+  * `idx_scene_contexts_chips_gin` USING gin on `(quick_action_chips)`.
 * **Triggers:**
   * `trg_scene_contexts_set_updated_at` (`trg_fn_set_updated_at`).
   * `trg_scene_contexts_temporal_bounds` (`trg_fn_validate_episode_temporal_bounds`).
@@ -186,98 +211,111 @@ Partitions an episode into discrete narrative scenes. Houses pre-computed Stage-
 #### Subsystem B: Content, Lore & Knowledge Graph
 
 ##### 4. `transcript_segments`
-Stores synchronized closed caption and spoken dialogue lines.
+Stores synchronized dialogue lines, speaker identification, and visual scene cues.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
   * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `speaker` (`TEXT NOT NULL DEFAULT 'UNKNOWN'`)
-  * `dialogue` (`TEXT NOT NULL`)
   * `start_time_ms` (`BIGINT NOT NULL CHECK (start_time_ms >= 0)`)
-  * `end_time_ms` (`BIGINT NOT NULL CHECK (end_time_ms >= start_time_ms)`)
+  * `end_time_ms` (`BIGINT NOT NULL CHECK (end_time_ms >= start_time_ms)`): **Hard anti-spoiler gate:** a dialogue line is unlocked only after the viewer reaches `end_time_ms`.
   * `time_range` (`INT8RANGE GENERATED ALWAYS AS (int8range(start_time_ms, end_time_ms, '[]')) STORED`)
+  * `speaker_name` (`TEXT`): Speaking character or narrator name.
+  * `dialogue_text` (`TEXT NOT NULL CHECK (char_length(btrim(dialogue_text)) >= 1)`)
+  * `visual_cue` (`TEXT`): Visual scene or non-verbal action description.
+  * `confidence_score` (`NUMERIC(4,3) NOT NULL DEFAULT 1.000 CHECK (confidence_score BETWEEN 0.000 AND 1.000)`): ASR / transcription confidence.
+  * `is_key_plot_point` (`BOOLEAN NOT NULL DEFAULT false`): High-importance flag for accelerated recap generation.
+  * `search_vector` (`TSVECTOR GENERATED ALWAYS AS (...) STORED`): Weighted full-text search vector: Speaker (`'A'`), Dialogue (`'B'`), Visual Cue (`'C'`).
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Indexes:**
-  * `idx_transcript_segments_search` on `(episode_id, end_time_ms)` INCLUDE `(dialogue, speaker, start_time_ms)` (Covering index).
-  * `idx_transcript_segments_trgm` USING gin on `(dialogue gin_trgm_ops)`.
-  * `idx_transcript_segments_fts` USING gin on `(to_tsvector('english', dialogue))`.
+  * `idx_transcript_segments_temporal` on `(episode_id, end_time_ms, start_time_ms)` INCLUDE `(speaker_name, dialogue_text, visual_cue, is_key_plot_point)` (Covering index).
+  * `idx_transcript_segments_key_plot_partial` on `(episode_id, end_time_ms)` INCLUDE `(speaker_name, dialogue_text, visual_cue)` WHERE `is_key_plot_point = true`.
+  * `idx_transcript_segments_fts` USING gin on `(search_vector)`.
+  * `idx_transcript_segments_dialogue_trgm` USING gin on `(dialogue_text gin_trgm_ops)`.
 * **Triggers:**
   * `trg_transcript_segments_temporal_bounds` (`trg_fn_validate_episode_temporal_bounds`).
 
 ##### 5. `entities`
-Represents narrative knowledge base entities (characters, artifacts, locations, scientific concepts, factions).
+Canonical registry of characters, locations, scientific concepts, objects, and factions per program.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
   * `program_id` $\rightarrow$ `programs(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `canonical_name` (`TEXT NOT NULL`)
-  * `entity_type` (`entity_type_enum NOT NULL`): Custom ENUM: `'character'`, `'location'`, `'item'`, `'lore'`, `'concept'`.
-  * `aliases` (`TEXT[] NOT NULL DEFAULT '{}'::text[]`)
-  * `short_description` (`TEXT NOT NULL DEFAULT ''`)
-  * `deep_lore` (`TEXT NOT NULL DEFAULT ''`)
-  * `visual_description` (`TEXT NOT NULL DEFAULT ''`)
+  * `slug` (`TEXT NOT NULL CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')`): Kebab-case canonical entity identifier.
+  * `name` (`TEXT NOT NULL CHECK (char_length(btrim(name)) >= 1)`): Primary display name.
+  * `aliases` (`TEXT[] NOT NULL DEFAULT '{}'::text[]`): Alternate character aliases, nicknames, codenames.
+  * `entity_type` (`TEXT NOT NULL CHECK (entity_type IN ('character', 'location', 'concept', 'object', 'faction'))`): Entity classification.
+  * `base_description` (`TEXT NOT NULL CHECK (char_length(btrim(base_description)) >= 5)`): High-level spoiler-free baseline summary.
+  * `spoiler_floor_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (spoiler_floor_ms >= 0)`): Minimum timestamp before this entity's existence may be revealed.
+  * `avatar_url` (`TEXT`): Entity thumbnail image URL.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Constraints:**
-  * `uq_entities_program_canonical_name` UNIQUE `(program_id, canonical_name)`.
+  * UNIQUE `(program_id, slug)`.
 * **Indexes:**
-  * `idx_entities_program_type` on `(program_id, entity_type)` (B-Tree).
-  * `idx_entities_canonical_name_trgm` USING gin on `(canonical_name gin_trgm_ops)`.
+  * `idx_entities_program_type` on `(program_id, entity_type)` INCLUDE `(slug, name, base_description, spoiler_floor_ms)` (Covering index).
+  * `idx_entities_name_trgm` USING gin on `(name gin_trgm_ops)`.
 * **Triggers:**
   * `trg_entities_set_updated_at` (`trg_fn_set_updated_at`).
 
 ##### 6. `entity_appearances`
-Controls the progressive temporal unlocking of entity lore as an episode progresses.
+Controls the progressive temporal unlocking of entity lore facts as an episode progresses.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
-  * `entity_id` $\rightarrow$ `entities(id)` `ON DELETE CASCADE`
   * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
+  * `entity_id` $\rightarrow$ `entities(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `reveal_time_ms` (`BIGINT NOT NULL CHECK (reveal_time_ms >= 0)`)
-  * `spoiler_tier` (`TEXT NOT NULL DEFAULT 'safe'`): e.g., `'safe'`, `'minor_twist'`, `'major_spoiler'`.
-  * `contextual_note` (`TEXT NOT NULL DEFAULT ''`)
+  * `start_time_ms` (`BIGINT NOT NULL CHECK (start_time_ms >= 0)`)
+  * `end_time_ms` (`BIGINT NOT NULL CHECK (end_time_ms >= start_time_ms)`)
+  * `reveal_time_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (reveal_time_ms >= 0)`): **Hard anti-spoiler gate:** progressive fact is unlocked only when `reveal_time_ms <= playback_position_ms`.
+  * `progressive_fact` (`TEXT NOT NULL CHECK (char_length(btrim(progressive_fact)) >= 5)`): Contextual lore detail revealed at `reveal_time_ms`.
+  * `is_plot_twist` (`BOOLEAN NOT NULL DEFAULT false`): Indicates a major narrative twist or identity reveal.
+  * `importance_rank` (`SMALLINT NOT NULL DEFAULT 1 CHECK (importance_rank BETWEEN 1 AND 10)`): Lore significance weight.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
-* **Constraints:**
-  * `uq_entity_appearances_reveal` UNIQUE `(entity_id, episode_id, reveal_time_ms)`.
 * **Indexes:**
-  * `idx_entity_appearances_lookup` on `(episode_id, reveal_time_ms, entity_id)` (B-Tree).
+  * `idx_entity_appearances_temporal` on `(episode_id, reveal_time_ms, start_time_ms, end_time_ms)` INCLUDE `(entity_id, progressive_fact, is_plot_twist, importance_rank)`.
+  * `idx_entity_appearances_entity_lookup` on `(entity_id, episode_id, reveal_time_ms)`.
+  * `idx_entity_appearances_twists_partial` on `(episode_id, reveal_time_ms)` WHERE `is_plot_twist = true`.
 * **Triggers:**
   * `trg_entity_appearances_temporal_bounds` (`trg_fn_validate_episode_temporal_bounds`).
 
 ##### 7. `entity_relationships`
-Models dynamic directed edges in the lore knowledge graph between two entities.
+Models dynamic directed edges in the lore knowledge graph between two entities, gated by reveal time.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
+  * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
   * `source_entity_id` $\rightarrow$ `entities(id)` `ON DELETE CASCADE`
   * `target_entity_id` $\rightarrow$ `entities(id)` `ON DELETE CASCADE`
-  * `reveal_episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `relationship_type` (`TEXT NOT NULL`): e.g., `'former_lovers'`, `'creator_of'`, `'hostile_towards'`.
-  * `description` (`TEXT NOT NULL DEFAULT ''`)
-  * `reveal_time_ms` (`BIGINT NOT NULL CHECK (reveal_time_ms >= 0)`)
+  * `relationship_type` (`TEXT NOT NULL CHECK (char_length(btrim(relationship_type)) >= 2)`): e.g., `'former_lovers'`, `'creator_of'`, `'hostile_towards'`.
+  * `relationship_summary` (`TEXT NOT NULL CHECK (char_length(btrim(relationship_summary)) >= 5)`): Description of the relationship.
+  * `reveal_time_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (reveal_time_ms >= 0)`): **Hard anti-spoiler gate:** edge unlocked only when `reveal_time_ms <= playback_position_ms`.
+  * `valid_from_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (valid_from_ms >= 0)`): Relationship state start timestamp.
+  * `valid_until_ms` (`BIGINT CHECK (valid_until_ms IS NULL OR valid_until_ms >= valid_from_ms)`): Relationship state expiration timestamp (supports evolving dynamics, e.g. allies turning into adversaries).
+  * `is_secret_reveal` (`BOOLEAN NOT NULL DEFAULT false`): Sensitive relationship flag.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Constraints:**
-  * `chk_entity_relationships_no_self` CHECK `(source_entity_id <> target_entity_id)`.
-  * `uq_entity_relationships_unique_edge` UNIQUE `(source_entity_id, target_entity_id, reveal_episode_id, reveal_time_ms)`.
+  * CHECK `(source_entity_id <> target_entity_id)`: Prevents self-relationships.
 * **Indexes:**
-  * `idx_entity_relationships_reveal` on `(reveal_episode_id, reveal_time_ms)` (B-Tree).
+  * `idx_entity_relationships_temporal` on `(episode_id, reveal_time_ms, source_entity_id, target_entity_id)` INCLUDE `(relationship_type, relationship_summary, valid_from_ms, valid_until_ms)`.
 * **Triggers:**
   * `trg_entity_relationships_temporal_bounds` (`trg_fn_validate_episode_temporal_bounds`).
 
 ##### 8. `episode_quizzes`
-Stores 4-option interactive trivia questions grounded in watched scenes.
+Stores curated, spoiler-safe multiple-choice trivia questions unlocked only when playback passes `unlock_time_ms`.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
   * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `question` (`TEXT NOT NULL`)
-  * `options` (`JSONB NOT NULL CHECK (jsonb_typeof(options) = 'array' AND jsonb_array_length(options) = 4)`)
-  * `correct_index` (`INT NOT NULL CHECK (correct_index >= 0 AND correct_index <= 3)`)
-  * `explanation` (`TEXT NOT NULL DEFAULT ''`)
-  * `required_watch_time_ms` (`BIGINT NOT NULL CHECK (required_watch_time_ms >= 0)`)
+  * `unlock_time_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (unlock_time_ms >= 0)`): Minimum playback timestamp before this question becomes available.
+  * `profile_mode` (`household_profile_mode NOT NULL DEFAULT 'quick_glance'`): Custom ENUM: `'quick_glance'`, `'deep_lore'`, `'family_friendly'`.
+  * `difficulty_level` (`TEXT NOT NULL DEFAULT 'medium' CHECK (difficulty_level IN ('easy', 'medium', 'hard'))`)
+  * `question_text` (`TEXT NOT NULL CHECK (char_length(btrim(question_text)) >= 10)`)
+  * `options` (`JSONB NOT NULL CHECK (jsonb_typeof(options) = 'array' AND jsonb_array_length(options) BETWEEN 2 AND 6)`): 2 to 6 multiple-choice answers.
+  * `correct_option_index` (`SMALLINT NOT NULL CHECK (correct_option_index BETWEEN 0 AND 5)`): 0-indexed correct option.
+  * `explanation_text` (`TEXT NOT NULL CHECK (char_length(btrim(explanation_text)) >= 5)`): Post-answer explanation.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Indexes:**
-  * `idx_episode_quizzes_lookup` on `(episode_id, required_watch_time_ms)` (B-Tree).
+  * `idx_episode_quizzes_temporal` on `(episode_id, unlock_time_ms, profile_mode)` INCLUDE `(difficulty_level, question_text, options, correct_option_index, explanation_text)`.
 * **Triggers:**
   * `trg_episode_quizzes_temporal_bounds` (`trg_fn_validate_episode_temporal_bounds`).
 
@@ -286,25 +324,27 @@ Stores 4-option interactive trivia questions grounded in watched scenes.
 #### Subsystem C: Vector & Semantic Search
 
 ##### 9. `temporal_embeddings`
-Stores chunked dialogue and lore text along with 384-dimensional dense semantic vector embeddings.
+Stores chunked dialogue and lore text along with dense semantic vector embeddings supporting Hybrid Reciprocal Rank Fusion (RRF) RAG retrieval.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
   * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `content_type` (`TEXT NOT NULL CHECK (content_type IN ('transcript', 'scene', 'entity_lore', 'entity_note'))`)
-  * `reference_id` (`UUID NOT NULL`): ID of the source entity, transcript segment, or scene.
-  * `text_chunk` (`TEXT NOT NULL`)
-  * `start_time_ms` (`BIGINT NOT NULL DEFAULT 0`)
-  * `end_time_ms` (`BIGINT NOT NULL DEFAULT 0`)
-  * `reveal_time_ms` (`BIGINT NOT NULL DEFAULT 0`)
-  * `embedding` (`REAL[] NOT NULL` / `FLOAT4[] NOT NULL`): Dense 384-dimensional vector embedding.
+  * `source_type` (`TEXT NOT NULL CHECK (source_type IN ('transcript', 'scene_summary', 'entity_lore'))`): Originating chunk type.
+  * `source_ref_id` (`UUID`): Optional reference to the underlying entity, transcript segment, or scene.
+  * `start_time_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (start_time_ms >= 0)`)
+  * `end_time_ms` (`BIGINT NOT NULL CHECK (end_time_ms >= start_time_ms)`)
+  * `reveal_time_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (reveal_time_ms >= 0)`): Combined anti-spoiler gate (`end_time_ms <= playback_ms AND reveal_time_ms <= playback_ms`).
+  * `content_text` (`TEXT NOT NULL CHECK (char_length(btrim(content_text)) >= 5)`): Text chunk for search.
+  * `embedding_model` (`TEXT NOT NULL DEFAULT 'text-embedding-3-small-8d'`): Embedding model identifier.
+  * `embedding_vector` (`FLOAT4[] NOT NULL CHECK (cardinality(embedding_vector) >= 4)`): Dense vector embedding stored in native PostgreSQL `float4[]`. Enforces variable-length vectors with a minimum dimension of 4 (production models use 384-d, test seed uses 8-d).
+  * `search_vector` (`TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', coalesce(content_text, ''))) STORED`): Generated full-text search vector.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Constraints:**
   * `chk_temporal_embeddings_order` CHECK `(start_time_ms <= end_time_ms)`.
-  * `chk_temporal_embeddings_dim` CHECK `(cardinality(embedding) = 384)`.
+  * `chk_temporal_embeddings_dim` CHECK `(cardinality(embedding_vector) >= 4)`.
 * **Indexes:**
-  * `idx_temporal_embeddings_spoiler_gate` on `(episode_id, end_time_ms, reveal_time_ms)` (B-Tree).
-  * `idx_temporal_embeddings_text_fts` USING gin on `(to_tsvector('english', text_chunk))`.
+  * `idx_temporal_embeddings_gate` on `(episode_id, end_time_ms, reveal_time_ms)` INCLUDE `(source_type, content_text, embedding_vector)` (Covering index for gated retrieval).
+  * `idx_temporal_embeddings_fts` USING gin on `(search_vector)`.
 * **Triggers:**
   * `trg_temporal_embeddings_temporal_bounds` (`trg_fn_validate_episode_temporal_bounds`).
 
@@ -313,55 +353,75 @@ Stores chunked dialogue and lore text along with 384-dimensional dense semantic 
 #### Subsystem D: Tenant, Profile & Viewing Session State
 
 ##### 10. `profiles`
-Represents living-room household profiles (e.g., "Living Room TV", "Kids TV", "Mom & Dad").
+Represents living-room household viewing profiles (e.g., "Living Room TV", "Kids TV", "Mom & Dad") controlling AI explanation depth, TTS narration, and spoiler strictness.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Columns:**
-  * `device_id` (`TEXT NOT NULL`): Unique hardware identifier for the Fire TV stick/box.
-  * `profile_name` (`TEXT NOT NULL`)
-  * `mode` (`profile_mode_enum NOT NULL DEFAULT 'quick_glance'`): Custom ENUM: `'quick_glance'`, `'deep_lore'`, `'family_mode'`.
-  * `is_active` (`BOOLEAN NOT NULL DEFAULT true`)
+  * `device_id` (`TEXT NOT NULL CHECK (char_length(btrim(device_id)) >= 3)`): Hardware identifier for the Amazon Fire TV device.
+  * `display_name` (`TEXT NOT NULL CHECK (char_length(btrim(display_name)) BETWEEN 1 AND 80)`): Profile name.
+  * `mode` (`household_profile_mode NOT NULL DEFAULT 'quick_glance'`): Custom ENUM: `'quick_glance'`, `'deep_lore'`, `'family_friendly'`.
+  * `spoiler_strictness` (`TEXT NOT NULL DEFAULT 'strict' CHECK (spoiler_strictness IN ('strict', 'moderate', 'relaxed'))`): Boundary tolerance.
+  * `preferred_language` (`TEXT NOT NULL DEFAULT 'en' CHECK (char_length(btrim(preferred_language)) BETWEEN 2 AND 10)`): ISO language code.
+  * `voice_tts_enabled` (`BOOLEAN NOT NULL DEFAULT true`): Audio TTS narration toggle.
+  * `auto_pause_on_overlay` (`BOOLEAN NOT NULL DEFAULT false`): Video auto-pause behavior when opening overlay.
+  * `parental_pin_hash` (`TEXT`): Cryptographic hash for parental controls.
+  * `total_queries_count` (`BIGINT NOT NULL DEFAULT 0 CHECK (total_queries_count >= 0)`): Interaction usage counter.
+  * `last_active_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Constraints:**
-  * `uq_profiles_device_profile_name` UNIQUE `(device_id, profile_name)`.
+  * UNIQUE `(device_id, display_name)`.
 * **Indexes:**
-  * `idx_profiles_device_active` on `(device_id, is_active)` (B-Tree).
+  * `idx_profiles_device_id` on `(device_id)` INCLUDE `(display_name, mode, spoiler_strictness, voice_tts_enabled)` (Covering index).
 * **Triggers:**
   * `trg_profiles_set_updated_at` (`trg_fn_set_updated_at`).
 
 ##### 11. `conversation_sessions`
-Tracks an ongoing viewing engagement between a profile and an episode.
+Short-lived multi-turn conversation state and viewer bookmarks per Fire TV device and episode.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
-  * `profile_id` $\rightarrow$ `profiles(id)` `ON DELETE CASCADE`
+  * `profile_id` $\rightarrow$ `profiles(id)` `ON DELETE SET NULL`
   * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `is_active` (`BOOLEAN NOT NULL DEFAULT true`)
+  * `device_id` (`TEXT NOT NULL CHECK (char_length(btrim(device_id)) >= 3)`): Fire TV hardware identifier.
+  * `last_playback_position_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (last_playback_position_ms >= 0)`): Bookmarked playback head.
+  * `turn_count` (`INTEGER NOT NULL DEFAULT 0 CHECK (turn_count >= 0)`): Conversation turn count.
+  * `recent_turns` (`JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(recent_turns) = 'array')`): Recent conversation turns array.
+  * `bookmarked_moments` (`JSONB NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(bookmarked_moments) = 'array')`): Saved timestamp bookmarks array.
+  * `expires_at` (`TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '12 hours')`): Session TTL.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
+* **Constraints:**
+  * UNIQUE `(device_id, episode_id)`.
 * **Indexes:**
-  * `idx_conversation_sessions_lookup` on `(profile_id, episode_id, is_active)` (B-Tree).
+  * `idx_conversation_sessions_device_episode` on `(device_id, episode_id)`.
 * **Triggers:**
   * `trg_conversation_sessions_set_updated_at` (`trg_fn_set_updated_at`).
 
 ##### 12. `interaction_history`
-Maintains an immutable ledger of every AI interaction executed by a viewer.
+Immutable audit log of viewer AI interactions, token consumption, latency, and spoiler-gate verification.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
-  * `session_id` $\rightarrow$ `conversation_sessions(id)` `ON DELETE SET NULL`
-  * `profile_id` $\rightarrow$ `profiles(id)` `ON DELETE CASCADE`
+  * `profile_id` $\rightarrow$ `profiles(id)` `ON DELETE SET NULL`
+  * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `playback_position_ms` (`BIGINT NOT NULL CHECK (playback_position_ms >= 0)`)
-  * `action_type` (`action_type_enum NOT NULL`): Custom ENUM: `'contextual_qa'`, `'entity_explain'`, `'scene_explain'`, `'episode_recap'`, `'post_watch_quiz'`.
-  * `user_query` (`TEXT NOT NULL`)
-  * `response_card` (`JSONB NOT NULL`): Structured JSON card payload returned to the 10-foot TV UI.
-  * `latency_ms` (`INT NOT NULL DEFAULT 0`)
-  * `ai_provider_used` (`TEXT NOT NULL DEFAULT 'unknown'`)
+  * `playback_position_ms` (`BIGINT NOT NULL CHECK (playback_position_ms >= 0)`): Exact viewer playback position.
+  * `action_type` (`TEXT NOT NULL`): Wisp feature action type (e.g., `'contextual_qa'`, `'scene_explain'`).
+  * `user_prompt` (`TEXT NOT NULL CHECK (char_length(btrim(user_prompt)) >= 1)`): Viewer question or chip label.
+  * `ai_provider` (`TEXT NOT NULL`): Primary AI provider that served the response.
+  * `latency_ms` (`INTEGER CHECK (latency_ms IS NULL OR latency_ms >= 0)`): End-to-end response generation latency.
+  * `cache_hit` (`BOOLEAN NOT NULL DEFAULT false`): Indicates whether card was served from the 15-second bucket cache.
+  * `prompt_tokens` (`INTEGER CHECK (prompt_tokens IS NULL OR prompt_tokens >= 0)`): Token count consumed by prompt.
+  * `completion_tokens` (`INTEGER CHECK (completion_tokens IS NULL OR completion_tokens >= 0)`): Token count generated.
   * `spoiler_floor_verified` (`BOOLEAN NOT NULL DEFAULT true`): Verified by trigger `trg_fn_enforce_interaction_spoiler_gate`.
+  * `user_helpful_vote` (`SMALLINT NOT NULL DEFAULT 0 CHECK (user_helpful_vote IN (-1, 0, 1))`): Remote feedback vote (Downvote: -1, None: 0, Upvote: +1).
+  * `error_code` (`TEXT`): Error classification if generation failed.
+  * `response_card` (`JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(response_card) = 'object')`): Formatted 10-foot TV card payload.
+  * `is_pinned` (`BOOLEAN NOT NULL DEFAULT false`): User pinned card flag.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Indexes:**
-  * `idx_interaction_history_session` on `(session_id, created_at DESC)` (B-Tree).
-  * `idx_interaction_history_profile` on `(profile_id, created_at DESC)` (B-Tree).
+  * `idx_interaction_history_episode` on `(episode_id, created_at DESC)`.
+  * `idx_interaction_history_profile` on `(profile_id, created_at DESC)`.
+  * `idx_interaction_history_provider_metrics` on `(ai_provider, action_type, latency_ms)` WHERE `latency_ms IS NOT NULL`.
 * **Triggers:**
   * `trg_interaction_history_spoiler_gate` (`trg_fn_enforce_interaction_spoiler_gate`).
 
@@ -370,62 +430,70 @@ Maintains an immutable ledger of every AI interaction executed by a viewer.
 #### Subsystem E: Observability, Caching & Security Telemetry
 
 ##### 13. `ai_response_cache`
-Server-side cache keyed by 15-second timestamp buckets to maximize cache hit ratios across concurrent living rooms.
-* **Primary Key:** `cache_key` (`TEXT`)
+Server-side 15-second temporal bucket cache reducing AI token spend and delivering sub-10ms cached cards across concurrent living rooms.
+* **Primary Key:** `cache_key` (`TEXT CHECK (char_length(btrim(cache_key)) >= 5)`): Deterministic cache key.
 * **Foreign Keys:**
   * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE CASCADE`
 * **Columns:**
-  * `playback_bucket_ms` (`BIGINT NOT NULL`): Normalized to 15,000ms (`floor(playbackPositionMs / 15000) * 15000`).
-  * `action_type` (`action_type_enum NOT NULL`)
-  * `query_hash` (`TEXT NOT NULL`): SHA-256 digest of normalized prompt.
-  * `cached_card` (`JSONB NOT NULL`)
-  * `hit_count` (`INT NOT NULL DEFAULT 1`)
-  * `last_hit_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
-  * `expires_at` (`TIMESTAMPTZ NOT NULL`)
+  * `action_type` (`TEXT NOT NULL`): AI feature type.
+  * `profile_mode` (`household_profile_mode NOT NULL`): Target profile tone.
+  * `time_bucket_sec` (`INTEGER NOT NULL CHECK (time_bucket_sec >= 0)`): **15-second playback position discretization** (`floor(playback_position_ms / 15000) * 15`).
+  * `provider_used` (`TEXT NOT NULL`): AI provider model string.
+  * `response_payload` (`JSONB NOT NULL CHECK (jsonb_typeof(response_payload) = 'object')`): Cached response card.
+  * `hit_count` (`BIGINT NOT NULL DEFAULT 0 CHECK (hit_count >= 0)`): Cache hit counter.
+  * `origin_latency_ms` (`INTEGER CHECK (origin_latency_ms IS NULL OR origin_latency_ms >= 0)`): Original generation latency.
+  * `token_count` (`INTEGER CHECK (token_count IS NULL OR token_count >= 0)`): Tokens saved per hit.
+  * `expires_at` (`TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '24 hours')`): **Wall-clock cache expiration TTL**.
+  * `last_accessed_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Indexes:**
-  * `idx_ai_response_cache_expiry` on `(expires_at)` (B-Tree).
-  * `idx_ai_response_cache_lookup` on `(episode_id, playback_bucket_ms, action_type, query_hash)` (B-Tree).
+  * `idx_ai_response_cache_lookup` on `(episode_id, action_type, profile_mode, time_bucket_sec)` INCLUDE `(response_payload, provider_used, expires_at)` (Covering index).
+  * `idx_ai_response_cache_expiry` on `(expires_at)`.
 
 ##### 14. `ai_provider_metrics`
-Telemetry log recording latency and token metrics across LLM providers.
-* **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
+Hourly aggregated AI provider telemetry tracking throughput, failovers, cache hits, and latency percentiles.
+* **Primary Key:** `(bucket_hour, provider_name, action_type)`
 * **Columns:**
-  * `provider_name` (`TEXT NOT NULL`): e.g., `'groq'`, `'gemini'`, `'openrouter'`, `'ollama'`.
-  * `model_name` (`TEXT NOT NULL`): e.g., `'llama-3.3-70b-versatile'`, `'gemini-2.5-flash'`.
-  * `latency_ms` (`INT NOT NULL CHECK (latency_ms >= 0)`)
-  * `prompt_tokens` (`INT NOT NULL DEFAULT 0`)
-  * `completion_tokens` (`INT NOT NULL DEFAULT 0`)
-  * `is_success` (`BOOLEAN NOT NULL DEFAULT true`)
-  * `error_code` (`TEXT`)
-  * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
-* **Indexes:**
-  * `idx_ai_provider_metrics_telemetry` on `(provider_name, created_at DESC)` (B-Tree).
-  * `idx_ai_provider_metrics_latency` on `(provider_name, latency_ms)` (B-Tree).
+  * `bucket_hour` (`TIMESTAMPTZ NOT NULL`): Hourly aggregation window start (`date_trunc('hour', now())`).
+  * `provider_name` (`TEXT NOT NULL`): AI provider (`'groq'`, `'gemini'`, `'openrouter'`, `'ollama'`).
+  * `action_type` (`TEXT NOT NULL`): Feature action type.
+  * `total_requests` (`BIGINT NOT NULL DEFAULT 0 CHECK (total_requests >= 0)`)
+  * `successful_requests` (`BIGINT NOT NULL DEFAULT 0 CHECK (successful_requests >= 0)`)
+  * `failed_requests` (`BIGINT NOT NULL DEFAULT 0 CHECK (failed_requests >= 0)`)
+  * `cache_hits` (`BIGINT NOT NULL DEFAULT 0 CHECK (cache_hits >= 0)`)
+  * `failover_count` (`BIGINT NOT NULL DEFAULT 0 CHECK (failover_count >= 0)`)
+  * `total_latency_ms` (`BIGINT NOT NULL DEFAULT 0 CHECK (total_latency_ms >= 0)`)
+  * `min_latency_ms` (`INTEGER CHECK (min_latency_ms IS NULL OR min_latency_ms >= 0)`)
+  * `max_latency_ms` (`INTEGER CHECK (max_latency_ms IS NULL OR max_latency_ms >= 0)`)
+  * `total_tokens` (`BIGINT NOT NULL DEFAULT 0 CHECK (total_tokens >= 0)`)
+  * `updated_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 
 ##### 15. `device_rate_limits`
-Sliding window rate-limiter enforcing quotas per Fire TV device.
-* **Primary Key:** `device_id` (`TEXT`)
+Database-backed fixed time-window request counters protecting AI provider quotas from remote button-mashing.
+* **Primary Key:** `(device_id, window_start)`
 * **Columns:**
-  * `request_count` (`INT NOT NULL DEFAULT 1`)
-  * `window_start_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
+  * `device_id` (`TEXT NOT NULL`): Fire TV hardware identifier.
+  * `window_start` (`TIMESTAMPTZ NOT NULL`): Fixed window boundary (`to_timestamp(floor(extract(epoch from now()) / window_sec) * window_sec)`).
+  * `request_count` (`INTEGER NOT NULL DEFAULT 1 CHECK (request_count >= 0)`): Observed request volume.
+  * `blocked_count` (`INTEGER NOT NULL DEFAULT 0 CHECK (blocked_count >= 0)`): Intercepted requests exceeding quota.
   * `last_request_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Indexes:**
-  * `idx_device_rate_limits_window` on `(window_start_at)` (B-Tree).
+  * `idx_device_rate_limits_window` on `(window_start)`.
 
 ##### 16. `spoiler_audit_log`
-Security audit trail recording any attempted spoiler leakage or timestamp anomalies.
+Security audit trail recording clamped timestamps, malformed metadata, or intercepted spoiler boundary anomalies.
 * **Primary Key:** `id` (`UUID`, default `gen_random_uuid()`)
 * **Foreign Keys:**
-  * `interaction_id` $\rightarrow$ `interaction_history(id)` `ON DELETE CASCADE`
+  * `episode_id` $\rightarrow$ `episodes(id)` `ON DELETE SET NULL`
 * **Columns:**
-  * `playback_position_ms` (`BIGINT NOT NULL`)
-  * `reported_spoiler_floor_ms` (`BIGINT NOT NULL`)
-  * `anomaly_type` (`TEXT NOT NULL`)
-  * `details` (`JSONB NOT NULL DEFAULT '{}'::jsonb`)
+  * `requested_playback_ms` (`BIGINT NOT NULL`): Viewer playback position at query time.
+  * `blocked_item_timestamp_ms` (`BIGINT`): Timestamp of leaked entity or dialogue line intercepted.
+  * `audit_event_type` (`TEXT NOT NULL CHECK (audit_event_type IN ('clamped_negative_playback', 'clamped_overflow_playback', 'blocked_future_spoiler', 'malformed_spoiler_metadata', 'verified_clean_window'))`)
+  * `source_rpc` (`TEXT NOT NULL DEFAULT 'get_spoiler_safe_context'`): Calling function.
+  * `details` (`JSONB NOT NULL DEFAULT '{}'::jsonb`): Diagnostic payload.
   * `created_at` (`TIMESTAMPTZ NOT NULL DEFAULT now()`)
 * **Indexes:**
-  * `idx_spoiler_audit_log_created` on `(created_at DESC)` (B-Tree).
+  * `idx_spoiler_audit_log_created` on `(created_at DESC, audit_event_type)`.
 
 ---
 
@@ -471,20 +539,32 @@ EXCLUDE USING gist (episode_id WITH =, time_range WITH &&)
    The trigger and RPC validation clamp negative values to $0$ immediately, preventing arithmetic underflow or index corruption.
 
 ### 3.4 Runtime AI Response Clamping Trigger
-When an AI response is recorded into `interaction_history`, the trigger `trg_fn_enforce_interaction_spoiler_gate` validates the payload's `response_card->>'spoilerSafeUpToMs'`:
+When an AI response is recorded into `interaction_history`, the trigger `trg_fn_enforce_interaction_spoiler_gate` validates the payload's `response_card->'spoilerSafeUpToMs'` before insert or update:
 ```sql
-IF reported_floor > playback_ms THEN
-  NEW.response_card = jsonb_set(
-    NEW.response_card,
-    '{spoilerSafeUpToMs}',
-    to_jsonb(playback_ms)
-  );
+-- 1. Validate numeric format before casting
+IF v_raw_spoiler_text IS NULL OR v_json_type NOT IN ('number', 'string') OR v_raw_spoiler_text !~ '^-?[0-9]{1,18}$' THEN
   NEW.spoiler_floor_verified := false;
-  INSERT INTO spoiler_audit_log (
-    interaction_id, playback_position_ms, reported_spoiler_floor_ms, anomaly_type, details
+  NEW.response_card := jsonb_set(NEW.response_card, '{spoilerSafeUpToMs}', to_jsonb(NEW.playback_position_ms), true);
+  INSERT INTO public.spoiler_audit_log (
+    episode_id, requested_playback_ms, blocked_item_timestamp_ms, audit_event_type, source_rpc, details
   ) VALUES (
-    NEW.id, playback_ms, reported_floor, 'FUTURE_SPOILER_FLOOR_CLAMPED',
-    jsonb_build_object('original_reported_floor', reported_floor, 'clamped_to', playback_ms)
+    NEW.episode_id, NEW.playback_position_ms, null, 'malformed_spoiler_metadata',
+    'trg_fn_enforce_interaction_spoiler_gate',
+    jsonb_build_object('action_type', NEW.action_type, 'ai_provider', NEW.ai_provider, 'clamped_to_ms', NEW.playback_position_ms)
+  );
+  RETURN NEW;
+END IF;
+
+-- 2. Intercept future spoiler leak attempts
+IF v_card_spoiler_ms > NEW.playback_position_ms THEN
+  NEW.spoiler_floor_verified := false;
+  NEW.response_card := jsonb_set(NEW.response_card, '{spoilerSafeUpToMs}', to_jsonb(NEW.playback_position_ms), true);
+  INSERT INTO public.spoiler_audit_log (
+    episode_id, requested_playback_ms, blocked_item_timestamp_ms, audit_event_type, source_rpc, details
+  ) VALUES (
+    NEW.episode_id, NEW.playback_position_ms, v_card_spoiler_ms, 'blocked_future_spoiler',
+    'trg_fn_enforce_interaction_spoiler_gate',
+    jsonb_build_object('action_type', NEW.action_type, 'ai_provider', NEW.ai_provider, 'clamped_to_ms', NEW.playback_position_ms)
   );
 END IF;
 ```
@@ -501,162 +581,271 @@ All RPC functions in Wisp are implemented with `SECURITY DEFINER` and explicitly
 ├────────────────────────────────────────┬───────────────────────────────────────────────┤
 │ Public / Client Exposed RPCs           │ Admin / Backend Service-Role Only RPCs        │
 ├────────────────────────────────────────┼───────────────────────────────────────────────┤
-│ • get_firetv_stage1_bootstrap          │ • get_database_health_and_metrics             │
-│ • get_spoiler_safe_context             │ • purge_expired_cache_and_rate_limits         │
-│ • search_spoiler_safe_transcript       │ • upsert_ai_response_cache                    │
-│ • hybrid_spoiler_safe_rag_search       │ • get_or_touch_ai_cache                       │
-│ • get_cross_episode_spoiler_safe_ctx   │ • check_device_rate_limit                     │
-│ • get_episode_post_watch_quiz          │ • record_wisp_interaction                     │
-│ • get_paginated_programs               │                                               │
-│ • delete_viewing_profile               │                                               │
+│ • get_firetv_stage1_bootstrap          │ • delete_viewing_profile                      │
+│ • get_spoiler_safe_context             │ • get_database_health_and_metrics             │
+│ • search_spoiler_safe_transcript       │ • purge_expired_cache_and_rate_limits         │
+│ • hybrid_spoiler_safe_rag_search       │ • upsert_ai_response_cache                    │
+│ • get_cross_episode_spoiler_safe_ctx   │ • get_or_touch_ai_cache                       │
+│ • get_episode_post_watch_quiz          │ • check_device_rate_limit                     │
+│ • get_paginated_programs               │ • record_wisp_interaction                     │
+│ • cosine_similarity_float4             │                                               │
 └────────────────────────────────────────┴───────────────────────────────────────────────┘
 ```
 
 ### 4.1 Client-Facing RPCs
 
 #### 1. `get_firetv_stage1_bootstrap`
-Optimized single-roundtrip bootstrap endpoint for the Fire TV client overlay. Retrieves active device profile, current scene context, D-pad action chips, and program metadata in $<50\text{ms}$.
+Optimized single-roundtrip bootstrap endpoint for the Fire TV client overlay. Fetches active scene (via $O(\log N)$ GiST `time_range` containment `<@`), D-pad `quick_action_chips`, strictly verified pre-warmed bucket cache cards, and claim-bound profile/session state in $<50\text{ms}$.
 * **Signature:**
   ```sql
   get_firetv_stage1_bootstrap(
-    p_device_id text,
     p_episode_id uuid,
-    p_playback_ms bigint
+    p_device_id text,
+    p_playback_ms bigint,
+    p_profile_id uuid DEFAULT NULL
   ) RETURNS jsonb
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
-* **Behavior:**
-  * Resolves active profile for `p_device_id`. If none exists, creates default `"Living Room TV"` profile in `'quick_glance'` mode.
-  * Fetches active scene where `p_playback_ms >= start_time_ms AND p_playback_ms <= end_time_ms`.
-  * Returns JSON payload containing: `device_id`, `profile`, `program`, `episode`, `scene`, `quick_action_chips`, `unlocked_entities_count`, `server_timestamp`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
+* **Behavior & Security Invariants:**
+  * Validates episode is published (`is_published = true`) and active (`is_active = true`). Clamps `p_playback_ms` to `[0, duration_ms]`.
+  * Computes 15-second cache bucket: `v_bucket_sec := floor(greatest(0, v_safe_playback_ms - 1)::numeric / 15000.0)::integer * 15`.
+  * Evaluates caller authorization: device-scoped private state (`profiles` and `conversation_sessions`) is returned **only** when invoked by `service_role` or when `p_device_id` matches the verified JWT claim (`current_trusted_device_id()`). Untrusted callers receive public scene context with default `quick_glance` profile fallback.
+  * Resolves active scene using $O(\log N)$ GiST containment (`v_safe_playback_ms <@ sc.time_range`). If playback sits in an inter-scene gap, falls back to latest scene where `start_time_ms <= v_safe_playback_ms`.
+  * Pre-warmed cache cards from `ai_response_cache` are filtered to strictly ensure non-negative numeric `spoilerSafeUpToMs` where `spoilerSafeUpToMs <= v_safe_playback_ms`.
+* **Return Shape (`jsonb`):**
+  ```json
+  {
+    "found": true,
+    "episode_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+    "playback_position_ms": 135000,
+    "time_bucket_sec": 135,
+    "profile": {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "display_name": "Living Room TV",
+      "mode": "quick_glance",
+      "spoiler_strictness": "strict",
+      "voice_tts_enabled": true
+    },
+    "active_scene": {
+      "scene_index": 2,
+      "scene_title": "The Memory Projection Begins",
+      "location_name": "Oude Kerk Church",
+      "mood_tag": "tense",
+      "narrative_tension_score": 7,
+      "spoiler_safe_summary": "Barley initiates the holographic rig; Thom is placed into the memory.",
+      "quick_action_chips": [
+        { "id": "c1", "label": "Why the bridge memory?", "actionType": "scene_explain" },
+        { "id": "c2", "label": "Who is Barley?", "actionType": "entity_explain" }
+      ]
+    },
+    "prewarmed_cards": [],
+    "session": {
+      "session_id": "99999999-9999-9999-9999-999999999999",
+      "turn_count": 0,
+      "recent_turns": [],
+      "bookmarked_moments": []
+    }
+  }
+  ```
 
 #### 2. `get_spoiler_safe_context`
-Primary context resolver for the Stage-1 drawer and LLM grounding.
+Primary anti-spoiler context resolver for Stage-1 inspection and LLM prompt grounding.
 * **Signature:**
   ```sql
   get_spoiler_safe_context(
     p_episode_id uuid,
-    p_playback_ms bigint
+    p_playback_ms bigint,
+    p_lookback_ms bigint DEFAULT 180000
   ) RETURNS jsonb
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
-* **Output Payload:**
-  * `scene`: Current active scene metadata (`scene_number`, `scene_title`, `summary`, `quick_action_chips`, `key_events`, `visual_anchors`).
-  * `recent_dialogue`: Array of last 8 dialogue lines where `end_time_ms <= p_playback_ms`.
-  * `unlocked_entities`: Array of entities revealed at or before `p_playback_ms`, with `aliases`, descriptions, and `spoiler_tier`.
-  * `unlocked_relationships`: Array of active directed entity relationships revealed at or before `p_playback_ms`.
-  * `metadata`: Clamped `playback_ms`, `episode_duration_ms`, `watch_percentage`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
+* **Behavior:**
+  * Clamps `p_playback_ms` between `0` and `duration_ms`.
+  * Fetches active scene where `start_time_ms <= v_safe_playback_ms AND end_time_ms >= v_safe_playback_ms`.
+  * Fetches prior scenes where `start_time_ms <= v_safe_playback_ms`.
+  * Fetches dialogue segments within lookback window (`start_time_ms >= v_safe_playback_ms - lookback_ms`) with strict anti-spoiler gate: `end_time_ms <= v_safe_playback_ms`.
+  * Fetches unlocked entities where `reveal_time_ms <= v_safe_playback_ms` and `spoiler_floor_ms <= v_safe_playback_ms`.
+  * Fetches unlocked entity relationships where `reveal_time_ms <= v_safe_playback_ms`, `valid_from_ms <= v_safe_playback_ms`, and `valid_until_ms >= v_safe_playback_ms`.
+* **Return Shape (`jsonb`):**
+  ```json
+  {
+    "found": true,
+    "metadata": {
+      "program_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1",
+      "program_title": "Tears of Steel",
+      "episode_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+      "episode_title": "The Amsterdam Recalibration",
+      "duration_ms": 734000,
+      "playback_ms": 135000,
+      "progress_pct": 18.39
+    },
+    "active_scene": {
+      "scene_index": 2,
+      "scene_title": "The Memory Projection Begins",
+      "location_name": "Oude Kerk Church",
+      "mood_tag": "tense",
+      "narrative_tension_score": 7,
+      "start_time_ms": 120000,
+      "end_time_ms": 240000,
+      "summary": "Barley initiates the holographic rig; Thom is placed into the memory.",
+      "quick_action_chips": [...]
+    },
+    "prior_scenes": [...],
+    "recent_transcript": [
+      {
+        "start_time_ms": 125000,
+        "end_time_ms": 131000,
+        "speaker": "BARLEY",
+        "dialogue": "Hold your positions! We need this rig online now!",
+        "visual_cue": "Barley adjusts power coupling",
+        "is_key_plot_point": false
+      }
+    ],
+    "unlocked_entities": [
+      {
+        "slug": "thom",
+        "name": "Thom",
+        "type": "character",
+        "base_description": "Former lover of Celia undergoing memory reconstruction.",
+        "progressive_fact": "Barley straps Thom into the neural rig.",
+        "is_plot_twist": false,
+        "importance_rank": 1,
+        "in_current_scene": true
+      }
+    ],
+    "unlocked_relationships": [
+      {
+        "source_entity": "Thom",
+        "target_entity": "Celia",
+        "relationship_type": "former_lovers",
+        "summary": "Broke up 40 years ago before the robot war."
+      }
+    ]
+  }
+  ```
 
 #### 3. `search_spoiler_safe_transcript`
-Lexical and trigram dialogue search bounded strictly by playback position.
+Lexical and trigram dialogue search bounded strictly by playback position, allowing viewer queries to recall dialogue from earlier scenes outside the 3-minute rolling window.
 * **Signature:**
   ```sql
   search_spoiler_safe_transcript(
     p_episode_id uuid,
-    p_query text,
     p_playback_ms bigint,
-    p_limit int DEFAULT 5
-  ) RETURNS TABLE (
-    id uuid,
-    speaker text,
-    dialogue text,
-    start_time_ms bigint,
-    end_time_ms bigint,
-    relevance_score float8
-  )
+    p_search_query text,
+    p_limit integer DEFAULT 8
+  ) RETURNS jsonb
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
 * **Behavior:**
-  * Computes relevance combining `ts_rank` on full-text search with `similarity()` from `pg_trgm`.
-  * Hard gate: `WHERE episode_id = p_episode_id AND end_time_ms <= p_playback_ms`.
+  * Clamps `p_playback_ms` to `[0, duration_ms]`. Clamps `p_limit` to `[1, 50]`.
+  * Computes score combining English full-text search `ts_rank_cd(search_vector, websearch_to_tsquery('english', query)) * 2.0` and trigram similarity `similarity(dialogue_text, query)`.
+  * Hard anti-spoiler gate: `WHERE episode_id = p_episode_id AND end_time_ms <= v_safe_playback_ms`.
+* **Return Shape (`jsonb`):** Array of objects containing: `start_time_ms`, `end_time_ms`, `speaker`, `dialogue`, `visual_cue`, and `relevance_score`.
 
 #### 4. `hybrid_spoiler_safe_rag_search`
-Hybrid Reciprocal Rank Fusion (RRF) search fusing keyword full-text search and dense vector semantic similarity.
+Pure-SQL Hybrid Reciprocal Rank Fusion (RRF) search fusing keyword full-text search (`tsvector`) + trigram similarity (`pg_trgm`) + dense vector cosine similarity (`float4[]`).
 * **Signature:**
   ```sql
   hybrid_spoiler_safe_rag_search(
     p_episode_id uuid,
-    p_query text,
-    p_query_embedding float4[],
     p_playback_ms bigint,
-    p_limit int DEFAULT 5,
-    p_rrf_k int DEFAULT 60
-  ) RETURNS TABLE (
-    id uuid,
-    content_type text,
-    reference_id uuid,
-    text_chunk text,
-    start_time_ms bigint,
-    end_time_ms bigint,
-    reveal_time_ms bigint,
-    lexical_rank int,
-    vector_rank int,
-    rrf_score float8
-  )
+    p_query_text text,
+    p_query_vector float4[] DEFAULT NULL,
+    p_limit integer DEFAULT 6
+  ) RETURNS jsonb
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
+* **Behavior:**
+  * Hard anti-spoiler gate applied to candidates **before scoring**: `end_time_ms <= v_safe_playback_ms AND reveal_time_ms <= v_safe_playback_ms`.
+  * Calculates `lex_score` using `ts_rank_cd(search_vector, websearch_to_tsquery('english', query)) + similarity(content_text, query)`.
+  * Calculates `vec_score` using `cosine_similarity_float4(embedding_vector, p_query_vector)`.
+  * Ranks candidates independently on lexical arm (`rank_lex`) and semantic arm (`rank_vec`).
+  * Fuses ranks using Reciprocal Rank Fusion: $\text{RRF} = \frac{1}{60 + \text{rank}_{\text{lex}}} + \frac{1}{60 + \text{rank}_{\text{vec}}}$.
+  * Handles text-only queries gracefully when `p_query_vector` is `NULL` or empty by dropping the semantic arm without error.
+* **Return Shape (`jsonb`):** Array of objects containing: `id`, `source_type`, `start_time_ms`, `end_time_ms`, `reveal_time_ms`, `content_text`, `lexical_score`, `semantic_score`, and `rrf_fusion_score`.
 
 #### 5. `get_cross_episode_spoiler_safe_context`
 Cross-episode context synthesizer for serialized shows. Unlocks lore from previously completed episodes plus the current episode up to $T_{\text{playback}}$.
 * **Signature:**
   ```sql
   get_cross_episode_spoiler_safe_context(
-    p_program_id uuid,
-    p_current_episode_id uuid,
-    p_playback_ms bigint,
-    p_completed_episode_ids uuid[] DEFAULT '{}'::uuid[]
+    p_episode_id uuid,
+    p_playback_ms bigint
   ) RETURNS jsonb
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
+* **Behavior:**
+  * Automatically resolves `program_id`, `season_number`, and `episode_number` from `p_episode_id`.
+  * Collects summaries, key plot twists, and entity reveals from all prior episodes (`season_number < current OR (season_number = current AND episode_number < current)`).
+  * Automatically blocks all future episodes in the series.
+  * Combines prior episode recaps with current episode's `get_spoiler_safe_context(p_episode_id, p_playback_ms, 180000)`.
+* **Return Shape (`jsonb`):** Object containing `found`, `program_id`, `current_season`, `current_episode_number`, `prior_episodes` (array), and `current_episode` (jsonb context object).
 
 #### 6. `get_episode_post_watch_quiz`
-Retrieves interactive post-watch trivia questions.
+Retrieves interactive post-watch trivia questions unlocked up to the current playback position.
 * **Signature:**
   ```sql
   get_episode_post_watch_quiz(
     p_episode_id uuid,
     p_playback_ms bigint,
-    p_limit int DEFAULT 3
-  ) RETURNS TABLE (
-    id uuid,
-    question text,
-    options jsonb,
-    correct_index int,
-    explanation text,
-    required_watch_time_ms bigint
-  )
+    p_profile_mode household_profile_mode DEFAULT 'quick_glance',
+    p_limit integer DEFAULT 3
+  ) RETURNS jsonb
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
 * **Behavior:**
-  * Enforces `required_watch_time_ms <= p_playback_ms`.
+  * Enforces `unlock_time_ms <= v_safe_playback_ms`.
+  * Prioritizes questions matching the viewer's active `profile_mode` (`quick_glance`, `deep_lore`, `family_friendly`).
+* **Return Shape (`jsonb`):** Array of objects containing `id`, `unlock_time_ms`, `profile_mode`, `difficulty`, `question`, `options`, `correctIndex`, and `explanation`.
 
 #### 7. `get_paginated_programs`
-High-performance keyset/cursor pagination for Fire TV catalog browsing.
+High-performance keyset/cursor pagination for Fire TV catalog browsing with typed SQL parameterization (immune to PostgREST string filter injection).
 * **Signature:**
   ```sql
   get_paginated_programs(
-    p_limit int DEFAULT 10,
-    p_cursor_created_at timestamptz DEFAULT NULL,
+    p_limit integer DEFAULT 20,
+    p_cursor_title text DEFAULT NULL,
     p_cursor_id uuid DEFAULT NULL,
-    p_genre text DEFAULT NULL
+    p_ascending boolean DEFAULT true,
+    p_genre text DEFAULT NULL,
+    p_query text DEFAULT NULL
   ) RETURNS TABLE (
     id uuid,
+    slug text,
     title text,
-    synopsis text,
     genre text,
-    content_rating text,
-    total_seasons int,
-    created_at timestamptz,
-    has_more boolean
+    synopsis text,
+    release_year integer,
+    rating text,
+    poster_url text,
+    backdrop_url text,
+    license_info text,
+    is_active boolean
   )
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
 * **Behavior:**
-  * Uses deterministic composite cursor `(created_at, id) < (p_cursor_created_at, p_cursor_id)`.
-  * Fetches `p_limit + 1` rows to calculate `has_more` without issuing an expensive `COUNT(*)` query.
+  * Enforces `is_active = true`. Supports case-insensitive genre filter and full-text substring search across `title` and `synopsis`.
+  * Evaluates deterministic composite cursor: `(title > cursor_title) OR (title = cursor_title AND id > cursor_id)`.
 
-#### 8. `delete_viewing_profile`
-Atomically deletes a viewing profile while guarding against removing the last active profile for a hardware device.
+#### 8. `cosine_similarity_float4`
+Pure-SQL vector cosine similarity function executing directly in PostgreSQL procedural SQL with zero external C-extension lock-in.
+* **Signature:**
+  ```sql
+  cosine_similarity_float4(
+    p_vec_a float4[],
+    p_vec_b float4[]
+  ) RETURNS float8
+  ```
+* **Security & Grants:** `IMMUTABLE PARALLEL SAFE STRICT`, `SET search_path = public`. Granted to `anon`, `authenticated`, `service_role`.
+* **Behavior:** Computes $(A \cdot B) / (\|A\| \times \|B\|)$. Gracefully handles division-by-zero, empty arrays, or dimension mismatches by returning `0.0`.
+
+---
+
+### 4.2 Administrative & Service-Role Only RPCs
+
+#### 9. `delete_viewing_profile`
+Transactional atomic household profile deletion RPC with distributed multi-instance serialization and sole-profile retention safety.
 * **Signature:**
   ```sql
   delete_viewing_profile(
@@ -664,46 +853,106 @@ Atomically deletes a viewing profile while guarding against removing the last ac
     p_device_id text
   ) RETURNS jsonb
   ```
-* **Security & Grants:** `SECURITY DEFINER`, granted to `anon`, `authenticated`, `service_role`.
-* **Behavior:**
-  * Acquires transaction-level advisory lock: `PERFORM pg_advisory_xact_lock(hashtext(p_device_id))`.
-  * Verifies caller owns the profile via `p_device_id`.
-  * Verifies profile count: if device has $\le 1$ profiles, throws exception code `'LAST_PROFILE'` (error: *"Cannot delete the sole profile for a device"*).
-  * Automatically cascades deletion of associated conversation sessions and interaction history.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. **Access strictly revoked from `PUBLIC`, `anon`, and `authenticated`. Granted exclusively to `service_role`.**
+* **Behavior & Safety Invariants:**
+  1. **Strict Service-Role Authorization:** Verifies `is_service_role_caller()`; throws `42501 (PERMISSION_DENIED_SERVICE_ROLE_REQUIRED)` otherwise.
+  2. **Transaction-Level Advisory Lock:** Acquires `pg_advisory_xact_lock(hashtext(p_device_id))` to serialize concurrent profile deletions for the device across distributed backend workers.
+  3. **Row-Level FOR UPDATE Lock:** Locks ALL profiles belonging to the device (`SELECT 1 FROM profiles WHERE device_id = ... FOR UPDATE`) before counting, preventing concurrent deletions from seeing `count > 1`.
+  4. **Device Ownership Verification:** Verifies `p_profile_id` exists and belongs to `p_device_id`; throws `42501 (FORBIDDEN_DEVICE_MISMATCH)` if device does not own the profile.
+  5. **Sole-Profile Retention Guard:** If total profiles for the device $\le 1$, aborts deletion and raises `23514 (CANNOT_DELETE_SOLE_PROFILE)`.
+  6. **Atomic Cascade:** Deletes the profile; foreign key constraints cascade deletion of associated viewing sessions and interaction records.
 
----
-
-### 4.2 Administrative & Service-Role RPCs
-
-#### 9. `get_database_health_and_metrics`
-Comprehensive health check returning live row counts, cache hit metrics, latency percentiles, and security audit counts.
+#### 10. `get_database_health_and_metrics`
+Comprehensive health check returning live row counts, cache hit metrics, provider latency percentiles, and security audit counts.
 * **Signature:** `get_database_health_and_metrics() RETURNS jsonb`
-* **Security & Grants:** `SECURITY DEFINER`. Access strictly revoked from `PUBLIC`, `anon`, `authenticated`. Granted exclusively to `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. **Revoked from `PUBLIC`, `anon`, `authenticated`. Granted exclusively to `service_role`.**
+* **Behavior:** Aggregates counts across all 16 tables, evaluates `v_cache_efficiency_summary`, aggregates provider metrics from `v_ai_provider_performance`, collects continuous percentiles from `v_latency_percentiles_by_provider`, and counts spoiler anomalies from `spoiler_audit_log`.
 
-#### 10. `purge_expired_cache_and_rate_limits`
-Scheduled maintenance RPC purging stale cache entries and expired rate-limit windows.
+#### 11. `purge_expired_cache_and_rate_limits`
+Scheduled maintenance RPC purging stale cache buckets, expired viewing sessions, and old rate-limit windows.
 * **Signature:** `purge_expired_cache_and_rate_limits() RETURNS jsonb`
-* **Security & Grants:** `SECURITY DEFINER`. Granted exclusively to `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. **Revoked from `PUBLIC`, `anon`, `authenticated`. Granted exclusively to `service_role`.**
+* **Behavior:** Atomically executes:
+  * `DELETE FROM ai_response_cache WHERE expires_at <= now()`
+  * `DELETE FROM conversation_sessions WHERE expires_at <= now()`
+  * `DELETE FROM device_rate_limits WHERE window_start < (now() - interval '1 hour')`
+  * Returns counts of purged records.
 
-#### 11. `record_wisp_interaction`
-Atomically logs the completed AI response card, updates provider metrics, and verifies spoiler floor consistency.
+#### 12. `upsert_ai_response_cache`
+Inserts or updates a 15-second temporal bucket AI response cache entry with TTL.
+* **Signature:**
+  ```sql
+  upsert_ai_response_cache(
+    p_cache_key text,
+    p_episode_id uuid,
+    p_action_type text,
+    p_profile_mode household_profile_mode,
+    p_time_bucket_sec integer,
+    p_provider_used text,
+    p_response_payload jsonb,
+    p_origin_latency_ms integer DEFAULT NULL,
+    p_token_count integer DEFAULT NULL,
+    p_ttl_seconds integer DEFAULT 86400
+  ) RETURNS void
+  ```
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. **Granted exclusively to `service_role`.**
+* **Behavior:** Validates caller is `service_role`. Verifies episode existence. Inspects `p_response_payload->>'spoilerSafeUpToMs'` and clamps it to `duration_ms` if it exceeds episode duration, preventing cache poisoning. Computes expiration as `now() + make_interval(secs => p_ttl_seconds)`.
+
+#### 13. `get_or_touch_ai_cache`
+Atomically retrieves an unexpired cached AI card by `cache_key` and increments its hit count.
+* **Signature:**
+  ```sql
+  get_or_touch_ai_cache(
+    p_cache_key text
+  ) RETURNS jsonb
+  ```
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. **Granted exclusively to `service_role`.**
+* **Behavior:** Updates `hit_count = hit_count + 1` and `last_accessed_at = now()` WHERE `cache_key = p_cache_key AND expires_at > now()`, returning `response_payload`.
+
+#### 14. `check_device_rate_limit`
+Database-backed fixed time-window rate limiter protecting AI provider quotas from remote button-mashing.
+* **Signature:**
+  ```sql
+  check_device_rate_limit(
+    p_device_id text,
+    p_window_sec integer DEFAULT 60,
+    p_max_requests integer DEFAULT 30
+  ) RETURNS jsonb
+  ```
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. **Granted exclusively to `service_role`.**
+* **Behavior & Algorithm:**
+  * Uses a **Fixed-Window Counter** algorithm: discretizes current time into `window_start := to_timestamp(floor(extract(epoch from now()) / window_sec) * window_sec)`.
+  * Upserts into `device_rate_limits`: increments `request_count`, increments `blocked_count` if quota exceeded, updates `last_request_at = now()`.
+  * Returns `allowed` (boolean), `current_count`, `max_requests`, `remaining`, and `window_reset_at`.
+
+#### 15. `record_wisp_interaction`
+Atomically logs viewer query into `interaction_history`, updates hourly `ai_provider_metrics`, and increments profile `total_queries_count`.
 * **Signature:**
   ```sql
   record_wisp_interaction(
-    p_session_id uuid,
     p_profile_id uuid,
-    p_playback_ms bigint,
-    p_action_type action_type_enum,
-    p_user_query text,
+    p_episode_id uuid,
+    p_playback_position_ms bigint,
+    p_action_type text,
+    p_user_prompt text,
+    p_ai_provider text,
+    p_latency_ms integer,
+    p_cache_hit boolean,
     p_response_card jsonb,
-    p_latency_ms int,
-    p_provider_name text,
-    p_model_name text,
-    p_prompt_tokens int DEFAULT 0,
-    p_completion_tokens int DEFAULT 0
+    p_prompt_tokens integer DEFAULT 0,
+    p_completion_tokens integer DEFAULT 0,
+    p_failover_triggered boolean DEFAULT false,
+    p_error_code text DEFAULT NULL
   ) RETURNS uuid
   ```
-* **Security & Grants:** `SECURITY DEFINER`. Granted exclusively to `service_role`.
+* **Security & Grants:** `SECURITY DEFINER`, `SET search_path = public`. **Granted exclusively to `service_role`.**
+* **Behavior:**
+  * Verifies caller is `service_role`.
+  * Validates episode and profile references. Clamps `p_playback_position_ms` to `[0, duration_ms]`.
+  * Inserts record into `interaction_history`.
+  * Upserts hourly bucket into `ai_provider_metrics` (`bucket_hour = date_trunc('hour', now())`), incrementing request count, success/fail count, cache hits, latency aggregates, and token totals.
+  * Increments `profiles.total_queries_count` and updates `profiles.last_active_at = now()`.
+  * Returns the newly generated interaction UUID.
 
 ---
 
@@ -886,7 +1135,7 @@ The schema attaches **4 trigger functions** across **14 distinct table trigger o
 * **Guarantees:**
   * Validates that child timestamps do not exceed parent `episodes.duration_ms`.
   * For `entity_appearances`, validates that the referenced entity belongs to the same parent `program_id` as the episode.
-  * For `entity_relationships`, validates that both `source_entity_id` and `target_entity_id` belong to the same program as `reveal_episode_id`.
+  * For `entity_relationships`, validates that both `source_entity_id` and `target_entity_id` belong to the same program as `episode_id`.
 
 #### 3. `trg_fn_prevent_unsafe_episode_duration_shrink`
 * **Type:** `BEFORE UPDATE OF duration_ms ON episodes`
