@@ -74,3 +74,24 @@
 - **Workaround Implemented:** Programmatically patched `config.ini` with `hw.initialOrientation=landscape`, `hw.gpu.enabled=yes`, `hw.keyboard=yes`, `target=android-36.1`, and `hw.ramSize=2048M`, and started a persistent foreground ADB server (`adb -P 5037 nodaemon server`) before launching the emulator. The virtual Fire TV 1080p device booted successfully (`sys.boot_completed=1`) and verified full 1080p density (320 dpi).
 - **Actionable Recommendation for Amazon / Maintainers:** Provide a dedicated Fire TV CLI tool or predefined hardware profile descriptor (`firetv-4k-max.xml`) in the Amazon developer portal that generates turnkey landscape AVD configurations with appropriate heap and GPU defaults out-of-the-box.
 
+---
+
+### [FL-006] TypeScript Incompatibility Between Node 24 Native Module Resolution and NestJS Build Tooling
+- **Date:** 2026-10-20
+- **Component / SDK:** TypeScript Compiler (`tsc`) / `@nestjs/cli` / Node.js 24 ESM Strip-Types
+- **Severity:** High
+- **Expected Behavior:** A unified monorepo where the backend package (`@wisp/backend`) imports from the local modular AI library (`@wisp/ai-engine`) should compile cleanly with standard NestJS commands (`nest build` / `npm run build:backend`) while preserving fast local execution.
+- **Actual Behavior:** Setting `"allowImportingTsExtensions": true` in `tsconfig.json` to accommodate Node 24's native `.ts` imports in the shared AI engine caused TypeScript compiler error `TS5096: Option 'allowImportingTsExtensions' can only be used when either 'noEmit' or 'emitDeclarationOnly' is set` during `nest build`. Conversely, removing it caused Node 24 runner failures.
+- **Workaround Implemented:** Decoupled `ai-engine`'s module resolution so that `ai-engine/tsconfig.json` runs strictly under `"noEmit": true` with native Node 24 execution, while `backend/tsconfig.json` maintains standard CommonJS/NestJS compiler compatibility and executes via modern runtime loaders (`tsx`) without breaking either production builds or local dev loops.
+- **Actionable Recommendation for Amazon / Maintainers:** Include clear monorepo guidance in developer documentation for teams sharing AI logic across runtime targets (Node 22/24 native vs bundled NestJS/React Native) detailing tsconfig separation.
+
+---
+
+### [FL-007] Windows PowerShell Execution Policy Blocking NPM/NPX Command Execution in CI & Local Dev
+- **Date:** 2026-10-20
+- **Component / SDK:** Windows PowerShell / Node.js / NPM CLI (`npm.ps1`)
+- **Severity:** Medium
+- **Expected Behavior:** Running standard scripts like `npm test` or `npm run dev:backend` from standard Windows terminals should invoke Node/NPM scripts without script signing barriers.
+- **Actual Behavior:** Standard PowerShell execution policies on corporate and standard Windows developer environments block unsigned `npm.ps1` with `PSSecurityException: UnauthorizedAccess` (`running scripts is disabled on this system`).
+- **Workaround Implemented:** Scripted and documented runner commands utilizing `cmd.exe /c "npm test"` or launching directly via Node wrappers (`node --test`), completely bypassing PowerShell script policy restrictions across developer workstations and CI runners.
+- **Actionable Recommendation for Amazon / Maintainers:** In Fire TV Windows developer guides, explicitly note CMD-compatible execution wrappers or suggest `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in setup scripts so Windows developers don't encounter command execution roadblocks.
