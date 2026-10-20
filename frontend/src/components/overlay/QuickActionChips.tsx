@@ -22,6 +22,7 @@ export const QuickActionChips: React.FC<Props> = ({ chips, onSelectChip, disable
             hasTVPreferredFocus={idx === 0}
             disabled={disabled}
             onFocus={() => setFocusedId(chip.id)}
+            onBlur={() => setFocusedId(null)}
             onPress={() => onSelectChip(chip)}
             style={[styles.chip, isFocused && styles.chipFocused]}
           >
@@ -39,27 +40,31 @@ const styles = StyleSheet.create({
   container: {
     flexDirection: 'column',
     gap: TVTheme.spacing.chipGap,
-    marginTop: 12,
+    marginTop: 14,
   },
   chip: {
     backgroundColor: TVTheme.colors.cardSurface,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 22,
+    borderRadius: 14,
     borderWidth: 2,
-    borderColor: 'transparent',
+    borderColor: TVTheme.colors.cardBorder,
   },
   chipFocused: {
     backgroundColor: TVTheme.colors.cardFocused,
     borderColor: TVTheme.colors.focusRing,
-    transform: [{ scale: 1.02 }],
+    borderWidth: 2.5,
+    transform: [{ scale: TVTheme.animation.focusScale }],
+    ...TVTheme.glow.focusRingShadow,
   },
   chipText: {
     color: TVTheme.colors.textSecondary,
-    fontSize: TVTheme.typography.chipLabel,
-    fontWeight: '600',
+    fontSize: TVTheme.typography.body10Foot,
+    fontWeight: '700',
+    lineHeight: 28,
   },
   chipTextFocused: {
-    color: TVTheme.colors.textPrimary,
+    color: '#FFFFFF',
+    fontWeight: '800',
   },
 });

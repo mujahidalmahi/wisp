@@ -8,6 +8,7 @@ export interface TVRemoteActions {
   onBack?: () => void;
   onToggleCatalog?: () => void;
   onSeek?: (deltaMs: number) => void;
+  onProfileModeSelect?: (index: number) => void;
 }
 
 /**
@@ -18,6 +19,7 @@ export interface TVRemoteActions {
  * - Space: Play / Pause
  * - Left/Right: Seek -10s / +10s
  * - Esc: Back / Dismiss
+ * - 1/2/3: Quick Profile Mode Switch
  */
 export function useTVRemoteHandler(actions: TVRemoteActions) {
   const handleTVEvent = (evt: { eventType?: string }) => {
@@ -83,6 +85,15 @@ export function useTVRemoteHandler(actions: TVRemoteActions) {
           e.preventDefault();
           actions.onBack?.();
           break;
+        case '1':
+          actions.onProfileModeSelect?.(0);
+          break;
+        case '2':
+          actions.onProfileModeSelect?.(1);
+          break;
+        case '3':
+          actions.onProfileModeSelect?.(2);
+          break;
         default:
           break;
       }
@@ -98,4 +109,3 @@ export function useTVRemoteHandler(actions: TVRemoteActions) {
     useTVEventHandler(handleTVEvent);
   }
 }
-

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { TVTheme } from '../../theme/tvTheme';
+import { useTVResponsive } from '../../hooks/useTVResponsive';
 
 interface Props {
   programTitle: string;
@@ -9,8 +10,10 @@ interface Props {
   playbackPositionMs: number;
   durationMs?: number;
   overlayVisible: boolean;
+  isPlaying?: boolean;
   onInvokeWisp: () => void;
   onAdvanceTimestamp: (deltaMs: number) => void;
+  onTogglePlayPause?: () => void;
   onOpenCatalog?: () => void;
 }
 
@@ -21,14 +24,19 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   playbackPositionMs,
   durationMs = 734000,
   overlayVisible,
+  isPlaying = true,
   onInvokeWisp,
   onAdvanceTimestamp,
+  onTogglePlayPause,
   onOpenCatalog,
 }) => {
   const [isCatalogFocused, setIsCatalogFocused] = useState<boolean>(false);
   const [isWispFocused, setIsWispFocused] = useState<boolean>(false);
+  const [isPlayPauseFocused, setIsPlayPauseFocused] = useState<boolean>(false);
   const [isRewindFocused, setIsRewindFocused] = useState<boolean>(false);
   const [isForwardFocused, setIsForwardFocused] = useState<boolean>(false);
+
+  const { overscanHorizontal, overscanVertical } = useTVResponsive();
 
   const sec = Math.floor(playbackPositionMs / 1000);
   const formattedTime = `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(
@@ -43,11 +51,11 @@ export const VideoPlayerSurface: React.FC<Props> = ({
   const progressPercent = Math.min(100, Math.max(0, (playbackPositionMs / durationMs) * 100));
 
   return (
-    <View style={styles.viewport}>
-      {/* Top HUD */}
+    <View style={[styles.viewport, { paddingHorizontal: overscanHorizontal, paddingVertical: overscanVertical }]}>
+      {/* Top HUD: Clean & Minimalist */}
       <View style={styles.hudTopRow}>
         <View style={styles.hudTopLeft}>
-          <View style={styles.genreTagRow}>
+          <View style={styles.badgeRow}>
             {genre && (
               <View style={styles.genreBadge}>
                 <Text style={styles.genreBadgeText}>{genre}</Text>
@@ -55,12 +63,17 @@ export const VideoPlayerSurface: React.FC<Props> = ({
             )}
             <View style={styles.liveBadge}>
               <View style={styles.liveDot} />
-              <Text style={styles.liveBadgeText}>TEMPORAL PLAYHEAD</Text>
+              <Text style={styles.liveBadgeText}>
+                {isPlaying ? 'PLAYING' : 'PAUSED'}
+              </Text>
+            </View>
+            <View style={styles.formatBadge}>
+              <Text style={styles.formatBadgeText}>4K UHD • HDR10 • ATMOS</Text>
             </View>
           </View>
           <Text style={styles.programTitle}>{programTitle}</Text>
           <Text style={styles.episodeTitle}>
-            {episodeTitle} • {formattedTime} / {formattedTotal}
+            {episodeTitle}  •  {formattedTime} / {formattedTotal}
           </Text>
         </View>
 
@@ -80,44 +93,75 @@ export const VideoPlayerSurface: React.FC<Props> = ({
                 isCatalogFocused && styles.catalogButtonTextFocused,
               ]}
             >
-              📚 Switch Program
+              Browse Catalog (C)
             </Text>
           </Pressable>
         )}
       </View>
 
-      {/* Center Simulated Cinema Canvas */}
+      {/* Center Cinematic Stage: Clean, Pure & Uncluttered */}
       <View style={styles.centerCanvas}>
-        <View style={styles.cinemaSimBox}>
-          <Text style={styles.cinemaWatermark}>WISP 10-FOOT CINEMA SURFACE</Text>
-          <Text style={styles.cinemaSubmark}>
-            Active Video Frame @ {formattedTime} • Spoiler Gate Enforced
+        <View style={styles.cinemaStageBox}>
+          <Text style={styles.cinemaTitleText}>{programTitle}</Text>
+          <Text style={styles.cinemaSubtitleText}>
+            {episodeTitle}  •  Scene Timecode {formattedTime}
           </Text>
+          <View style={styles.guardIndicator}>
+            <View style={styles.guardDot} />
+            <Text style={styles.guardText}>SPOILER GUARD ACTIVE</Text>
+          </View>
         </View>
       </View>
 
-      {/* Bottom Bar & Timeline */}
+      {/* Bottom Timeline & Controls */}
       {!overlayVisible && (
         <View style={styles.bottomSection}>
-          {/* Temporal Progress Bar */}
+          {/* Minimalist Scrubber with Scene Chapter Notches */}
           <View style={styles.progressBarBackground}>
+            <View style={[styles.chapterNotch, { left: '25%' }]} />
+            <View style={[styles.chapterNotch, { left: '50%' }]} />
+            <View style={[styles.chapterNotch, { left: '75%' }]} />
+
             <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
             <View style={[styles.progressScrubberKnob, { left: `${progressPercent}%` }]} />
           </View>
 
           <View style={styles.bottomBar}>
-            <Pressable
-              hasTVPreferredFocus
-              onPress={onInvokeWisp}
-              onFocus={() => setIsWispFocused(true)}
-              onBlur={() => setIsWispFocused(false)}
-              style={[
-                styles.wispButton,
-                isWispFocused && styles.wispButtonFocused,
-              ]}
-            >
-              <Text style={styles.wispButtonText}>✨ Invoke Wisp (Menu / Select)</Text>
-            </Pressable>
+            <View style={styles.primaryActions}>
+              <Pressable
+                hasTVPreferredFocus
+                onPress={onInvokeWisp}
+                onFocus={() => setIsWispFocused(true)}
+                onBlur={() => setIsWispFocused(false)}
+                style={[
+                  styles.wispButton,
+                  isWispFocused && styles.wispButtonFocused,
+                ]}
+              >
+                <Text style={styles.wispButtonText}>✨ Context & Lore (Menu)</Text>
+              </Pressable>
+
+              {onTogglePlayPause && (
+                <Pressable
+                  onPress={onTogglePlayPause}
+                  onFocus={() => setIsPlayPauseFocused(true)}
+                  onBlur={() => setIsPlayPauseFocused(false)}
+                  style={[
+                    styles.playPauseButton,
+                    isPlayPauseFocused && styles.playPauseButtonFocused,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.playPauseButtonText,
+                      isPlayPauseFocused && styles.playPauseButtonTextFocused,
+                    ]}
+                  >
+                    {isPlaying ? 'Pause' : 'Play'}
+                  </Text>
+                </Pressable>
+              )}
+            </View>
 
             <View style={styles.controlsGroup}>
               <Pressable
@@ -135,7 +179,7 @@ export const VideoPlayerSurface: React.FC<Props> = ({
                     isRewindFocused && styles.scrubButtonTextFocused,
                   ]}
                 >
-                  -0:30 Rewind
+                  -30s
                 </Text>
               </Pressable>
 
@@ -154,7 +198,7 @@ export const VideoPlayerSurface: React.FC<Props> = ({
                     isForwardFocused && styles.scrubButtonTextFocused,
                   ]}
                 >
-                  +1:00 Forward
+                  +60s
                 </Text>
               </Pressable>
             </View>
@@ -170,8 +214,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: TVTheme.colors.background,
     justifyContent: 'space-between',
-    paddingHorizontal: TVTheme.spacing.overscanHorizontal,
-    paddingVertical: TVTheme.spacing.overscanVertical,
   },
   hudTopRow: {
     flexDirection: 'row',
@@ -179,82 +221,101 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   hudTopLeft: {
-    backgroundColor: 'rgba(15, 23, 42, 0.85)',
-    paddingHorizontal: 22,
-    paddingVertical: 14,
-    borderRadius: 14,
+    backgroundColor: 'rgba(20, 20, 24, 0.92)',
+    paddingHorizontal: 24,
+    paddingVertical: 18,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#1E293B',
+    borderColor: TVTheme.colors.cardBorder,
     alignSelf: 'flex-start',
+    ...TVTheme.glow.subtleCardShadow,
   },
-  genreTagRow: {
+  badgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
+    gap: 10,
+    marginBottom: 8,
   },
   genreBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.2)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
+    backgroundColor: '#202025',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: TVTheme.colors.accentCyan,
+    borderColor: '#3F3F46',
   },
   genreBadgeText: {
-    color: TVTheme.colors.accentCyan,
-    fontSize: 11,
-    fontWeight: '800',
+    color: TVTheme.colors.textSecondary,
+    fontSize: TVTheme.typography.badge,
+    fontWeight: '700',
     textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   liveBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
+    gap: 6,
+    backgroundColor: TVTheme.colors.spoilerSafeWash,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
   },
   liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: TVTheme.colors.spoilerSafeBadge,
   },
   liveBadgeText: {
     color: TVTheme.colors.spoilerSafeBadge,
-    fontSize: 10,
+    fontSize: TVTheme.typography.badge,
     fontWeight: '800',
-    letterSpacing: 1,
+    letterSpacing: 0.8,
+  },
+  formatBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  formatBadgeText: {
+    color: TVTheme.colors.textMuted,
+    fontSize: TVTheme.typography.microTime,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   programTitle: {
     color: TVTheme.colors.textPrimary,
-    fontSize: 26,
+    fontSize: TVTheme.typography.heroTitle,
     fontWeight: '800',
+    letterSpacing: 0.3,
   },
   episodeTitle: {
     color: TVTheme.colors.textSecondary,
-    fontSize: 16,
-    marginTop: 4,
+    fontSize: TVTheme.typography.subtitle,
+    marginTop: 6,
+    fontWeight: '600',
   },
   catalogButton: {
-    backgroundColor: 'rgba(30, 41, 59, 0.85)',
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#334155',
+    backgroundColor: TVTheme.colors.cardSurface,
+    paddingVertical: 14,
+    paddingHorizontal: 22,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: TVTheme.colors.cardBorder,
   },
   catalogButtonFocused: {
     borderColor: TVTheme.colors.focusRing,
     borderWidth: 2,
-    backgroundColor: 'rgba(245, 158, 11, 0.2)',
-    transform: [{ scale: 1.05 }],
+    backgroundColor: TVTheme.colors.focusGlowWash,
+    transform: [{ scale: TVTheme.animation.focusScale }],
+    ...TVTheme.glow.focusRingShadow,
   },
   catalogButtonText: {
-    color: TVTheme.colors.textPrimary,
-    fontSize: 15,
+    color: TVTheme.colors.textSecondary,
+    fontSize: TVTheme.typography.buttonText,
     fontWeight: '700',
   },
   catalogButtonTextFocused: {
@@ -266,36 +327,67 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  cinemaSimBox: {
-    backgroundColor: 'rgba(15, 23, 42, 0.4)',
-    paddingVertical: 32,
-    paddingHorizontal: 48,
-    borderRadius: 16,
+  cinemaStageBox: {
+    backgroundColor: 'rgba(18, 18, 22, 0.65)',
+    paddingVertical: 40,
+    paddingHorizontal: 60,
+    borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(51, 65, 85, 0.4)',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
     alignItems: 'center',
+    ...TVTheme.glow.subtleCardShadow,
   },
-  cinemaWatermark: {
-    color: 'rgba(148, 163, 184, 0.35)',
-    fontSize: 18,
+  cinemaTitleText: {
+    color: TVTheme.colors.textPrimary,
+    fontSize: TVTheme.typography.cardHeadline,
     fontWeight: '800',
-    letterSpacing: 3,
+    letterSpacing: 1.5,
   },
-  cinemaSubmark: {
-    color: 'rgba(148, 163, 184, 0.25)',
-    fontSize: 14,
-    marginTop: 6,
+  cinemaSubtitleText: {
+    color: TVTheme.colors.textMuted,
+    fontSize: TVTheme.typography.caption,
+    marginTop: 8,
+  },
+  guardIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+  },
+  guardDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: TVTheme.colors.spoilerSafeBadge,
+  },
+  guardText: {
+    color: TVTheme.colors.textMuted,
+    fontSize: TVTheme.typography.microTime,
+    fontWeight: '700',
+    letterSpacing: 1,
   },
   bottomSection: {
     width: '100%',
-    gap: 12,
+    gap: 16,
   },
   progressBarBackground: {
     height: 6,
-    backgroundColor: '#1E293B',
+    backgroundColor: '#222228',
     borderRadius: 3,
     position: 'relative',
     overflow: 'visible',
+  },
+  chapterNotch: {
+    position: 'absolute',
+    top: -3,
+    width: 2,
+    height: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    zIndex: 2,
   },
   progressBarFill: {
     height: '100%',
@@ -304,36 +396,67 @@ const styles = StyleSheet.create({
   },
   progressScrubberKnob: {
     position: 'absolute',
-    top: -4,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    top: -5,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
     backgroundColor: TVTheme.colors.textPrimary,
-    borderWidth: 2,
+    borderWidth: 2.5,
     borderColor: TVTheme.colors.focusRing,
-    marginLeft: -7,
+    marginLeft: -8,
+    zIndex: 3,
+    ...TVTheme.glow.focusRingShadow,
   },
   bottomBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  primaryActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
   wispButton: {
     backgroundColor: TVTheme.colors.focusRing,
     paddingVertical: 14,
-    paddingHorizontal: 24,
+    paddingHorizontal: 26,
     borderRadius: 12,
     borderWidth: 2,
     borderColor: 'transparent',
   },
   wispButtonFocused: {
     borderColor: '#FFFFFF',
-    borderWidth: 2,
-    transform: [{ scale: 1.04 }],
+    transform: [{ scale: TVTheme.animation.focusScale }],
+    ...TVTheme.glow.focusRingShadow,
   },
   wispButtonText: {
-    color: '#090B10',
-    fontSize: 18,
+    color: '#0A0A0C',
+    fontSize: TVTheme.typography.buttonText,
+    fontWeight: '800',
+  },
+  playPauseButton: {
+    backgroundColor: TVTheme.colors.cardSurface,
+    paddingVertical: 14,
+    paddingHorizontal: 22,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: TVTheme.colors.cardBorder,
+  },
+  playPauseButtonFocused: {
+    borderColor: TVTheme.colors.focusRing,
+    borderWidth: 2,
+    backgroundColor: TVTheme.colors.focusGlowWash,
+    transform: [{ scale: TVTheme.animation.focusScale }],
+    ...TVTheme.glow.focusRingShadow,
+  },
+  playPauseButtonText: {
+    color: TVTheme.colors.textSecondary,
+    fontSize: TVTheme.typography.buttonText,
+    fontWeight: '700',
+  },
+  playPauseButtonTextFocused: {
+    color: TVTheme.colors.textPrimary,
     fontWeight: '800',
   },
   controlsGroup: {
@@ -342,22 +465,23 @@ const styles = StyleSheet.create({
   },
   scrubButton: {
     backgroundColor: TVTheme.colors.cardSurface,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#334155',
+    borderWidth: 1.5,
+    borderColor: TVTheme.colors.cardBorder,
   },
   scrubButtonFocused: {
     borderColor: TVTheme.colors.focusRing,
     borderWidth: 2,
-    backgroundColor: 'rgba(245, 158, 11, 0.2)',
-    transform: [{ scale: 1.05 }],
+    backgroundColor: TVTheme.colors.focusGlowWash,
+    transform: [{ scale: TVTheme.animation.focusScale }],
+    ...TVTheme.glow.focusRingShadow,
   },
   scrubButtonText: {
     color: TVTheme.colors.textSecondary,
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: TVTheme.typography.buttonText,
+    fontWeight: '700',
   },
   scrubButtonTextFocused: {
     color: TVTheme.colors.textPrimary,

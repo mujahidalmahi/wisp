@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { SafeAreaView, StyleSheet } from 'react-native';
-import { EnvConfig } from './config/env';
 import { WispApiClient } from './services/api.client';
 import {
   HouseholdProfileMode,
@@ -15,10 +14,14 @@ import { UnlockedEntity } from './components/overlay/ActiveEntitiesBar';
 import { CatalogSelector, DEMO_PROGRAMS, CatalogProgram } from './components/catalog/CatalogSelector';
 import { TVTheme } from './theme/tvTheme';
 
+const PROFILE_MODES: HouseholdProfileMode[] = ['quick_glance', 'deep_lore', 'family_friendly'];
+
 export default function App() {
+  const [catalogPrograms, setCatalogPrograms] = useState<CatalogProgram[]>(DEMO_PROGRAMS);
   const [selectedProgram, setSelectedProgram] = useState<CatalogProgram>(DEMO_PROGRAMS[0]);
   const [episodeId, setEpisodeId] = useState<string>(selectedProgram.episodeId);
   const [playbackPositionMs, setPlaybackPositionMs] = useState<number>(35000);
+  const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [overlayVisible, setOverlayVisible] = useState<boolean>(false);
   const [catalogVisible, setCatalogVisible] = useState<boolean>(false);
   const [profileMode, setProfileMode] = useState<HouseholdProfileMode>('quick_glance');
@@ -27,6 +30,19 @@ export default function App() {
   const [responseCard, setResponseCard] = useState<WispResponseCard | null>(null);
   const [loadingAi, setLoadingAi] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Load programs from backend or fallback to DEMO_PROGRAMS on start
+  useEffect(() => {
+    let mounted = true;
+    WispApiClient.fetchPrograms().then((progs) => {
+      if (mounted && progs.length > 0) {
+        setCatalogPrograms(progs);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const loadInstantSceneContext = useCallback(async (epId: string, posMs: number) => {
     try {
@@ -37,6 +53,21 @@ export default function App() {
       setErrorMessage(err?.message || 'Unable to reach Wisp backend');
     }
   }, []);
+
+  // Continuous 1-Second Playhead Ticker (Simulates live Fire TV media playback)
+  useEffect(() => {
+    if (!isPlaying) return;
+
+    const interval = setInterval(() => {
+      setPlaybackPositionMs((prev) => {
+        const next = prev + 1000;
+        const maxMs = selectedProgram.durationSeconds * 1000;
+        return next >= maxMs ? maxMs : next;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isPlaying, selectedProgram.durationSeconds]);
 
   const handleToggleWispOverlay = useCallback(() => {
     setOverlayVisible((prev) => {
@@ -49,8 +80,13 @@ export default function App() {
     });
   }, [episodeId, playbackPositionMs, loadInstantSceneContext]);
 
+  const handleTogglePlayPause = useCallback(() => {
+    setIsPlaying((prev) => !prev);
+  }, []);
+
   useTVRemoteHandler({
     onToggleWispOverlay: handleToggleWispOverlay,
+    onPlayPause: handleTogglePlayPause,
     onToggleCatalog: () => setCatalogVisible((prev) => !prev),
     onSeek: (deltaMs: number) => {
       setPlaybackPositionMs((prev) =>
@@ -62,6 +98,11 @@ export default function App() {
         setCatalogVisible(false);
       } else if (overlayVisible) {
         setOverlayVisible(false);
+      }
+    },
+    onProfileModeSelect: (index: number) => {
+      if (PROFILE_MODES[index]) {
+        setProfileMode(PROFILE_MODES[index]);
       }
     },
   });
@@ -104,6 +145,13 @@ export default function App() {
     });
   };
 
+  const handleVoteCard = async (vote: -1 | 1) => {
+    if (!responseCard) return;
+    const interactionId = responseCard.interactionId || `interaction-${Date.now()}`;
+    await WispApiClient.voteInteraction(interactionId, vote);
+    setResponseCard((prev) => (prev ? { ...prev, userVote: vote } : null));
+  };
+
   return (
     <SafeAreaView style={styles.root}>
       <VideoPlayerSurface
@@ -113,7 +161,9 @@ export default function App() {
         playbackPositionMs={playbackPositionMs}
         durationMs={selectedProgram.durationSeconds * 1000}
         overlayVisible={overlayVisible}
+        isPlaying={isPlaying}
         onInvokeWisp={handleToggleWispOverlay}
+        onTogglePlayPause={handleTogglePlayPause}
         onAdvanceTimestamp={(delta) =>
           setPlaybackPositionMs((prev) =>
             Math.max(0, Math.min(selectedProgram.durationSeconds * 1000, prev + delta)),
@@ -133,11 +183,13 @@ export default function App() {
         onChangeProfileMode={setProfileMode}
         onSelectChip={handleSelectChip}
         onAskAboutEntity={handleAskAboutEntity}
+        onVoteCard={handleVoteCard}
       />
 
       <CatalogSelector
         visible={catalogVisible}
         currentEpisodeId={episodeId}
+        programs={catalogPrograms}
         onSelectProgram={handleSelectProgram}
         onClose={() => setCatalogVisible(false)}
       />

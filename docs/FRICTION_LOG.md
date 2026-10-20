@@ -227,3 +227,25 @@
 - **Workaround Implemented:** Decoupled `isFocused` styling so that high-contrast focus rings (`#F59E0B`, width 2) override dimmed or static border states, and added explicit `onFocus`/`onBlur` tracking across HUD controls (`catalogButton`, `scrubButton`).
 - **Actionable Recommendation:** Provide higher-level TV button primitives with an `isFocused` higher-priority overlay layer that cannot be inadvertently overwritten by custom component state styling.
 
+---
+
+### [FL-015] Fire TV Client Unauthenticated 401 Rejections on DeviceAuthGuard Endpoints
+- **Date:** 2026-10-19
+- **Component / SDK:** Fire OS Client (`WispApiClient`) / NestJS `DeviceAuthGuard` / Fire TV Remote Networking
+- **Severity:** High
+- **Expected Behavior:** When the Fire TV client initiates Stage-1 contextual retrieval (`/context/:episodeId`) or Stage-2 AI queries (`/wisp/query`), it should authenticate the hardware device and inject a verified JWT bearer token, or cleanly fall back to `@wisp/ai-engine` standalone execution without crashing or unhandled rejections during offline demos.
+- **Actual Behavior:** `WispApiClient` previously dispatched raw `fetch` requests with generic headers. Because the backend's `DeviceAuthGuard` strictly enforces verified device credentials across all context and query routes, the client received HTTP 401 Unauthorized (`"Device authentication required"`). In Stage-1 context retrieval, the 401 status silently forced the app into in-memory catalog mode, while Stage-2 AI queries threw unhandled errors: `Wisp AI request failed (401)`. Additionally, connecting to `10.0.2.2:3000` from the host development machine without an active emulator hung indefinitely on TCP SYN timeouts.
+- **Workaround Implemented:** Implemented `DeviceAuthService` (`frontend/src/services/device-auth.service.ts`) to manage persistent hardware device identity (`firetv-living-room-001`), auto-enroll with the development enrollment key (`wisp-dev-device-enrollment-secret-2026`) via `POST /api/v1/auth/enroll`, and inject `Authorization: Bearer <token>` and `X-Device-Id` into all outbound requests. Added bounded request timeouts (`AbortController`) to prevent connection hangs when the backend is offline, and implemented seamless fallback to `@wisp/ai-engine`'s `WispAiEngine.createStandalone()` and grounded local context.
+- **Actionable Recommendation for Amazon / Maintainers:** Include a persistent device token interceptor and loopback health-check in Fire TV React Native starter kits so client developers have automated credential provisioning and loopback detection out of the box.
+
+---
+
+### [FL-016] Living Room 10-Foot Aesthetic Inconsistencies & Faux Spec AI Slop in Consumer Streaming Surfaces
+- **Date:** 2026-10-19
+- **Component / SDK:** React Native TV Theme (`TVTheme`) / 10-Foot Focus Hierarchy / Fire OS Display Color Space
+- **Severity:** Medium
+- **Expected Behavior:** Living room TV applications viewed from a 10-foot couch distance require an ultra-clean, distraction-free cinema aesthetic: deep obsidian backgrounds (`#0A0A0C`), warm matte charcoal cards (`#141417`, `#202025`), hairline borders (`#27272D`), and crisp, high-contrast amber focus indicators (`#F59E0B`). User-facing text should focus strictly on narrative context and spoiler safety without technical jargon, watermarks, or faux-specs.
+- **Actual Behavior:** Components scattered hardcoded navy, slate blue, and cyan hex codes (`#0F172A`, `#1E293B`, `#334155`, `#38BDF8`), causing muddy contrast against 10-foot TV displays, glowing edge artifacts on low-end LED panels, and visual dissonance. Several test cases also risked regression when color tokens were deleted or renamed. Additionally, faux-spec technical strings ("HEVC Main 10", "Zero Temporal Leakage") cluttered the UI with synthetic AI jargon.
+- **Workaround Implemented:** Unified the entire design system under `TVTheme` using an obsidian-charcoal palette (`#0A0A0C`, `#141417`, `#202025`, `#27272D`, `#F59E0B`) with zero navy/dark blue colors. Replaced all raw hex codes across `WispOverlayDrawer`, `ActiveEntitiesBar`, `InteractiveQuizCard`, `QuickActionChips`, `CatalogSelector`, `VideoPlayerSurface`, and `ProfileModeSelector`. Implemented automated palette and aesthetic guard tests (`testing/frontend/palette-and-aesthetic-guard.test.ts`) that recursively scan all source files to permanently reject navy/blue hex codes, blue rgba strings, and AI slop terminology.
+- **Actionable Recommendation:** Living room TV design systems should enforce strict palette linters and token-only CSS/StyleSheet rules to prevent saturated web-era navy and muddy blue values from polluting 10-foot cinema dark modes.
+
